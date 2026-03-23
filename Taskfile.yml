@@ -1,0 +1,68 @@
+version: "3"
+
+# ---------------------------------------------------------------------------
+# Zig DuckDB Extension — task automation
+# Preconfigured by `reins init --lang zig`, then tailored for DuckDB
+# extension development.
+#
+# The `check:all` task is mandatory. AGENTS.md rule V-01 requires the agent
+# to run it before every commit.
+# ---------------------------------------------------------------------------
+
+tasks:
+  check:all:
+    desc: "Run all quality gates"
+    deps: [format, build, test:unit]
+    cmds:
+      - echo "All checks passed!"
+
+  format:
+    desc: "Format Zig source files"
+    cmds:
+      - zig fmt src/
+
+  build:
+    desc: "Compile the extension (debug)"
+    cmds:
+      - zig build
+
+  build:release:
+    desc: "Compile the extension (release-safe)"
+    cmds:
+      - zig build -Doptimize=ReleaseSafe
+
+  test:unit:
+    desc: "Run unit tests"
+    cmds:
+      - zig build test
+
+  test:integration:
+    desc: "Load extension into DuckDB and run SQL smoke tests"
+    deps: [build]
+    cmds:
+      - |
+        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
+        if [ -z "$EXT_PATH" ]; then
+          echo "ERROR: No .duckdb_extension found in zig-out/lib/"
+          exit 1
+        fi
+        echo "Loading extension from $EXT_PATH"
+        duckdb -unsigned -c "
+          LOAD '${EXT_PATH}';
+          SELECT zig_hello('world') AS result;
+        "
+
+  audit:
+    desc: "Check for compiler warnings and deprecated patterns"
+    cmds:
+      - zig build -Doptimize=Debug 2>&1 | grep -i "deprecat\|warning" || echo "No warnings found."
+
+  clean:
+    desc: "Remove build artifacts"
+    cmds:
+      - rm -rf zig-out zig-cache .zig-cache
+
+  loc:
+    desc: "Count lines of code"
+    cmds:
+      - tokei

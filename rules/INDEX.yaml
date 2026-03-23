@@ -1,0 +1,49 @@
+# rules/INDEX.yaml — Trigger mapping for the layered rule system
+#
+# The agent reads this file at the start of every task (METHODOLOGY.md L-01).
+#
+# Consumption protocol:
+#   1. Load all files under `principles:` unconditionally.
+#   2. For each file being modified, match its path against `trigger:`
+#      globs in `concerns:` and `specifics:`.
+#   3. For concerns with `content_pattern:`, scan the target file's
+#      content. Load the concern's rules only if the regex matches.
+#   4. Load all matched rule files and read them in full before coding.
+#
+# Conflict resolution: Specifics > Concerns > Principles (most-specific wins).
+
+# ---------------------------------------------------------------------------
+# Tier 1: Principles — always loaded, sourced from the reins submodule.
+# ---------------------------------------------------------------------------
+principles:
+  - .reins/rules/principles/quality.md
+
+# ---------------------------------------------------------------------------
+# Tier 2: Concerns — cross-cutting rules activated by path + optional
+#          content pattern. Add your project's concerns here.
+# ---------------------------------------------------------------------------
+concerns:
+  # C interop safety — activated when a Zig file uses @cImport.
+  # DuckDB extensions rely heavily on the C API, so this fires often.
+  - trigger: "**/*.zig"
+    content_pattern: "@cImport"
+    rules:
+      - rules/concerns/c-interop-safety.md
+
+# ---------------------------------------------------------------------------
+# Tier 3: Specifics — domain/technology rules activated by file path.
+# ---------------------------------------------------------------------------
+specifics:
+  - trigger: "**/*.zig"
+    rules:
+      - rules/specifics/zig.md
+
+  # Build system configuration
+  - trigger: "build.zig"
+    rules:
+      - rules/specifics/build-zig.md
+
+  # DuckDB extension interface rules
+  - trigger: "src/ext/**/*.zig"
+    rules:
+      - rules/specifics/duckdb-ext.md
