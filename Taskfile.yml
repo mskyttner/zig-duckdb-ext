@@ -52,6 +52,33 @@ tasks:
           SELECT zig_hello('world') AS result;
         "
 
+  test:e2e:
+    desc: "End-to-end tests: build, load into DuckDB, run all SQL test files"
+    deps: [build]
+    cmds:
+      - |
+        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
+        if [ -z "$EXT_PATH" ]; then
+          echo "ERROR: No .duckdb_extension found in zig-out/lib/"
+          exit 1
+        fi
+        echo "=== Loading extension from $EXT_PATH ==="
+        FAILED=0
+        for sql_file in test/sql/*.sql; do
+          echo "--- Running $sql_file ---"
+          if duckdb -unsigned -c "LOAD '${EXT_PATH}';" < "$sql_file"; then
+            echo "    PASS"
+          else
+            echo "    FAIL"
+            FAILED=1
+          fi
+        done
+        if [ "$FAILED" -ne 0 ]; then
+          echo "=== Some e2e tests FAILED ==="
+          exit 1
+        fi
+        echo "=== All e2e tests passed ==="
+
   audit:
     desc: "Check for compiler warnings and deprecated patterns"
     cmds:
