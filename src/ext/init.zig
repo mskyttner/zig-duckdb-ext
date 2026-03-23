@@ -7,6 +7,7 @@
 const db = @import("../lib/duckdb.zig");
 const add_numbers = @import("../functions/add_numbers.zig");
 const hello = @import("../functions/hello.zig");
+const tokenize = @import("../functions/tokenize.zig");
 
 const extension_api_version = "v1.2.0";
 
@@ -38,6 +39,11 @@ export fn zig_ext_init_c_api(info: db.ExtensionInfo, access: *db.ExtensionAccess
 
     hello.register(conn) catch {
         access.set_error.?(info, "Failed to register zig_hello function");
+        return false;
+    };
+
+    tokenize.register(conn) catch {
+        access.set_error.?(info, "Failed to register zig_tokenize function");
         return false;
     };
 

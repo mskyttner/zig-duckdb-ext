@@ -10,6 +10,7 @@ pub const duckdb = @import("lib/duckdb.zig");
 pub const functions = struct {
     pub const add_numbers = @import("functions/add_numbers.zig");
     pub const hello = @import("functions/hello.zig");
+    pub const tokenize = @import("functions/tokenize.zig");
 };
 
 // Force the compiler to include the extension entry point export in the shared library.
