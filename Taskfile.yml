@@ -36,22 +36,6 @@ tasks:
     cmds:
       - zig build test
 
-  test:integration:
-    desc: "Load extension into DuckDB and run SQL smoke tests"
-    deps: [build]
-    cmds:
-      - |
-        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
-        if [ -z "$EXT_PATH" ]; then
-          echo "ERROR: No .duckdb_extension found in zig-out/lib/"
-          exit 1
-        fi
-        echo "Loading extension from $EXT_PATH"
-        duckdb -unsigned -c "
-          LOAD '${EXT_PATH}';
-          SELECT zig_hello('world') AS result;
-        "
-
   test:e2e:
     desc: "End-to-end tests: build, load into DuckDB, run all SQL test files"
     deps: [build]
@@ -78,6 +62,45 @@ tasks:
           exit 1
         fi
         echo "=== All e2e tests passed ==="
+
+  demo:hello:
+    desc: "Demo zig_hello scalar function"
+    deps: [build]
+    cmds:
+      - |
+        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
+        duckdb -unsigned -c "
+          LOAD '${EXT_PATH}';
+          SELECT zig_hello('Zig') AS greeting;
+          SELECT zig_hello(name) AS greeting FROM (VALUES ('Alice'), ('Bob'), ('Charlie')) t(name);
+        "
+
+  demo:add-numbers:
+    desc: "Demo zig_add_numbers scalar function"
+    deps: [build]
+    cmds:
+      - |
+        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
+        duckdb -unsigned -c "
+          LOAD '${EXT_PATH}';
+          SELECT zig_add_numbers(2, 3) AS result;
+          SELECT i, zig_add_numbers(i, i * 10) AS result FROM generate_series(1, 5) t(i);
+        "
+
+  demo:tokenize:
+    desc: "Demo zig_tokenize table function"
+    deps: [build]
+    cmds:
+      - |
+        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
+        duckdb -unsigned -c "
+          LOAD '${EXT_PATH}';
+          SELECT * FROM zig_tokenize('alice,bob,charlie', ',');
+          SELECT * FROM zig_tokenize('one::two::three', '::');
+          SELECT t.token_pos, t.token, length(t.token) AS len
+            FROM zig_tokenize('the,quick,brown,fox', ',') t
+            WHERE length(t.token) > 3;
+        "
 
   audit:
     desc: "Check for compiler warnings and deprecated patterns"
