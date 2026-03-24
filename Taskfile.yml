@@ -102,6 +102,65 @@ tasks:
             WHERE length(t.token) > 3;
         "
 
+  bench:
+    desc: "Benchmark scalar/table functions over 10M rows (ADR-0002)"
+    deps: [build:release]
+    cmds:
+      - |
+        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
+        if [ -z "$EXT_PATH" ]; then
+          echo "ERROR: No .duckdb_extension found in zig-out/lib/"
+          exit 1
+        fi
+        echo "=== Benchmarking with $EXT_PATH ==="
+        echo "    (SUM forces evaluation; 3 runs each for stability)"
+
+        echo ""
+        echo "--- zig_add_numbers: 10M rows (hand-written) ---"
+        for run in 1 2 3; do
+          duckdb -unsigned -cmd ".timer on" -c "
+            LOAD '${EXT_PATH}';
+            SELECT sum(zig_add_numbers(i, i)) FROM generate_series(0, 9999999) t(i);
+          " 2>&1 | grep "Run Time"
+        done
+
+        echo ""
+        echo "--- ct_add_numbers: 10M rows (comptime) ---"
+        for run in 1 2 3; do
+          duckdb -unsigned -cmd ".timer on" -c "
+            LOAD '${EXT_PATH}';
+            SELECT sum(ct_add_numbers(i, i)) FROM generate_series(0, 9999999) t(i);
+          " 2>&1 | grep "Run Time"
+        done
+
+        echo ""
+        echo "--- zig_tokenize: 100K rows (hand-written) ---"
+        for run in 1 2 3; do
+          duckdb -unsigned -cmd ".timer on" -c "
+            LOAD '${EXT_PATH}';
+            SELECT count(*) FROM (
+              SELECT t.token FROM generate_series(0, 99999) s(i),
+              LATERAL (SELECT * FROM zig_tokenize('a,b,c,d,e', ',')) t
+            );
+          " 2>&1 | grep "Run Time"
+        done
+
+        echo ""
+        echo "--- ct_tokenize: 100K rows (comptime) ---"
+        for run in 1 2 3; do
+          duckdb -unsigned -cmd ".timer on" -c "
+            LOAD '${EXT_PATH}';
+            SELECT count(*) FROM (
+              SELECT t.token FROM generate_series(0, 99999) s(i),
+              LATERAL (SELECT * FROM ct_tokenize('a,b,c,d,e', ',')) t
+            );
+          " 2>&1 | grep "Run Time"
+        done
+
+        echo ""
+        echo "--- Extension binary size ---"
+        ls -lh "$EXT_PATH"
+
   audit:
     desc: "Check for compiler warnings and deprecated patterns"
     cmds:

@@ -60,7 +60,7 @@ fn destroyInitData(ptr: ?*anyopaque) callconv(.c) void {
 // ─── Table function callbacks ────────────────────────────────────────────────
 
 /// Bind callback — called once per query to read parameters and define output schema.
-fn tokenizeBind(info: db.BindInfo) callconv(.c) void {
+pub fn tokenizeBind(info: db.BindInfo) callconv(.c) void {
     // Define output columns
     var bigint_type = db.createLogicalType(db.c.DUCKDB_TYPE_BIGINT);
     defer db.destroyLogicalType(&bigint_type);
@@ -92,7 +92,7 @@ fn tokenizeBind(info: db.BindInfo) callconv(.c) void {
 }
 
 /// Init callback — called once per thread to set up execution state.
-fn tokenizeInit(info: db.InitInfo) callconv(.c) void {
+pub fn tokenizeInit(info: db.InitInfo) callconv(.c) void {
     const raw_ptr = db.malloc(@sizeOf(InitData)) orelse {
         db.initSetError(info, "zig_tokenize: failed to allocate init data");
         return;
@@ -107,7 +107,7 @@ fn tokenizeInit(info: db.InitInfo) callconv(.c) void {
 
 /// Execute callback — called repeatedly to fill output chunks.
 /// Emits up to VECTOR_SIZE rows per call. Sets chunk size to 0 when done.
-fn tokenizeExec(info: db.FunctionInfo, output: db.DataChunk) callconv(.c) void {
+pub fn tokenizeExec(info: db.FunctionInfo, output: db.DataChunk) callconv(.c) void {
     // SAFETY: bind/init data pointers were set in tokenizeBind/tokenizeInit.
     const bind_data: *BindData = @ptrCast(@alignCast(db.functionGetBindData(info) orelse {
         db.functionSetError(info, "zig_tokenize: missing bind data");
