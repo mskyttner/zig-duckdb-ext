@@ -3,7 +3,7 @@
 These rules apply when modifying `.zig` files in this project.
 Loaded via `rules/INDEX.yaml` trigger: `**/*.zig`.
 
-**Minimum version: Zig 0.15.2+.** The `build.zig.zon` `.minimum_zig_version`
+**Minimum version: Zig 0.16.0+.** The `build.zig.zon` `.minimum_zig_version`
 field is the single source of truth. All code MUST compile and pass
 `zig build test` with the declared version.
 

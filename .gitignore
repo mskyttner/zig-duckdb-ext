@@ -2,6 +2,10 @@
 zig-out/
 zig-cache/
 .zig-cache/
+zig-pkg/
 
 # OS
 .DS_Store
+
+# Environment
+.env*

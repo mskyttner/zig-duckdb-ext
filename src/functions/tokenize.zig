@@ -47,6 +47,7 @@ fn destroyBindData(ptr: ?*anyopaque) callconv(.c) void {
     if (ptr) |p| {
         // SAFETY: p was allocated as *BindData via db.malloc in splitBind.
         const data: *BindData = @ptrCast(@alignCast(p));
+        // SAFETY: input_raw/delim_raw are [*:0]u8 from duckdb_get_varchar; cast to ?*anyopaque for db.free.
         if (data.input_raw) |raw| db.free(@ptrCast(raw));
         if (data.delim_raw) |raw| db.free(@ptrCast(raw));
         db.free(p);

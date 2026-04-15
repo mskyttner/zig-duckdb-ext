@@ -4,9 +4,14 @@
 ///!
 ///! This is invoked as a build step by build.zig.
 const std = @import("std");
+const Io = std.Io;
+const Dir = Io.Dir;
+const File = Io.File;
 
-pub fn main() !void {
-    var args = std.process.args();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
+    var args = init.minimal.args.iterate();
     _ = args.next(); // skip program name
 
     const input_path = args.next() orelse return error.MissingArgument;
@@ -21,13 +26,20 @@ pub fn main() !void {
     const platform = detectPlatform();
 
     // Copy input to output
-    const cwd = std.fs.cwd();
-    try cwd.copyFile(input_path, cwd, output_path, .{});
+    const cwd = Dir.cwd();
+    try cwd.copyFile(input_path, cwd, output_path, io, .{});
 
-    // Open output for appending
-    const file = try cwd.openFile(output_path, .{ .mode = .write_only });
-    defer file.close();
-    try file.seekFromEnd(0);
+    // Open output for writing (append by seeking to end)
+    const file = try cwd.openFile(io, output_path, .{ .mode = .write_only });
+    defer file.close(io);
+
+    // Get file size to seek to end
+    const stat = try file.stat(io);
+    const file_size = stat.size;
+
+    var buf: [4096]u8 = undefined;
+    var writer = file.writer(io, &buf);
+    try writer.seekTo(file_size);
 
     // Write start signature (wasm-compat preamble)
     const sig = [_]u8{
@@ -52,36 +64,41 @@ pub fn main() !void {
         'e',
         0x80, 0x04, // LEB128(512)
     };
-    try file.writeAll(&sig);
+    try writer.interface.writeAll(&sig);
 
     // Write 8 x 32-byte padded fields (field8 down to field1)
-    try writePaddedField(file, ""); // FIELD8 (unused)
-    try writePaddedField(file, ""); // FIELD7 (unused)
-    try writePaddedField(file, ""); // FIELD6 (unused)
-    try writePaddedField(file, abi_type); // FIELD5 (abi_type)
-    try writePaddedField(file, ext_version); // FIELD4 (extension_version)
-    try writePaddedField(file, duckdb_version); // FIELD3 (duckdb_version)
-    try writePaddedField(file, platform); // FIELD2 (platform)
-    try writePaddedField(file, "4"); // FIELD1 (magic value)
+    try writePaddedField(&writer, ""); // FIELD8 (unused)
+    try writePaddedField(&writer, ""); // FIELD7 (unused)
+    try writePaddedField(&writer, ""); // FIELD6 (unused)
+    try writePaddedField(&writer, abi_type); // FIELD5 (abi_type)
+    try writePaddedField(&writer, ext_version); // FIELD4 (extension_version)
+    try writePaddedField(&writer, duckdb_version); // FIELD3 (duckdb_version)
+    try writePaddedField(&writer, platform); // FIELD2 (platform)
+    try writePaddedField(&writer, "4"); // FIELD1 (magic value)
 
     // Write 256 bytes for digital signature placeholder
     const zeroes = [_]u8{0} ** 256;
-    try file.writeAll(&zeroes);
+    try writer.interface.writeAll(&zeroes);
+
+    try writer.flush();
 
     // Log to stderr
-    const stderr = std.fs.File.stderr();
-    var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "Created DuckDB extension: {s}\n  Platform: {s}\n  DuckDB version: {s}\n  Extension version: {s}\n  ABI type: {s}\n", .{ output_path, platform, duckdb_version, ext_version, abi_type }) catch "metadata appended\n";
-    stderr.writeAll(msg) catch {};
+    const stderr = File.stderr();
+    var stderr_buf: [512]u8 = undefined;
+    var stderr_writer = stderr.writer(io, &stderr_buf);
+    try stderr_writer.interface.print("Created DuckDB extension: {s}\n  Platform: {s}\n  DuckDB version: {s}\n  Extension version: {s}\n  ABI type: {s}\n", .{ output_path, platform, duckdb_version, ext_version, abi_type });
+    try stderr_writer.flush();
 }
 
-fn writePaddedField(file: std.fs.File, value: []const u8) !void {
+/// Write a 32-byte zero-padded field to the output.
+fn writePaddedField(writer: *File.Writer, value: []const u8) !void {
     var field: [32]u8 = [_]u8{0} ** 32;
     const len = @min(value.len, 32);
     @memcpy(field[0..len], value[0..len]);
-    try file.writeAll(&field);
+    try writer.interface.writeAll(&field);
 }
 
+/// Detect the current platform for the DuckDB extension metadata.
 fn detectPlatform() []const u8 {
     const builtin = @import("builtin");
     const os = builtin.target.os.tag;

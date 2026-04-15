@@ -118,6 +118,7 @@ var api_initialized: bool = false;
 pub fn initApi(info: ExtensionInfo, access: *ExtensionAccess, version_string: [*:0]const u8) bool {
     const raw = access.get_api.?(info, version_string);
     if (raw == null) return false;
+    // SAFETY: get_api returns a pointer to the duckdb_ext_api_v1 vtable when the version matches.
     const res: *const ExtApiV1 = @ptrCast(@alignCast(raw));
     api_storage = res.*; // Copy by value, like the C template: `duckdb_ext_api = *res;`
     api_initialized = true;
@@ -125,6 +126,9 @@ pub fn initApi(info: ExtensionInfo, access: *ExtensionAccess, version_string: [*
 }
 
 fn getApi() *const ExtApiV1 {
+    // Invariant: initApi must be called before any API wrapper. This is guaranteed
+    // by the extension entry point (init.zig) calling initApi as its first step.
+    // A panic here indicates a programming error, not a runtime user error.
     if (!api_initialized) @panic("DuckDB Extension API not initialized — call initApi first");
     return &api_storage;
 }
@@ -141,6 +145,7 @@ pub fn open(path: ?[*:0]const u8, out_database: *Database) State {
 }
 
 pub fn openExt(path: ?[*:0]const u8, out_database: *Database, config_param: Config, out_error: *?[*:0]u8) State {
+    // SAFETY: out_error is *?[*:0]u8 which has the same layout as the C API's char** parameter.
     return getApi().duckdb_open_ext.?(path, out_database, config_param, @ptrCast(out_error));
 }
 
@@ -429,6 +434,7 @@ pub fn createInt64(val: i64) Value {
 }
 
 pub fn getVarchar(value: Value) ?[*:0]u8 {
+    // SAFETY: duckdb_get_varchar returns a null-terminated C string; cast from [*c]u8 to ?[*:0]u8.
     return @ptrCast(getApi().duckdb_get_varchar.?(value));
 }
 

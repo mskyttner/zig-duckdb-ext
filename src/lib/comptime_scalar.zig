@@ -132,25 +132,11 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
 
         /// Build a tuple type matching the parameter types of the user function.
         fn MakeArgsTuple() type {
-            const names = [_][:0]const u8{ "0", "1", "2", "3", "4", "5", "6", "7" };
-            var fields: [params.len]std.builtin.Type.StructField = undefined;
+            var types: [params.len]type = undefined;
             for (0..params.len) |i| {
-                fields[i] = .{
-                    .name = names[i],
-                    .type = params[i].type.?,
-                    .default_value_ptr = null,
-                    .is_comptime = false,
-                    .alignment = @alignOf(params[i].type.?),
-                };
+                types[i] = params[i].type.?;
             }
-            return @Type(.{
-                .@"struct" = .{
-                    .layout = .auto,
-                    .fields = &fields,
-                    .decls = &.{},
-                    .is_tuple = true,
-                },
-            });
+            return @Tuple(&types);
         }
 
         const ArgsTuple = MakeArgsTuple();
