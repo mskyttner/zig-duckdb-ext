@@ -19,7 +19,7 @@ Screen-space (Option A): `x` increases right, `y` increases down, matching `Canv
 | 180         | left                |
 | 270         | up                  |
 
-`+` rotates clockwise (heading += angle), `-` rotates counter-clockwise (heading -= angle). Heading is normalised to `[0, 360)` after every turn.
+`+` rotates **counter-clockwise** (heading -= angle), `-` rotates **clockwise** (heading += angle). This matches L-system literature convention (e.g. Prusinkiewicz & Lindenmayer "The Algorithmic Beauty of Plants") and the justinpombrio reference implementation. Heading is normalised to `[0, 360)` after every turn.
 
 ## Data Types
 
@@ -66,36 +66,36 @@ Walks `ops` in order. `forward` draws with Bresenham when `pen` is true; out-of-
 ### `LSystem.expand(self: LSystem, iterations: usize, allocator: Allocator) ![]u8`
 Applies rewrite rules `iterations` times starting from `self.start`. Characters with no matching rule are copied unchanged. Returns the expanded string; caller owns and must free.
 
-### `interpretLSystem(turtle: *Turtle, canvas: *Canvas, string: []const u8, step: f64, system: LSystem) void`
-Interprets each byte of `string`:
+### `interpretLSystem(turtle: *Turtle, canvas: *Canvas, string: []const u8, step: f64, system: LSystem, start_angle: f64) void`
+Sets `turtle.heading_deg = start_angle` before walking, then interprets each byte of `string`:
 
 | Byte | Action |
 |------|--------|
 | `f` or `F` | `turtle.forward(canvas, step)` |
-| `+` | turn right by `system.angle × 360°` |
-| `-` | turn left by `system.angle × 360°` |
+| `+` | turn **left** (CCW) by `system.angle × 360°` |
+| `-` | turn **right** (CW) by `system.angle × 360°` |
 | other letter | forward if `system.implicit_f`, else skip |
 | anything else | skip |
 
-Respects the turtle's current pen state — set `turtle.pen = true` before calling.
+`start_angle` is in degrees (screen-space). Common values: `0.0` = right, `270.0` = up (matches the reference implementation's `-0.25` turns default). Respects the turtle's current pen state — set `turtle.pen = true` before calling.
 
 ## L-System Character Convention
 
 ```
 f / F   forward one step
-+       turn right  (clockwise on screen)
--       turn left   (counter-clockwise)
++       turn left   (counter-clockwise, heading decreases)
+-       turn right  (clockwise, heading increases)
 A–Z     variables: rewritten by rules, drawn if implicit_f
 ```
 
-Example — L-shape (`-f+ff`, pen down, starting right, angle 0.25):
-1. `-` → turn left 90° → heading 270° (up)
-2. `f` → forward 1 (up)
-3. `+` → turn right 90° → heading 0° (right)
+Example — L-shape (`-f+ff`, pen down, start_angle=0°, angle 0.25):
+1. `-` → turn right 90° → heading 90° (down)
+2. `f` → forward 1 (down)
+3. `+` → turn left 90° → heading 0° (right)
 4. `f` → forward 1 (right)
 5. `f` → forward 1 (right)
 
-Result: vertical stroke up, then two cells right — an L.
+Result: vertical stroke down, then two cells right — an L.
 
 ## Hilbert Curve Example
 
@@ -113,7 +113,8 @@ const expanded = try hilbert.expand(5, allocator);
 defer allocator.free(expanded);
 var t = Turtle.init(1, 1);
 t.pen = true;
-interpretLSystem(&t, &canvas, expanded, 1.0, hilbert);
+// start_angle 270° = pointing up, matching reference implementation default
+interpretLSystem(&t, &canvas, expanded, 1.0, hilbert, 270.0);
 ```
 
 ## File Structure
@@ -141,13 +142,14 @@ src/lib/
 | `pen_down` / `pen_up` ops | pen field toggled |
 | forward pen-up | canvas unchanged |
 | forward pen-down | at least one non-empty cell |
-| `turn_right` | heading += angle |
-| `turn_left` | heading -= angle (wrapped) |
+| `turn_right` | heading += angle (CW) |
+| `turn_left` | heading -= angle (CCW, wrapped) |
 | heading wrap | 270 + 180 = 90 |
+| `interpretLSystem` `start_angle` | turtle heading set before walk |
 | colour op | all drawn cells have new colour |
 | rectangle via ArrayList | exact spec example; drawn >= 15 cells |
 | `LSystem.expand` 1 iter | A → "+Bf-AfA-fB+" |
 | `LSystem.expand` 2 iter | A replaced again inside result |
 | `interpretLSystem` forward | cells drawn |
-| `interpretLSystem` `+`/`-` | heading changes correctly |
+| `interpretLSystem` `+` turns left, `-` turns right | heading changes correctly per L-system convention |
 | Hilbert smoke | 5 iterations, no panic, canvas non-empty |
