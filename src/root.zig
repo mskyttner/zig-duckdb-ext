@@ -13,12 +13,15 @@ pub const functions = struct {
     pub const tokenize = @import("functions/tokenize.zig");
     pub const ct_add_numbers = @import("functions/ct_add_numbers.zig");
     pub const ct_tokenize = @import("functions/ct_tokenize.zig");
+    pub const tp_bar = @import("functions/tp_bar.zig");
+    pub const tp_line = @import("functions/tp_line.zig");
 };
 
 /// Internal libraries.
 pub const lib = struct {
     pub const comptime_scalar = @import("lib/comptime_scalar.zig");
     pub const comptime_table = @import("lib/comptime_table.zig");
+    pub const asciigraph = @import("lib/asciigraph/asciigraph.zig");
 };
 
 // Force the compiler to include the extension entry point export in the shared library.

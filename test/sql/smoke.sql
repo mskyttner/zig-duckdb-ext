@@ -143,3 +143,52 @@ FROM ct_tokenize('the,quick,brown,fox', ',') ct
 JOIN zig_tokenize('the,quick,brown,fox', ',') hw ON ct.token_pos = hw.token_pos
 GROUP BY match;
 -- Expected: single row with match = true
+
+-- ── tp_bar ───────────────────────────────────────────────────────────────────
+
+-- Named params with defaults
+SELECT tp_bar(0.7, "on" := '█', "off" := '░', width := 15) AS bar;
+-- Expected: ███████████░░░░
+
+-- Positional via impl (tests the scalar directly)
+SELECT tp_bar_impl(0.7, '█', '░', 15) AS bar;
+-- Expected: ███████████░░░░
+
+-- Boundary: 0.0 and 1.0
+SELECT tp_bar(0.0, "on" := 'X', "off" := '.', width := 5) AS bar;
+-- Expected: .....
+SELECT tp_bar(1.0, "on" := 'X', "off" := '.', width := 5) AS bar;
+-- Expected: XXXXX
+
+-- Default parameters
+SELECT tp_bar(0.5) AS bar;
+-- Expected: ████████░░░░░░░ (8 filled, 7 empty of width 15)
+
+-- NULL propagation
+SELECT tp_bar(NULL, "on" := 'X', "off" := '.', width := 5) AS bar;
+-- Expected: NULL
+
+-- Vectorized: multiple rows
+SELECT i * 0.1 AS pct, tp_bar(i * 0.1, "on" := '#', "off" := '-', width := 10) AS bar
+FROM generate_series(0, 10) t(i);
+
+-- ── tp_line ──────────────────────────────────────────────────────────────────
+
+-- Basic line graph from list literal
+SELECT tp_line([1.0, 2.0, 4.0, 3.0, 5.0, 2.0, 3.0]) AS graph;
+
+-- Default height via macro
+SELECT tp_line([0.0, 1.0, 0.0, -1.0, 0.0]) AS graph;
+
+-- Named height parameter
+SELECT tp_line([1.0, 3.0, 2.0, 4.0, 1.0], height := 5.0) AS graph;
+
+-- NULL propagation
+SELECT tp_line(NULL) AS graph;
+
+-- Empty list returns empty string
+SELECT tp_line([]::DOUBLE[]) AS graph;
+
+-- From aggregated column
+SELECT tp_line(list(v::DOUBLE) ORDER BY i) AS graph
+FROM (VALUES (1, 1.0), (2, 3.0), (3, 2.0), (4, 4.0), (5, 1.0)) t(i, v);

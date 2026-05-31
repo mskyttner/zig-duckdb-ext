@@ -227,6 +227,14 @@ pub fn vectorEnsureValidityWritable(vector: Vector) void {
     getApi().duckdb_vector_ensure_validity_writable.?(vector);
 }
 
+pub fn listVectorGetChild(vector: Vector) Vector {
+    return getApi().duckdb_list_vector_get_child.?(vector);
+}
+
+pub fn listVectorGetSize(vector: Vector) idx_t {
+    return getApi().duckdb_list_vector_get_size.?(vector);
+}
+
 pub fn vectorAssignStringElement(vector: Vector, index: idx_t, str: [*:0]const u8) void {
     getApi().duckdb_vector_assign_string_element.?(vector, index, str);
 }
