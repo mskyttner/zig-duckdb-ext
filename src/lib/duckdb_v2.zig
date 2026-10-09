@@ -49,6 +49,7 @@ pub const ParameterKind = c.DUCKDB_V2_FUNCTION_PARAMETER_KIND;
 pub const LogicalTypeId = c.DUCKDB_V2_LOGICAL_TYPE_ID;
 pub const ExtensionInput = c.duckdb_v2_extension_input;
 pub const VectorView = c.duckdb_v2_vector_view;
+pub const ListEntry = c.duckdb_v2_list_entry;
 pub const ScalarFunctionExecCallback = c.duckdb_v2_scalar_function_exec_callback_fn;
 pub const idx_t = c.idx_t;
 
@@ -498,6 +499,46 @@ pub fn contextCreateTypeFromId(
     return getApi().duckdb_v2_context_create_type_from_id.?(ctx, type_id, null, null, 0, out_type, err);
 }
 
+/// Wrap a logical type as a TYPE-kind Value, the only way v2 passes a type
+/// as a parameter to a parameterized type constructor (LIST, ARRAY, MAP,
+/// STRUCT, ...). The type is borrowed and copied in, so the input can be
+/// destroyed independently once this returns.
+pub fn valueCreateTypeWithContext(
+    ctx: ContextHandle,
+    in_type: LogicalTypeHandle,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_type_with_context.?(ctx, in_type, out_value, err);
+}
+
+/// Create LIST(child_type). v2's `context_create_type_from_id` takes LIST's
+/// element type as a single positional TYPE-kind Value parameter (per its
+/// own doc comment: "list(T)" resolves through the same parameter path as
+/// DECIMAL/STRUCT/MAP/etc) — this hides that Value-wrapping step behind the
+/// same plain (ctx, child_type) shape callers already use for primitives.
+pub fn contextCreateListType(
+    ctx: ContextHandle,
+    child_type: LogicalTypeHandle,
+    out_type: *LogicalTypeHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    var child_type_value: ValueHandle = undefined;
+    if (valueCreateTypeWithContext(ctx, child_type, &child_type_value, err) != c.DUCKDB_V2_ERROR_NONE) {
+        return c.DUCKDB_V2_ERROR_API;
+    }
+    defer _ = valueDestroy(&child_type_value);
+    return getApi().duckdb_v2_context_create_type_from_id.?(
+        ctx,
+        c.DUCKDB_V2_LOGICAL_TYPE_ID_LIST,
+        null,
+        &child_type_value,
+        1,
+        out_type,
+        err,
+    );
+}
+
 pub fn logicalTypeDestroy(logical_type: *LogicalTypeHandle) ErrorCode {
     return getApi().duckdb_v2_logical_type_destroy.?(logical_type);
 }
@@ -545,6 +586,19 @@ pub fn scalarFunctionExecGetRowCount(info: ScalarFunctionExecInfoHandle, out_cou
 /// unconditionally, rather than special-case which representations are safe.
 pub fn vectorFlatten(vector: VectorHandle, err: *ErrorInfoHandle) ErrorCode {
     return getApi().duckdb_v2_vector_flatten.?(vector, err);
+}
+
+/// Borrow a nested vector's child by index: for LIST/ARRAY, index 0 is the
+/// flat element vector shared across every row (addressed per-row via the
+/// parent LIST vector's own `ListEntry{offset, length}` records, read from
+/// its `VectorView.data` same as any other vector). See
+/// `duckdb_v2_vector_get_child`'s own doc comment for STRUCT/MAP/UNION.
+pub fn vectorGetChild(vector: VectorHandle, index: idx_t, out_child: *VectorHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_vector_get_child.?(vector, index, out_child, err);
+}
+
+pub fn vectorGetChildCount(vector: VectorHandle, out_count: *idx_t, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_vector_get_child_count.?(vector, out_count, err);
 }
 
 pub fn vectorGetView(vector: VectorHandle, out_view: *VectorView, err: *ErrorInfoHandle) ErrorCode {
@@ -630,6 +684,15 @@ pub fn valueCreateBigintWithContext(
     err: *ErrorInfoHandle,
 ) ErrorCode {
     return getApi().duckdb_v2_value_create_bigint_with_context.?(ctx, in_value, out_value, err);
+}
+
+pub fn valueCreateDoubleWithContext(
+    ctx: ContextHandle,
+    in_value: f64,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_double_with_context.?(ctx, in_value, out_value, err);
 }
 
 pub fn valueDestroy(value: *ValueHandle) ErrorCode {
