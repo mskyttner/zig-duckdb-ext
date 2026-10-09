@@ -66,11 +66,32 @@ const AggSumCt = comptime_aggregate_v2.Function("zig_v2_agg_sum_ct", struct {
     }
 });
 
+const WeightedAvgCt = comptime_aggregate_v2.Function("zig_v2_weighted_avg_ct", struct {
+    weighted_sum: f64,
+    weight_sum: f64,
+    pub fn init() @This() {
+        return .{ .weighted_sum = 0, .weight_sum = 0 };
+    }
+    pub fn update(self: *@This(), x: f64, weight: f64) void {
+        self.weighted_sum += x * weight;
+        self.weight_sum += weight;
+    }
+    pub fn combine(self: *@This(), other: @This()) void {
+        self.weighted_sum += other.weighted_sum;
+        self.weight_sum += other.weight_sum;
+    }
+    pub fn finalize(self: @This()) ?f64 {
+        if (self.weight_sum == 0) return null;
+        return self.weighted_sum / self.weight_sum;
+    }
+});
+
 fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
     Range3Ct.register(input) catch {};
     AggSumCt.register(input) catch {};
+    WeightedAvgCt.register(input) catch {};
 }
 
 fn registerDouble(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {

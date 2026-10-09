@@ -12,6 +12,10 @@
 ///!   - `pub fn combine(self: *State, other: State) void` — merge a parallel partial state
 ///!   - `pub fn finalize(self: State) ReturnType` — produce the result
 ///!
+///! `finalize` may instead return `?ReturnType`: returning `null` produces
+///! SQL NULL for that group (e.g. a weighted average whose total weight is
+///! zero), rather than forcing every group through a fallback numeric value.
+///!
 ///! `update`'s parameters (after `self`) and `finalize`'s return type are
 ///! introspected at comptime to build the function signature, the same way
 ///! `comptime_scalar_v2.Function` reads a per-row function's shape. No size,
@@ -50,7 +54,13 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
     // per-row arguments to expose as the SQL function's parameters.
     const arg_types = update_info.param_types[1..];
     const finalize_info = @typeInfo(@TypeOf(State.finalize)).@"fn";
-    const ReturnType = finalize_info.return_type.?;
+    const RawReturnType = finalize_info.return_type.?;
+    // `finalize` may return `?T` instead of `T` to produce SQL NULL for a
+    // group it can't meaningfully reduce (e.g. a weighted average whose
+    // total weight is zero) — mirrors update's per-row "skip on NULL arg"
+    // semantics at the finalize stage instead.
+    const finalize_is_optional = @typeInfo(RawReturnType) == .optional;
+    const ReturnType = if (finalize_is_optional) @typeInfo(RawReturnType).optional.child else RawReturnType;
 
     inline for (arg_types) |t| _ = duckdbV2TypeId(t.?);
     _ = duckdbV2TypeId(ReturnType);
@@ -201,7 +211,15 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             var i: db.idx_t = 0;
             while (i < count) : (i += 1) {
                 const state: *State = @ptrCast(@alignCast(states[i].?));
-                out[offset + i] = state.finalize();
+                if (finalize_is_optional) {
+                    if (state.finalize()) |value| {
+                        out[offset + i] = value;
+                    } else {
+                        if (db.vectorSetNull(result_vec, offset + i, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    }
+                } else {
+                    out[offset + i] = state.finalize();
+                }
             }
         }
 
@@ -283,4 +301,29 @@ test "Function supports multiple arguments" {
         }
     });
     _ = &WeightedSum.register;
+}
+
+test "Function supports an optional finalize return (NULL on empty/zero-weight groups)" {
+    const WeightedAvg = Function("v2_test_agg_weighted_avg", struct {
+        weighted_sum: f64,
+        weight_sum: f64,
+        pub fn init() @This() {
+            return .{ .weighted_sum = 0, .weight_sum = 0 };
+        }
+        pub fn update(self: *@This(), x: f64, weight: f64) void {
+            self.weighted_sum += x * weight;
+            self.weight_sum += weight;
+        }
+        pub fn combine(self: *@This(), other: @This()) void {
+            self.weighted_sum += other.weighted_sum;
+            self.weight_sum += other.weight_sum;
+        }
+        pub fn finalize(self: @This()) ?f64 {
+            if (self.weight_sum == 0) return null;
+            return self.weighted_sum / self.weight_sum;
+        }
+    });
+    _ = &WeightedAvg.register;
+    const finalize_cb: db.c.duckdb_v2_aggregate_function_finalize_callback_fn = WeightedAvg.finalizeCallback;
+    try std.testing.expect(finalize_cb != null);
 }
