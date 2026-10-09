@@ -8,13 +8,15 @@
 ///! a growing part of the real extension.
 ///!
 ///! Registers only the functions already ported off v1 — see each
-///! function's own module for why the others (tokenize, tp_bar, tp_line,
-///! tp_treemap, tp_snakemap) aren't here yet (VARCHAR support landed this
-///! session; LIST support hasn't, and blocks three of them).
+///! function's own module for why the remaining ones (tokenize,
+///! ct_tokenize, tp_line, tp_treemap, tp_snakemap) aren't here yet
+///! (tp_line/tp_treemap/tp_snakemap need LIST support, not built yet;
+///! tokenize/ct_tokenize are table functions, not yet attempted).
 const db = @import("duckdb_v2");
 const add_numbers = @import("../functions/add_numbers_v2.zig");
 const ct_add_numbers = @import("../functions/ct_add_numbers_v2.zig");
 const hello = @import("../functions/hello_v2.zig");
+const tp_bar = @import("../functions/tp_bar_v2.zig");
 
 export fn zig_ext_v2_init_c_api_v2(input: *const db.ExtensionInput) callconv(.c) void {
     if (!db.initApi(input, "v2.0.0")) return;
@@ -22,4 +24,5 @@ export fn zig_ext_v2_init_c_api_v2(input: *const db.ExtensionInput) callconv(.c)
     add_numbers.register(input) catch return;
     ct_add_numbers.register(input) catch return;
     hello.register(input) catch return;
+    tp_bar.register(input) catch return;
 }

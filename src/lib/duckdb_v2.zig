@@ -586,6 +586,15 @@ pub fn valueCreateVarcharWithContext(
     return getApi().duckdb_v2_value_create_varchar_with_context.?(ctx, &text_str, out_value, err);
 }
 
+pub fn valueCreateBigintWithContext(
+    ctx: ContextHandle,
+    in_value: i64,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_bigint_with_context.?(ctx, in_value, out_value, err);
+}
+
 pub fn valueDestroy(value: *ValueHandle) ErrorCode {
     return getApi().duckdb_v2_value_destroy.?(value);
 }
