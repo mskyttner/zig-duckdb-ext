@@ -4,11 +4,14 @@
 ///! target — see the `v2-poc` build step).
 ///!
 ///! Registers one scalar function, `zig_v2_double(x BIGINT) -> BIGINT`, one
-///! table function, `zig_v2_range3()`, and one aggregate function,
+///! table function, `zig_v2_range3()`, one aggregate function,
 ///! `zig_v2_agg_sum(x BIGINT) -> BIGINT`, using the hand-written
 ///! exec/bind/size/init/update/combine/finalize callbacks already
-///! type-checked under `v2-check`.
+///! type-checked under `v2-check` — plus `zig_v2_triple`/`zig_v2_add`,
+///! registered through `comptime_scalar_v2.Function` instead of by hand, to
+///! prove the generated code works identically to the worked examples.
 const db2 = @import("duckdb_v2");
+const comptime_scalar_v2 = @import("comptime_scalar_v2");
 
 export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callconv(.c) void {
     if (!db2.initApi(input, "v2.0.0")) return;
@@ -18,6 +21,24 @@ export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callcon
     registerDouble(input, &err);
     registerRange3(input, &err);
     registerAggSum(input, &err);
+    registerComptimeExamples(input);
+}
+
+const Triple = comptime_scalar_v2.Function("zig_v2_triple", struct {
+    fn eval(a: i64) i64 {
+        return a * 3;
+    }
+}.eval);
+
+const Add = comptime_scalar_v2.Function("zig_v2_add", struct {
+    fn eval(a: i64, b: i64) i64 {
+        return a + b;
+    }
+}.eval);
+
+fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
+    Triple.register(input) catch {};
+    Add.register(input) catch {};
 }
 
 fn registerDouble(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
