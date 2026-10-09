@@ -117,6 +117,42 @@ pub fn build(b: *std.Build) void {
     v2_poc_append.addArg("v0.0.0-poc");
     v2_poc_append.addArg("C_STRUCT");
     const v2_poc_output = v2_poc_append.addOutputFileArg("zig_ext_v2_poc.duckdb_extension");
+
+    // ── Real, parallel v2 extension (zig_ext_v2) — migrated-off-v1
+    // functions only (see src/ext/init_v2.zig); v1's real `zig_ext` target
+    // below is completely untouched throughout this migration.
+    const ext_v2_lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "zig_ext_v2",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root_v2.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    ext_v2_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
+    ext_v2_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
+    ext_v2_lib.root_module.link_libc = true;
+
+    const metadata_tool_ext_v2 = b.addExecutable(.{
+        .name = "append_metadata_ext_v2",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/append_metadata_main.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const ext_v2_append = b.addRunArtifact(metadata_tool_ext_v2);
+    ext_v2_append.step.dependOn(&ext_v2_lib.step);
+    ext_v2_append.addArtifactArg(ext_v2_lib);
+    ext_v2_append.addArg("zig_ext_v2");
+    ext_v2_append.addArg("v2.0.0");
+    ext_v2_append.addArg("v0.1.0");
+    ext_v2_append.addArg("C_STRUCT");
+    const ext_v2_output = ext_v2_append.addOutputFileArg("zig_ext_v2.duckdb_extension");
+    const install_ext_v2 = b.addInstallFile(ext_v2_output, "lib/zig_ext_v2.duckdb_extension");
+
+    const ext_v2_step = b.step("ext-v2", "Build the real, parallel v2 .duckdb_extension file");
+    ext_v2_step.dependOn(&install_ext_v2.step);
     const install_v2_poc = b.addInstallFile(v2_poc_output, "lib/zig_ext_v2_poc.duckdb_extension");
 
     const v2_poc_step = b.step("v2-poc", "Build the v2 proof-of-concept .duckdb_extension file");
