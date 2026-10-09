@@ -547,6 +547,59 @@ pub fn str(s: []const u8) Str {
     return .{ .ptr = s.ptr, .len = s.len };
 }
 
+// --- VARCHAR / Bytes (vector storage for VARCHAR, BLOB, BIT, BIGNUM) ---
+//
+// `duckdb_v2_str` (above) is the plain {ptr, len} shape used for API
+// in/out parameters (names, error text, ...). Vector STORAGE for
+// VARCHAR/BLOB/BIT/BIGNUM instead uses the 16-byte `duckdb_v2_bytes`
+// union — bytes inlined directly when length <= 12, else a pointer +
+// 4-byte prefix — the same small-string-optimization layout v1's
+// `duckdb_string_t` used, just with the fields renamed.
+
+pub const BytesValue = c.duckdb_v2_bytes;
+
+/// Decode a vector-stored VARCHAR/BLOB element to a Zig slice without
+/// copying. The returned slice points into DuckDB-owned memory (inline
+/// storage or the vector's arena); valid only for the duration of the
+/// current exec/update callback, same lifetime rule as v1's `stringSlice`.
+pub fn bytesSlice(b: *const BytesValue) []const u8 {
+    const len = b.value.inlined.length;
+    // SAFETY: duckdb_v2_bytes is a transparent union (per its own doc
+    // comment): when length <= 12 the bytes are inlined in
+    // `value.inlined.inlined`; otherwise `value.pointer.ptr` is non-null.
+    const ptr: [*]const u8 = if (len <= 12)
+        @ptrCast(&b.value.inlined.inlined)
+    else
+        @ptrCast(b.value.pointer.ptr);
+    return ptr[0..len];
+}
+
+/// Box a Zig string as a VARCHAR `Value`, for use with `vectorSetValue`.
+/// The caller must `valueDestroy` the result once written.
+pub fn valueCreateVarcharWithContext(
+    ctx: ContextHandle,
+    text: []const u8,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    const text_str = str(text);
+    return getApi().duckdb_v2_value_create_varchar_with_context.?(ctx, &text_str, out_value, err);
+}
+
+pub fn valueDestroy(value: *ValueHandle) ErrorCode {
+    return getApi().duckdb_v2_value_destroy.?(value);
+}
+
+/// Write a boxed `Value` into a vector at `row`, copying it in and casting
+/// to the vector's type. Simpler (if slower, due to the per-row Value
+/// allocation) than hand-rolling the inline/arena encoding `BytesValue`
+/// requires for direct writes — the right tradeoff for a first VARCHAR
+/// implementation; a direct-arena-write path can replace this later if
+/// profiling calls for it.
+pub fn vectorSetValue(vector: VectorHandle, row: idx_t, value: ValueHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_vector_set_value.?(vector, row, value, err);
+}
+
 // ─── Worked example ──────────────────────────────────────────────────────
 //
 // A v2 port of the v1 `hello.zig`-style trivial scalar function, written by
@@ -610,6 +663,61 @@ const example = struct {
 /// registration test — kept out of the main wrapper namespace above since
 /// it's demo code, not a real binding.
 pub const exampleDoubleExecForPoc = example.doubleExec;
+
+// ─── Worked example: VARCHAR scalar function ─────────────────────────────
+//
+// A v2 port of the v1 `hello.zig` example: `zig_v2_hello(name VARCHAR) ->
+// VARCHAR`, proving the first-cut VARCHAR read/write path by hand before
+// generalizing it into comptime_scalar_v2. Reads via `bytesSlice` directly
+// off the flattened arg vector (zero-copy, same as any numeric read);
+// writes via `valueCreateVarcharWithContext` + `vectorSetValue` (boxed,
+// simpler than hand-rolling the inline/arena encoding — see those
+// functions' own doc comments for the tradeoff).
+const varchar_example = struct {
+    fn helloExec(info: ScalarFunctionExecInfoHandle, context: ContextHandle, err: [*c]ErrorInfoHandle) callconv(.c) void {
+        var row_count: idx_t = 0;
+        if (scalarFunctionExecGetRowCount(info, &row_count, err) != c.DUCKDB_V2_ERROR_NONE) return;
+
+        var arg_vec: VectorHandle = undefined;
+        if (scalarFunctionExecGetArg(info, 0, &arg_vec, err) != c.DUCKDB_V2_ERROR_NONE) return;
+        if (vectorFlatten(arg_vec, err) != c.DUCKDB_V2_ERROR_NONE) return;
+        var view: VectorView = undefined;
+        if (vectorGetView(arg_vec, &view, err) != c.DUCKDB_V2_ERROR_NONE) return;
+
+        var result_vec: VectorHandle = undefined;
+        if (scalarFunctionExecGetResult(info, &result_vec, err) != c.DUCKDB_V2_ERROR_NONE) return;
+        if (vectorSetSize(result_vec, row_count, err) != c.DUCKDB_V2_ERROR_NONE) return;
+
+        // SAFETY: the signature registered this function as (VARCHAR) -> VARCHAR.
+        const in: [*]const BytesValue = @ptrCast(@alignCast(view.data));
+
+        var row: idx_t = 0;
+        while (row < row_count) : (row += 1) {
+            if (view.validity != null and !example.isValid(view.validity.?, row)) {
+                if (vectorSetNull(result_vec, row, err) != c.DUCKDB_V2_ERROR_NONE) return;
+                continue;
+            }
+            const name = bytesSlice(&in[row]);
+            var buf: [1024]u8 = undefined;
+            const prefix = "Hello, ";
+            const suffix = "!";
+            const total = prefix.len + name.len + suffix.len;
+            const greeting = if (total <= buf.len) blk: {
+                @memcpy(buf[0..prefix.len], prefix);
+                @memcpy(buf[prefix.len .. prefix.len + name.len], name);
+                @memcpy(buf[prefix.len + name.len .. total], suffix);
+                break :blk buf[0..total];
+            } else "Hello, world!";
+
+            var value: ValueHandle = undefined;
+            if (valueCreateVarcharWithContext(context, greeting, &value, err) != c.DUCKDB_V2_ERROR_NONE) return;
+            defer _ = valueDestroy(&value);
+            if (vectorSetValue(result_vec, row, value, err) != c.DUCKDB_V2_ERROR_NONE) return;
+        }
+    }
+};
+
+pub const exampleHelloExecForPoc = varchar_example.helloExec;
 
 // ─── Worked example: table function ──────────────────────────────────────
 //
@@ -790,6 +898,11 @@ test "example.doubleExec matches the exec callback signature" {
     // body (analysis is lazy per-function) — this is the only thing that
     // actually type-checks the worked example above, since nothing calls it.
     const cb: ScalarFunctionExecCallback = example.doubleExec;
+    try std.testing.expect(cb != null);
+}
+
+test "varchar_example.helloExec matches the exec callback signature" {
+    const cb: ScalarFunctionExecCallback = varchar_example.helloExec;
     try std.testing.expect(cb != null);
 }
 

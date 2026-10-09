@@ -27,7 +27,39 @@ export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callcon
     registerDouble(input, &err);
     registerRange3(input, &err);
     registerAggSum(input, &err);
+    registerHello(input, &err);
     registerComptimeExamples(input);
+}
+
+fn registerHello(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
+    var function: db2.ScalarFunctionHandle = undefined;
+    if (db2.scalarFunctionCreateWithExtension(input.extension, &function, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.scalarFunctionDestroy(&function);
+
+    const fn_name = db2.str("zig_v2_hello");
+    if (db2.scalarFunctionSetName(function, &fn_name, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var varchar_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.logicalTypeDestroy(&varchar_type);
+
+    var sig: db2.FunctionSignatureHandle = undefined;
+    if (db2.scalarFunctionGetSignature(function, &sig, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    const param_name = db2.str("name");
+    if (db2.functionSignatureAddParameter(
+        sig,
+        &param_name,
+        varchar_type,
+        null,
+        db2.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
+        err,
+    ) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.functionSignatureSetReturnType(sig, varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    if (db2.scalarFunctionSetExecCallback(function, exampleHelloExec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    _ = db2.scalarFunctionRegister(function, err);
 }
 
 const Triple = comptime_scalar_v2.Function("zig_v2_triple", struct {
@@ -216,6 +248,7 @@ fn registerAggSum(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) v
 // can wire them up without making them a permanent public API of the
 // bindings module.
 const exampleDoubleExec = db2.exampleDoubleExecForPoc;
+const exampleHelloExec = db2.exampleHelloExecForPoc;
 const exampleTableBind = db2.exampleTableBindForPoc;
 const exampleTableInitGlobal = db2.exampleTableInitGlobalForPoc;
 const exampleTableExec = db2.exampleTableExecForPoc;
