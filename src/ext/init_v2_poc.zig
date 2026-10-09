@@ -86,10 +86,46 @@ const WeightedAvgCt = comptime_aggregate_v2.Function("zig_v2_weighted_avg_ct", s
     }
 });
 
+/// Returns the id of the row with the largest value in each group — e.g.
+/// "which leaf dominates this subtree". Unlike sum/weighted_avg, `combine`
+/// isn't additive: it picks whichever side's best value wins, the first
+/// non-additive-combine test of the framework. `has_value` distinguishes a
+/// group that genuinely never saw a row from one whose best value happens
+/// to be the type's zero value, so `finalize` can return proper SQL NULL
+/// for an empty group instead of a bogus id.
+const ArgMaxCt = comptime_aggregate_v2.Function("zig_v2_arg_max_ct", struct {
+    best_id: i64,
+    best_value: f64,
+    has_value: bool,
+    pub fn init() @This() {
+        return .{ .best_id = 0, .best_value = 0, .has_value = false };
+    }
+    pub fn update(self: *@This(), id: i64, value: f64) void {
+        if (!self.has_value or value > self.best_value) {
+            self.best_id = id;
+            self.best_value = value;
+            self.has_value = true;
+        }
+    }
+    pub fn combine(self: *@This(), other: @This()) void {
+        if (!other.has_value) return;
+        if (!self.has_value or other.best_value > self.best_value) {
+            self.best_id = other.best_id;
+            self.best_value = other.best_value;
+            self.has_value = true;
+        }
+    }
+    pub fn finalize(self: @This()) ?i64 {
+        if (!self.has_value) return null;
+        return self.best_id;
+    }
+});
+
 fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
     Range3Ct.register(input) catch {};
+    ArgMaxCt.register(input) catch {};
     AggSumCt.register(input) catch {};
     WeightedAvgCt.register(input) catch {};
 }
