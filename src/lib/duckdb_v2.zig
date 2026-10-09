@@ -695,6 +695,15 @@ pub fn valueCreateDoubleWithContext(
     return getApi().duckdb_v2_value_create_double_with_context.?(ctx, in_value, out_value, err);
 }
 
+pub fn valueCreateBoolWithContext(
+    ctx: ContextHandle,
+    in_value: bool,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_bool_with_context.?(ctx, in_value, out_value, err);
+}
+
 pub fn valueDestroy(value: *ValueHandle) ErrorCode {
     return getApi().duckdb_v2_value_destroy.?(value);
 }
