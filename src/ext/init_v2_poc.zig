@@ -8,14 +8,16 @@
 ///! `zig_v2_agg_sum(x BIGINT) -> BIGINT`, using the hand-written
 ///! exec/bind/size/init/update/combine/finalize callbacks already
 ///! type-checked under `v2-check` — plus `zig_v2_triple`/`zig_v2_add`,
-///! registered through `comptime_scalar_v2.Function`, and `zig_v2_range3_ct`,
+///! registered through `comptime_scalar_v2.Function`, `zig_v2_range3_ct`,
 ///! registered through `comptime_table_v2.Function` (reusing the same
 ///! bind/init_global/exec callbacks as `zig_v2_range3`, to isolate what's
 ///! being tested to the framework's registration wiring, not the callback
-///! logic — already proven separately by the hand-written version).
+///! logic — already proven separately by the hand-written version), and
+///! `zig_v2_agg_sum_ct`, registered through `comptime_aggregate_v2.Function`.
 const db2 = @import("duckdb_v2");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const comptime_table_v2 = @import("comptime_table_v2");
+const comptime_aggregate_v2 = @import("comptime_aggregate_v2");
 
 export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callconv(.c) void {
     if (!db2.initApi(input, "v2.0.0")) return;
@@ -48,10 +50,27 @@ const Range3Ct = comptime_table_v2.Function(struct {
     pub const exec = exampleTableExec;
 });
 
+const AggSumCt = comptime_aggregate_v2.Function("zig_v2_agg_sum_ct", struct {
+    sum: i64,
+    pub fn init() @This() {
+        return .{ .sum = 0 };
+    }
+    pub fn update(self: *@This(), x: i64) void {
+        self.sum += x;
+    }
+    pub fn combine(self: *@This(), other: @This()) void {
+        self.sum += other.sum;
+    }
+    pub fn finalize(self: @This()) i64 {
+        return self.sum;
+    }
+});
+
 fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
     Range3Ct.register(input) catch {};
+    AggSumCt.register(input) catch {};
 }
 
 fn registerDouble(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
