@@ -4,8 +4,20 @@
 ///! generating the same vectorized-callback-from-a-per-row-function
 ///! boilerplate, adapted to v2's error-returning, out-param calling
 ///! convention and extension-based (not connection-based) registration.
-///! Supports the same numeric types as the v1 framework: i8, i16, i32, i64,
-///! f32, f64, bool.
+///! Supports the same numeric types as the v1 framework (i8, i16, i32, i64,
+///! f32, f64, bool), plus `[]const u8` for VARCHAR parameters and/or return
+///! type — see duckdb_v2.zig's `bytesSlice`/`valueCreateVarcharWithContext`
+///! doc comments for how vector-stored strings differ from numeric types.
+///!
+///! CAUTION: a `[]const u8`-returning `implFn` must return a slice that
+///! outlives the call — one borrowed from its own arguments (a substring,
+///! or an argument unchanged), a string literal, or heap/static memory.
+///! It must NOT return a slice into its own local stack buffer: the result
+///! is boxed into a Value immediately after `implFn` returns, by which
+///! point a local buffer's storage is already gone. (The hand-written
+///! `zig_v2_hello` example in duckdb_v2.zig sidesteps this by building and
+///! consuming its buffer inline, before returning — not available to a
+///! plain per-row function passed through this framework.)
 ///!
 ///! Usage:
 ///!   const MyFn = comptime_scalar_v2.Function("my_double", struct {
@@ -24,6 +36,7 @@ fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
         f32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT,
         f64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE,
         bool => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN,
+        []const u8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR,
         else => @compileError("unsupported type for DuckDB v2 mapping: " ++ @typeName(T)),
     };
 }
@@ -104,9 +117,10 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
             }
         }
 
+        const return_is_varchar = ReturnType == []const u8;
+
         /// Vectorized exec callback invoked by DuckDB for each batch of rows.
         fn execute(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-            _ = context;
             var row_count: db.idx_t = 0;
             if (db.scalarFunctionExecGetRowCount(info, &row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
 
@@ -125,15 +139,34 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
             if (db.scalarFunctionExecGetResult(info, &result_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
             if (db.vectorSetSize(result_vec, row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
 
-            var out_data: ?*anyopaque = null;
-            if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            // SAFETY: types were validated at comptime against the registered signature.
-            const result: [*]ReturnType = @ptrCast(@alignCast(out_data));
-
             var has_nulls = false;
             inline for (0..param_types.len) |i| {
                 if (views[i].validity != null) has_nulls = true;
             }
+
+            // VARCHAR results can't be written through a flat typed buffer
+            // (variable width) — each row boxes through a Value instead, via
+            // duckdb_v2.zig's valueCreateVarcharWithContext + vectorSetValue.
+            if (return_is_varchar) {
+                var row: db.idx_t = 0;
+                while (row < row_count) : (row += 1) {
+                    if (has_nulls and !rowIsValid(&views, row)) {
+                        if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        continue;
+                    }
+                    const text = invoke(&views, row);
+                    var value: db.ValueHandle = undefined;
+                    if (db.valueCreateVarcharWithContext(context, text, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    defer _ = db.valueDestroy(&value);
+                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                }
+                return;
+            }
+
+            var out_data: ?*anyopaque = null;
+            if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            // SAFETY: types were validated at comptime against the registered signature.
+            const result: [*]ReturnType = @ptrCast(@alignCast(out_data));
 
             if (has_nulls) {
                 var row: db.idx_t = 0;
@@ -174,9 +207,16 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
             var args: ArgsTuple = undefined;
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
-                // SAFETY: views[i].data points to a flattened, type-matched vector buffer.
-                const typed: [*]const T = @ptrCast(@alignCast(views.*[i].data));
-                args[i] = typed[row];
+                if (T == []const u8) {
+                    // SAFETY: views[i].data points to a flattened VARCHAR vector's
+                    // duckdb_v2_bytes elements (the signature registered this param as VARCHAR).
+                    const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = db.bytesSlice(&typed[row]);
+                } else {
+                    // SAFETY: views[i].data points to a flattened, type-matched vector buffer.
+                    const typed: [*]const T = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = typed[row];
+                }
             }
             return @call(.auto, implFn, args);
         }
@@ -206,5 +246,18 @@ test "Function supports multiple parameters of different types" {
     }.eval);
     _ = &Mix.register;
     const exec_cb: db.ScalarFunctionExecCallback = Mix.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports VARCHAR parameter and return type" {
+    // Safe per the CAUTION above: returns a slice borrowed from its own
+    // argument, never a local buffer.
+    const FirstChar = Function("v2_test_first_char", struct {
+        fn eval(s: []const u8) []const u8 {
+            return s[0..@min(1, s.len)];
+        }
+    }.eval);
+    _ = &FirstChar.register;
+    const exec_cb: db.ScalarFunctionExecCallback = FirstChar.execute;
     try std.testing.expect(exec_cb != null);
 }

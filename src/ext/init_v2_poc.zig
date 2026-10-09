@@ -74,6 +74,16 @@ const Add = comptime_scalar_v2.Function("zig_v2_add", struct {
     }
 }.eval);
 
+/// Proves comptime_scalar_v2's VARCHAR support through the generic
+/// framework path (not the hand-written zig_v2_hello example): takes and
+/// returns a string, borrowing a substring of the argument — safe per the
+/// framework's documented constraint against returning local-buffer slices.
+const FirstChar = comptime_scalar_v2.Function("zig_v2_first_char_ct", struct {
+    fn eval(s: []const u8) []const u8 {
+        return s[0..@min(1, s.len)];
+    }
+}.eval);
+
 const Range3Ct = comptime_table_v2.Function(struct {
     pub const name: [:0]const u8 = "zig_v2_range3_ct";
     pub const param_types = [_]db2.LogicalTypeId{};
@@ -156,6 +166,7 @@ const ArgMaxCt = comptime_aggregate_v2.Function("zig_v2_arg_max_ct", struct {
 fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
+    FirstChar.register(input) catch {};
     Range3Ct.register(input) catch {};
     ArgMaxCt.register(input) catch {};
     AggSumCt.register(input) catch {};
