@@ -32,6 +32,7 @@ pub const IdentifierT = c.duckdb_v2_identifier_t;
 pub const DataChunkHandle = c.duckdb_v2_data_chunk_handle;
 pub const TableFunctionHandle = c.duckdb_v2_table_function_handle;
 pub const TableFunctionBindInfoHandle = c.duckdb_v2_table_function_bind_info_handle;
+pub const FunctionBindInfoHandle = c.duckdb_v2_function_bind_info_handle;
 pub const TableFunctionInitGlobalInfoHandle = c.duckdb_v2_table_function_init_global_info_handle;
 pub const TableFunctionExecInfoHandle = c.duckdb_v2_table_function_exec_info_handle;
 pub const AggregateFunctionHandle = c.duckdb_v2_aggregate_function_handle;
@@ -214,6 +215,35 @@ pub fn tableFunctionBindAddResultColumn(
     err: *ErrorInfoHandle,
 ) ErrorCode {
     return getApi().duckdb_v2_table_function_bind_add_result_column.?(info, name, column_type, err);
+}
+
+/// Read the value of a table/scalar/aggregate function argument at bind
+/// time. The generic `FunctionBindInfoHandle` (not the table-specific
+/// `TableFunctionBindInfoHandle` used to declare output columns) is the
+/// first parameter DuckDB hands every bind callback.
+pub fn functionBindGetArgValue(
+    info: FunctionBindInfoHandle,
+    index: idx_t,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_function_bind_get_arg_value.?(info, index, out_value, err);
+}
+
+/// Set the bind-time data a table function's exec callback will read back
+/// via `tableFunctionExecGetBindData`. Boxed through `Opaque` the same way
+/// `tableFunctionInitGlobalSetGlobalState` is, for the same reason: v2
+/// frees it via the box's own `destroy` callback, not a separate hook.
+pub fn functionBindSetBindData(info: FunctionBindInfoHandle, data: *Opaque, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_function_bind_set_bind_data.?(info, data, err);
+}
+
+pub fn tableFunctionExecGetBindData(
+    info: TableFunctionExecInfoHandle,
+    out_data: *?*anyopaque,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_exec_get_bind_data.?(info, out_data, err);
 }
 
 pub fn tableFunctionBindSetCardinality(
@@ -572,6 +602,13 @@ pub fn bytesSlice(b: *const BytesValue) []const u8 {
     else
         @ptrCast(b.value.pointer.ptr);
     return ptr[0..len];
+}
+
+/// Read a VARCHAR `Value`'s text. Borrowed from the value — valid only
+/// until the value is destroyed, so copy it out (e.g. into bind data meant
+/// to outlive the bind callback) before calling `valueDestroy`.
+pub fn valueGetVarchar(value: ValueHandle, out: *Str, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_varchar.?(value, out, err);
 }
 
 /// Box a Zig string as a VARCHAR `Value`, for use with `vectorSetValue`.

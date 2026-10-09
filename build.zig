@@ -132,6 +132,7 @@ pub fn build(b: *std.Build) void {
     });
     ext_v2_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
     ext_v2_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
+    ext_v2_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
     ext_v2_lib.root_module.link_libc = true;
 
     const metadata_tool_ext_v2 = b.addExecutable(.{

@@ -17,6 +17,8 @@ const add_numbers = @import("../functions/add_numbers_v2.zig");
 const ct_add_numbers = @import("../functions/ct_add_numbers_v2.zig");
 const hello = @import("../functions/hello_v2.zig");
 const tp_bar = @import("../functions/tp_bar_v2.zig");
+const tokenize = @import("../functions/tokenize_v2.zig");
+const ct_tokenize = @import("../functions/ct_tokenize_v2.zig");
 
 export fn zig_ext_v2_init_c_api_v2(input: *const db.ExtensionInput) callconv(.c) void {
     if (!db.initApi(input, "v2.0.0")) return;
@@ -25,4 +27,6 @@ export fn zig_ext_v2_init_c_api_v2(input: *const db.ExtensionInput) callconv(.c)
     ct_add_numbers.register(input) catch return;
     hello.register(input) catch return;
     tp_bar.register(input) catch return;
+    tokenize.register(input) catch return;
+    ct_tokenize.register(input) catch return;
 }
