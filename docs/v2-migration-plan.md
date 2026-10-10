@@ -568,10 +568,9 @@ workload:
   have actually been registered and called against the real runtime.
   DECIMAL, ENUM, BLOB, DATE/TIME/TIMESTAMP/INTERVAL are entirely
   unmapped.
-- **Aggregate `destroy` callback** — exists in the vtable
-  (`aggregateFunctionSetDestroyCallback`-equivalent name,
-  confirm exact wrapper needed), never wired up by any aggregate built so
-  far since none owned resources requiring cleanup.
+- ~~**Aggregate `destroy` callback** — never wired up~~ — **done**, see
+  item 4's growable-state-aggregate entry
+  (`aggregateFunctionSetDestroyCallback`, exercised by `zig_v2_string_agg_ct`).
 
 ### 6. Static linking (speculative, not started)
 
