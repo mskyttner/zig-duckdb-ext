@@ -154,6 +154,25 @@ pub fn build(b: *std.Build) void {
 
     const ext_v2_step = b.step("ext-v2", "Build the real, parallel v2 .duckdb_extension file");
     ext_v2_step.dependOn(&install_ext_v2.step);
+
+    // ── Interactive session with the real v2 extension pre-loaded ────────
+    // Idea borrowed from habedi/template-duckdb-extension-zig (a build step
+    // that drops into a REPL with the extension pre-loaded, instead of
+    // retyping `duckdb -unsigned -c "LOAD '...'; ..."` by hand every time —
+    // this branch did that dozens of times). Zig 0.17 split configure-time
+    // from make-time (the "Configurer"/"Maker" separation), so there's no
+    // `b.getInstallPath`-style string available at the point this function
+    // runs — `-cmd` (run a command, then drop into the REPL rather than
+    // exiting like `-c` does) plus `addFileArg2`'s prefix/suffix resolve the
+    // extension's path lazily, as part of running the step, not before.
+    {
+        const run_duckdb_v2 = b.addSystemCommand(&.{ "duckdb", "-unsigned", "-cmd" });
+        run_duckdb_v2.addFileArg2(ext_v2_output, .{ .prefix = "LOAD '", .suffix = "';" });
+        run_duckdb_v2.stdio = .inherit;
+
+        const duckdb_v2_step = b.step("duckdb-extension", "Start an interactive DuckDB session with the real v2 extension loaded");
+        duckdb_v2_step.dependOn(&run_duckdb_v2.step);
+    }
     const install_v2_poc = b.addInstallFile(v2_poc_output, "lib/zig_ext_v2_poc.duckdb_extension");
 
     const v2_poc_step = b.step("v2-poc", "Build the v2 proof-of-concept .duckdb_extension file");
@@ -203,6 +222,42 @@ pub fn build(b: *std.Build) void {
     // ── "ext" step: just build the .duckdb_extension ─────────────────────
     const ext_step = b.step("ext", "Build the .duckdb_extension file with metadata");
     ext_step.dependOn(&append_cmd.step);
+
+    // ── Interactive session with the real v1 extension pre-loaded ────────
+    // See the v2 step above for why this uses -cmd + addFileArg2's
+    // prefix/suffix rather than a WriteFiles-generated init script.
+    {
+        const run_duckdb = b.addSystemCommand(&.{ "duckdb", "-unsigned", "-cmd" });
+        run_duckdb.addFileArg2(ext_output, .{ .prefix = "LOAD '", .suffix = "';" });
+        run_duckdb.stdio = .inherit;
+
+        const duckdb_step = b.step("duckdb-extension-v1", "Start an interactive DuckDB session with the real v1 extension loaded");
+        duckdb_step.dependOn(&run_duckdb.step);
+    }
+
+    // ── API docs (Zig's built-in autodoc) ─────────────────────────────────
+    // Pattern borrowed from habedi/template-duckdb-extension-zig: reuse the
+    // existing compile step's emitted docs rather than shelling out to a
+    // separate `zig build-lib` invocation, so the real module graph
+    // (duckdb_c / duckdb_v2 imports etc.) is picked up automatically.
+    {
+        const install_docs = b.addInstallDirectory(.{
+            .source_dir = lib.getEmittedDocs(),
+            .install_dir = .{ .custom = "docs" },
+            .install_subdir = "",
+        });
+        const docs_step = b.step("docs", "Generate API documentation for the v1 extension");
+        docs_step.dependOn(&install_docs.step);
+    }
+    {
+        const install_docs_v2 = b.addInstallDirectory(.{
+            .source_dir = ext_v2_lib.getEmittedDocs(),
+            .install_dir = .{ .custom = "docs-v2" },
+            .install_subdir = "",
+        });
+        const docs_v2_step = b.step("docs-v2", "Generate API documentation for the v2 extension");
+        docs_v2_step.dependOn(&install_docs_v2.step);
+    }
 
     // ── Unit tests ───────────────────────────────────────────────────────
     const lib_unit_tests = b.addTest(.{
