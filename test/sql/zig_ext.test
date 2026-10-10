@@ -1,0 +1,31 @@
+# name: test/sql/zig_ext.test
+# description: Parity test for zig_ext scalar functions
+# group: [zig_ext]
+
+statement ok
+SET allow_extensions_metadata_mismatch=true
+
+statement error
+SELECT zig_add_numbers(1, 2)
+----
+Catalog Error: Scalar Function with name zig_add_numbers does not exist!
+
+require zig_ext
+
+statement ok
+PRAGMA enable_verification
+
+query I
+SELECT zig_add_numbers(1, 2)
+----
+3
+
+query I
+SELECT zig_add_numbers(NULL, 2)
+----
+NULL
+
+query I
+SELECT tp_bar(0.5, "on" := 'X', "off" := '.', width := 10)
+----
+XXXXX.....

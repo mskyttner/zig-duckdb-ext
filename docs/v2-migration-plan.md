@@ -283,39 +283,57 @@ comments.
 
 ## What's NOT done
 
-### 1. Cleanup / consolidation
+### 1. Cleanup / consolidation — done
 
-- **`duckdb_v2.zig` mixes real bindings with throwaway worked examples.**
-  `example`, `varchar_example`, `table_example`, `aggregate_example` and
-  their `*ForPoc` re-exports exist purely so `src/ext/init_v2_poc.zig`
-  (a disposable experimentation harness) has something to register — they
-  were never meant to be part of the permanent bindings file, and v1's
-  `duckdb.zig` has no equivalent clutter. Move them into a dedicated
-  `src/lib/duckdb_v2_examples.zig` or delete the ones already superseded
-  by a real `*_v2.zig` port (e.g. `example.doubleExec` is now redundant
-  with `add_numbers_v2.zig`'s logic).
-- **No automated v1-vs-v2 parity test.** Every verification this session
-  was a manual, one-off `duckdb -c "..."` comparison. Before trusting this
-  branch long-term, write a real test harness — e.g.
-  `test/sql/v2_parity.sql` run against both `zig_ext.duckdb_extension` and
-  `zig_ext_v2.duckdb_extension`, diffing output — covering at minimum the
-  cases already exercised by hand in this session's commits (NULL
-  handling, empty lists, defaults, named args, GROUP BY multi-state,
-  scale checks).
-- **`build.zig` has grown a lot of near-duplicate step boilerplate**
-  (`v2_poc_lib`/`ext_v2_lib`, their metadata tools, append steps). Worth a
-  small helper function once the shape stabilizes (e.g.
-  `fn addDuckdbExtension(b, name, root_file, duckdb_version, ext_version,
-  imports) -> step`) rather than hand-copying the ~15-line pattern a
-  fourth time.
-- **Write ADR-0003** documenting the v1→v2 API shape differences for
-  future readers, mirroring 0001/0002's format: the error-code +
-  out-param calling convention, context-based (not handle-less) type
-  construction, the `Opaque{ptr, destroy, equals}` box for state requiring
-  cleanup, VARCHAR's `duckdb_v2_bytes` inline/arena layout vs the plain
-  `duckdb_v2_str` used for API in/out params, and LIST's
-  `vector_get_child` + `list_entry` mechanism (shared with STRUCT/MAP/
-  UNION, unlike v1's LIST-specific accessor).
+- **Examples moved out of `duckdb_v2.zig`.** `example`, `varchar_example`,
+  `table_example`, `aggregate_example` and their `*ForPoc` re-exports now
+  live in `src/lib/duckdb_v2_examples.zig`, importing `duckdb_v2` as a
+  module rather than sharing its namespace. `duckdb_v2.zig` keeps only
+  the two tests that exercise its own bindings. Pure move, verified via
+  identical live behavior before/after against the v2.0.0-alpha46057
+  runtime.
+- **`build.zig` duplication factored out.** The "metadata-tool-executable
+  + run + 4 args + output-file-arg" pattern, hand-copied three times
+  (v1's real extension, the real v2 extension, the v2 proof-of-concept),
+  is now `addDuckdbExtensionMetadata(b, lib, name, duckdb_version,
+  ext_version, abi) -> LazyPath`. ~35 lines removed; metadata tool names
+  are now derived from the extension name instead of three independently
+  chosen literals.
+- **ADR-0003 written** — `docs/rationale/0003_duckdb-v2-c-api-differences.md`,
+  mirroring 0001/0002's format: the error-code + out-param calling
+  convention, context-based (not handle-less) type construction, the
+  `Opaque{ptr, destroy, equals}` box for state requiring cleanup,
+  VARCHAR's `duckdb_v2_bytes` inline/arena layout vs the plain
+  `duckdb_v2_str` used for API in/out params, LIST's `vector_get_child` +
+  `list_entry` mechanism (shared with STRUCT/MAP/UNION), native named
+  parameters/defaults (and the comment-ability tradeoff that comes with
+  dropping macros), aggregate batching, and static linking.
+- **Automated sqllogictest adoption for v1 — done; v2 confirmed blocked,
+  not a bug.** `zig build sqllogictest` runs DuckDB's native `.test`
+  format (`test/sql/zig_ext.test`) via `uv run --with
+  duckdb-sqllogictest@<github-zip> --with duckdb==1.2.0 python3 -m
+  duckdb_sqllogictest`, the same mechanism `quack-zig` uses. Two real
+  findings along the way, both confirmed by testing rather than assumed:
+  - The pip-distributed `duckdb` package enforces a stricter platform tag
+    (`linux_amd64_gcc4`) than this project's `append_metadata_main.zig`
+    emits (plain `linux_amd64`) — an axis entirely orthogonal to
+    code-signing (`-unsigned` doesn't touch it). Fixed by `SET
+    allow_extensions_metadata_mismatch=true` in the test file itself, a
+    real DuckDB setting for exactly this case — not a workaround specific
+    to this project, and not something to "fix" by changing our platform
+    string (which is accurate; the gcc4 tag is about glibc-compat
+    maximalism this project's Zig/clang-built `.so` doesn't need to
+    claim).
+  - **v2 cannot be sqllogictest'd via this mechanism at all right now**:
+    there is no v2-capable `duckdb` PyPI package (v2.0 is a staged alpha,
+    not released), and the v1-era package that does exist looks for the
+    old `<name>_init_c_api` symbol, not `_init_c_api_v2` — confirmed
+    directly: `duckdb.duckdb.IOException: ... did not contain function
+    "zig_ext_v2_init_c_api"`. `test/sql/zig_ext_v2.test` is written and
+    kept (same cases as the v1 file) for the moment a v2-capable package
+    exists, but has no working `zig build` step yet. Until then, v2
+    verification stays the live-runtime-CLI comparisons this branch
+    already relies on.
 
 ### 2. STRUCT support
 
