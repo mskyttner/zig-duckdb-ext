@@ -16,6 +16,23 @@
 ///! SQL NULL for that group (e.g. a weighted average whose total weight is
 ///! zero), rather than forcing every group through a fallback numeric value.
 ///!
+///! CAUTION: if `finalize` returns a `[]const u8` borrowed from a field
+///! stored INLINE in State (a fixed-size array, not a pointer to separately
+///! heap-allocated memory), it must take `self: *const State` or
+///! `self: *State`, not `self: State`. `self: State` copies the whole
+///! struct onto `finalize`'s own stack frame, and a slice into an inline
+///! field of that copy dangles the moment `finalize` returns — a real bug
+///! this framework shipped with briefly (found only once something
+///! exercised it at scale, not caught by small tests or a Debug build).
+///! Use `*State` (not `*const`) if `finalize` needs to format INTO the
+///! buffer first (e.g. `std.fmt.bufPrint`) — mutating here is harmless,
+///! nothing reads the state again before it's discarded. `self: State` is
+///! fine whenever the return value is a plain scalar, or a `[]const u8`
+///! borrowed from a heap-backed field (e.g. `std.ArrayList(u8)`'s
+///! `.items`, where copying the struct copies the pointer, not the buffer
+///! it points to) — only an inline-array-backed slice return needs a
+///! pointer receiver.
+///!
 ///! `update`'s parameters (after `self`) and `finalize`'s return type are
 ///! introspected at comptime to build the function signature, the same way
 ///! `comptime_scalar_v2.Function` reads a per-row function's shape. No size
@@ -448,7 +465,7 @@ test "Function supports VARCHAR as finalize's return type" {
                 @memcpy(self.buf[0..self.len], other.buf[0..other.len]);
             }
         }
-        pub fn finalize(self: @This()) []const u8 {
+        pub fn finalize(self: *const @This()) []const u8 {
             return self.buf[0..self.len];
         }
     });

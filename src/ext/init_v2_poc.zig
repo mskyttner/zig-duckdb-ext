@@ -274,7 +274,7 @@ const LastSeenCt = comptime_aggregate_v2.Function("zig_v2_last_seen_ct", struct 
             @memcpy(self.buf[0..self.len], other.buf[0..other.len]);
         }
     }
-    pub fn finalize(self: @This()) []const u8 {
+    pub fn finalize(self: *const @This()) []const u8 {
         return self.buf[0..self.len];
     }
 });
@@ -306,6 +306,60 @@ const StringAggCt = comptime_aggregate_v2.Function("zig_v2_string_agg_ct", struc
     }
 });
 
+/// A 1BRC-style "stats" aggregate: min/mean/max per group, formatted
+/// exactly like https://github.com/nubskr/1BRC's own output
+/// ("<min>/<mean>/<max>", one decimal each) — a real-shape stress test for
+/// the framework at scale (non-additive min/max combine alongside additive
+/// sum/count, and a VARCHAR-return `finalize` under heavy parallel
+/// combine), benchmarked against the live measurements.txt dataset
+/// generated for this project's own DuckDB-vs-hand-rolled-Zig comparison.
+const Stats1BrcCt = comptime_aggregate_v2.Function("zig_v2_1brc_stats_ct", struct {
+    sum: f64,
+    count: i64,
+    min: f64,
+    max: f64,
+    buf: [32]u8,
+    buf_len: usize,
+
+    pub fn init() @This() {
+        return .{
+            .sum = 0,
+            .count = 0,
+            .min = std.math.inf(f64),
+            .max = -std.math.inf(f64),
+            .buf = undefined,
+            .buf_len = 0,
+        };
+    }
+    pub fn update(self: *@This(), temp: f64) void {
+        self.sum += temp;
+        self.count += 1;
+        if (temp < self.min) self.min = temp;
+        if (temp > self.max) self.max = temp;
+    }
+    pub fn combine(self: *@This(), other: @This()) void {
+        if (other.count == 0) return;
+        self.sum += other.sum;
+        self.count += other.count;
+        if (other.min < self.min) self.min = other.min;
+        if (other.max > self.max) self.max = other.max;
+    }
+    // `self: *@This()`, not `self: @This()`: `buf` is an inline array, so a
+    // by-value `self` would copy it onto this call's own stack frame and
+    // the returned slice would dangle the instant this function returns —
+    // see this framework's CAUTION on inline-buffer finalize. A mutable
+    // pointer (rather than `*const`) also lets finalize format directly
+    // into `buf` without a const-cast; mutating here is harmless since
+    // nothing reads this state again before it's discarded.
+    pub fn finalize(self: *@This()) ?[]const u8 {
+        if (self.count == 0) return null;
+        const avg = self.sum / @as(f64, @floatFromInt(self.count));
+        const text = std.fmt.bufPrint(&self.buf, "{d:.1}/{d:.1}/{d:.1}", .{ self.min, avg, self.max }) catch return null;
+        self.buf_len = text.len;
+        return self.buf[0..self.buf_len];
+    }
+});
+
 fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
@@ -320,6 +374,7 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     WeightedAvgCt.register(input) catch {};
     TotalLenCt.register(input) catch {};
     StringAggCt.register(input) catch {};
+    Stats1BrcCt.register(input) catch {};
     LastSeenCt.register(input) catch {};
 }
 
