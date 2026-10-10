@@ -25,7 +25,8 @@ VARCHAR), `comptime_table_v2.zig` (full bind/exec generation from a
 `Row`/`init`/`next` `State` type, including VARCHAR arguments/columns),
 `comptime_aggregate_v2.zig` (full init/update/combine/finalize generation
 from a `State` type, including an optional-return convention for NULL
-output and VARCHAR as an argument or return type).
+output, VARCHAR as an argument or return type, and an optional `deinit`
+hook for states owning growable/heap-allocated resources).
 
 Proven against a live `v2.0.0-alpha46057` runtime (installed via
 `DUCKDB_VERSION=alpha bash <(curl https://install.duckdb.org)`, not
@@ -427,18 +428,35 @@ Two increments landed; a third remains out of scope:
   Verified against the live v2.0.0-alpha46057 runtime (`zig_v2_total_len_ct`,
   `zig_v2_last_seen_ct`), including GROUP BY to exercise both the inline
   and arena-pointer `BytesValue` encodings under real parallel `combine`.
-- **A `State` that owns growable string/list data** (e.g. real
-  `string_agg`, or the "collect subtree values into a list" aggregate
-  discussed but deferred this session) is a different, harder problem:
-  `@sizeOf(State)` is fixed at registration time, so the state can only
-  hold a pointer+len to a separately heap-allocated buffer, grown in
-  `update` and freed via `aggregateFunctionSetDestroyCallback` — which no
-  aggregate built this session has exercised yet (confirmed unused: the
-  vtable function exists, nothing calls it). This is the natural next
-  frontier for the "holistic aggregates" direction raised earlier and
-  explicitly deferred — do VARCHAR-as-argument and VARCHAR-as-return
-  first, since they're much smaller and de-risk the type-system changes
-  before adding dynamic-state lifecycle on top.
+- **A `State` that owns growable string/list data — done.**
+  `comptime_aggregate_v2.Function` accepts an optional fifth `State` decl,
+  `pub fn deinit(self: *State) void`, for a state that holds a
+  heap-allocated resource (`@sizeOf(State)` is fixed at registration time,
+  so growable data can only live behind a separately allocated pointer —
+  confirmed with a real `string_agg`-style aggregate,
+  `zig_v2_string_agg_ct`, whose `State` holds a growable
+  `std.ArrayList(u8)`). `deinit` is wired up as the aggregate's destroy
+  callback, via new `aggregateFunctionSetDestroyCallback`/
+  `DestroyGetStateCount`/`DestroyGetStates` wrappers in `duckdb_v2.zig` —
+  the vtable function this plan previously noted as "exists, nothing calls
+  it" is now exercised.
+
+  **Real finding, the hard way**: an earlier version additionally called
+  `deinit` right after `finalize` produced its result, on the assumption
+  (matching the header's own doc comment on `set_destroy_callback`: "runs
+  on states that are discarded without being finalized") that finalize and
+  destroy are mutually exclusive per state. That crashed immediately on an
+  ungrouped aggregate — a double-free caught by Zig 0.17's `ArrayList`
+  pointer-stability assertion. Confirmed live: DuckDB's v2.0 alpha calls
+  `destroy` on **every** allocated state, including ones `finalize`
+  already ran on, not just the ones the header doc comment describes.
+  `destroy` is the one and only place a state's resources may be
+  released; `finalize` may read a resource `destroy` will later free
+  (copying it out first — `makeBytesValue` already does this, into the
+  result vector's arena) but must never free it itself. Verified against
+  `v2.0.0-alpha46057`: ungrouped aggregation, `GROUP BY` (exercising
+  `combine`'s discarded-source states), empty groups, and 50k rows across
+  100 groups, all without a crash or leak.
 
 ### 5. Smaller, scoped gaps (not blocking anything above)
 
