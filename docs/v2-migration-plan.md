@@ -404,7 +404,79 @@ unlike the scalar framework. Two separable increments:
   confirm exact wrapper needed), never wired up by any aggregate built so
   far since none owned resources requiring cleanup.
 
-### 6. The real cutover decision
+### 6. Static linking (speculative, not started)
+
+Everything built so far targets a **loadable** extension (`dlopen`ed
+`.duckdb_extension`, entrypoint found by symbol name). Investigated static
+linking as a different question — not reused from either reference
+project: neither `quack-zig` nor `habedi/template-duckdb-extension-zig`
+attempt it; both hardcode `DUCKDB_BUILD_LOADABLE_EXTENSION=1`
+unconditionally. Confirmed absent from this project's vendored v1.2.0
+header — this is v2.0-alpha-only territory, at least in what we have
+vendored.
+
+Two genuinely distinct mechanisms exist in the v2.0 alpha headers, easy to
+conflate:
+
+1. **A low-level macro branch inside `duckdb_extension_v2.h` itself**:
+   ```c
+   #ifdef DUCKDB_BUILD_STATIC_EXTENSION
+   // No vtable global needed for static builds - DuckDB symbols are
+   // resolved directly at link time
+   #define DUCKDB_EXTENSION_GLOBAL
+   #define DUCKDB_EXTENSION_API_INIT(input, minimum_api_version)
+   #else
+   ...
+   ```
+   Collapses the entrypoint macros to nothing, implying direct extern-
+   linked DuckDB symbols — no `get_api`/vtable fetch at all, because the
+   extension is compiled straight into the same binary as DuckDB (or
+   linked against `libduckdb.a`). This would mean `duckdb_v2.zig`'s entire
+   design (the `getApi()` singleton, copying the vtable by value in
+   `initApi`) doesn't apply under this mode at all — a static build on
+   this path needs a parallel binding layer built against the *full*
+   `duckdb.h`/`duckdb_v2.h` (not the extension-specific vtable headers),
+   linked directly against `libduckdb.a`. A substantial rewrite, not a
+   toggle.
+2. **A separate, richer mechanism — `duckdb_static_extension.h`'s
+   `duckdb_register_static_extension()`**:
+   ```c
+   struct duckdb_extension_descriptor {
+       uint32_t version;              // versioned layout, extensible
+       const char *name;
+       const char *extension_version;
+       const char *api_version;
+       void (*entry_cpp)(void);
+       void (*entry_capi_v1)(void);   // bool (duckdb_extension_info, duckdb_extension_access*)
+       void (*entry_capi_v2)(void);   // void (duckdb_v2_extension_input*) — same signature as our loadable entrypoint
+       void (*database_callback)(void);
+   };
+   int32_t duckdb_register_static_extension(duckdb_extension_describe_t describe);
+   ```
+   `entry_capi_v2`'s signature is **identical** to
+   `zig_ext_v2_init_c_api_v2`'s — same `duckdb_v2_extension_input*`
+   parameter, same vtable-fetch-via-`get_api` convention running inside
+   it. Only the *discovery* mechanism differs: instead of `dlopen`+`dlsym`
+   finding a symbol named `<name>_init_c_api_v2`, the extension calls
+   `duckdb_register_static_extension(describe)` once at startup, where
+   `describe()` fills in `entry_capi_v2 = zig_ext_v2_init_c_api_v2`.
+   **This project's existing `init_v2.zig` logic would very likely work
+   unchanged under this path** — a thin wrapper, not a rewrite.
+
+**If this is ever pursued, start with mechanism 2** — it reuses real,
+already-verified code. Mechanism 1 is a different project in its own
+right (direct-link bindings bypassing the vtable entirely) and only
+worth it if a specific embedding scenario demands avoiding the vtable
+indirection. Neither has been prototyped against a live runtime —
+treat the "our entrypoint just works" claim for mechanism 2 as a
+hypothesis to verify, not a confirmed fact, before relying on it. Not
+urgent: nothing currently requires shipping this extension statically:
+the use case would be embedding DuckDB+extension into another
+application, or distributing a single self-contained `duckdb` binary
+without the `LOAD`/`-unsigned`/signing friction a loadable extension
+carries.
+
+### 7. The real cutover decision
 
 Once the gaps above (or whichever subset is judged sufficient) are closed,
 the actual decision point is replacing `zig build`'s real `lib`/`ext`
