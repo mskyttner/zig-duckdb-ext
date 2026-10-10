@@ -510,6 +510,51 @@ Two increments landed; a third remains out of scope:
   `combine`'s discarded-source states), empty groups, and 50k rows across
   100 groups, all without a crash or leak.
 
+### 4a. Real-scale aggregate benchmark: 1BRC — done
+
+The plan's "Testing infrastructure gaps" section used to note that nothing
+in this branch had been tested past ~1M rows / 1000 groups. Closed one
+instance of that gap using
+[nubskr/1BRC](https://github.com/nubskr/1BRC) (a hand-optimized Zig
+solution to the "One Billion Row Challenge": mmap + 16-thread morsels +
+custom hashmap, computing min/mean/max per weather station across a
+billion `station;temperature` rows) as a real, independently-written
+workload:
+
+- Generated a 1-billion-row `measurements.txt` (13GB, 413 stations) with a
+  small throwaway Zig generator, since that repo doesn't ship one.
+- Built `zig_v2_1brc_stats_ct(temp DOUBLE) -> VARCHAR` via
+  `comptime_aggregate_v2`: `State{sum, count, min, max}` plus an inline
+  `buf: [32]u8` for `finalize` to format `"<min>/<mean>/<max>"` into,
+  matching 1BRC's own output format exactly — the first test of
+  non-additive `min`/`max` combine alongside additive `sum`/`count` in one
+  aggregate, and the first VARCHAR-return `finalize` exercised at real
+  (not toy) scale.
+- **Correctness**: ran `SELECT station, zig_v2_1brc_stats_ct(temp) FROM
+  read_csv(...) GROUP BY station` over all 1B rows — all 413 stations
+  matched the hand-rolled Zig program's own output byte-for-byte, zero
+  mismatches.
+- **Performance**: ~3.15s for this one aggregate vs. ~3.22s for DuckDB's
+  three separate built-in aggregates (`min`/`avg`/`max`) doing the
+  equivalent work, both against the same `v2.0.0-alpha46057` runtime and
+  CSV file — no measurable overhead from the comptime-generated code at
+  this scale, slightly faster than built-ins doing the same work. (The
+  hand-rolled Zig 1BRC program itself: ~0.39s — the gap there is
+  mmap+custom-hashmap vs. a generic CSV reader + hash-aggregate, not
+  specific to this framework.)
+- **Real bug found via this test, not a toy case**: `finalize(self:
+  @This())` copies the whole state by value; `zig_v2_last_seen_ct` (an
+  existing VARCHAR-return aggregate from item 4 above) returned a slice
+  into that copy's inline `buf` array — a dangling pointer the instant
+  `finalize` returned, undetected until now because it only "worked" by
+  luck of a Debug build's stack layout at small scale. Fixed by taking
+  `self` by pointer instead (`*const`, or `*` when `finalize` needs to
+  format into the buffer, as `zig_v2_1brc_stats_ct` does) — documented as
+  a CAUTION in `comptime_aggregate_v2.zig`'s module doc comment, since a
+  heap-backed slice return (e.g. `std.ArrayList(u8)`'s `.items`, as
+  `zig_v2_string_agg_ct` uses) doesn't have this problem and by-value is
+  still fine there.
+
 ### 5. Smaller, scoped gaps (not blocking anything above)
 
 - **Other v2-only table-function features never touched**: filter
