@@ -527,6 +527,23 @@ pub fn contextCreateTypeFromId(
     return getApi().duckdb_v2_context_create_type_from_id.?(ctx, type_id, null, null, 0, out_type, err);
 }
 
+/// Parse a SQL type expression ("INTEGER", "STRUCT(a INTEGER)", "VARIANT",
+/// ...) into a logical type. `contextCreateTypeFromId(..., VARIANT, ...)`
+/// segfaults on this v2.0 alpha build (confirmed live, in DuckDB's own
+/// C++ internals, not this binding) despite VARIANT needing no
+/// parameters at the SQL level (`SELECT 1::VARIANT` works fine) — this is
+/// the workaround for VARIANT specifically, and presumably for any other
+/// id that hits the same bug.
+pub fn contextCreateTypeFromText(
+    ctx: ContextHandle,
+    text: []const u8,
+    out_type: *LogicalTypeHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    const text_str = str(text);
+    return getApi().duckdb_v2_context_create_type_from_text.?(ctx, &text_str, out_type, err);
+}
+
 /// Wrap a logical type as a TYPE-kind Value, the only way v2 passes a type
 /// as a parameter to a parameterized type constructor (LIST, ARRAY, MAP,
 /// STRUCT, ...). The type is borrowed and copied in, so the input can be
@@ -567,8 +584,55 @@ pub fn contextCreateListType(
     );
 }
 
+/// Create STRUCT(names[0] field_types[0], ...). Unlike LIST's single
+/// positional child type, STRUCT needs one *named* TYPE-kind Value
+/// parameter per field — same two-step Value-wrapping dance
+/// `contextCreateListType` hides for a single child, generalized to N
+/// named fields. `field_type_values` is caller-provided scratch (length
+/// must equal `names.len`/`field_types.len`): the caller destroys each
+/// entry once this returns, same ownership shape as any other
+/// `valueCreateTypeWithContext` result.
+pub fn contextCreateStructType(
+    ctx: ContextHandle,
+    names: []const IdentifierT,
+    field_types: []const LogicalTypeHandle,
+    field_type_values: []ValueHandle,
+    out_type: *LogicalTypeHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    for (field_types, 0..) |ft, i| {
+        if (valueCreateTypeWithContext(ctx, ft, &field_type_values[i], err) != c.DUCKDB_V2_ERROR_NONE) {
+            return c.DUCKDB_V2_ERROR_API;
+        }
+    }
+    return getApi().duckdb_v2_context_create_type_from_id.?(
+        ctx,
+        c.DUCKDB_V2_LOGICAL_TYPE_ID_STRUCT,
+        names.ptr,
+        field_type_values.ptr,
+        names.len,
+        out_type,
+        err,
+    );
+}
+
 pub fn logicalTypeDestroy(logical_type: *LogicalTypeHandle) ErrorCode {
     return getApi().duckdb_v2_logical_type_destroy.?(logical_type);
+}
+
+/// Declare that the scalar function handles NULL arguments itself and must
+/// be invoked even when one is NULL — the default otherwise short-circuits
+/// to a NULL result without calling the function at all (and, confirmed
+/// live, constant-folds a literal NULL argument away before the function
+/// ever runs). Needed for a VARIANT parameter, whose NULL is ordinary data
+/// the function may want to see, not an absent argument.
+pub fn scalarFunctionSetNullHandlingSpecial(function: ScalarFunctionHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_scalar_function_set_property.?(
+        function,
+        c.DUCKDB_V2_FUNCTION_PROPERTY_NULL_HANDLING,
+        c.DUCKDB_V2_FUNCTION_PROPERTY_NULL_HANDLING_SPECIAL,
+        err,
+    );
 }
 
 // --- Scalar Function exec callback ---
@@ -627,6 +691,24 @@ pub fn vectorGetChild(vector: VectorHandle, index: idx_t, out_child: *VectorHand
 
 pub fn vectorGetChildCount(vector: VectorHandle, out_count: *idx_t, err: *ErrorInfoHandle) ErrorCode {
     return getApi().duckdb_v2_vector_get_child_count.?(vector, out_count, err);
+}
+
+/// The "total fallback reader": reads one cell as an owned `Value`, working
+/// on ANY vector representation (no `vectorFlatten` needed first) and ANY
+/// type kind, including VARIANT and GEOMETRY — the ones with no committed
+/// view layout, where this is the only way to read a cell at all. Slower
+/// per-row than the view path (one allocation per call), so only worth it
+/// for types `vectorGetView` can't handle. Caller-owned; destroy via
+/// `valueDestroy`.
+pub fn vectorGetValue(vector: VectorHandle, row: idx_t, out_value: *ValueHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_vector_get_value.?(vector, row, out_value, err);
+}
+
+/// True if `value` represents SQL NULL. The VARIANT-row counterpart of
+/// checking a `VectorView.validity` bit — VARIANT has no view, so
+/// `vectorGetValue` + `valueIsNull` is how a NULL VARIANT cell is detected.
+pub fn valueIsNull(value: ValueHandle, out_is_null: *bool, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_is_null.?(value, out_is_null, err);
 }
 
 pub fn vectorGetView(vector: VectorHandle, out_view: *VectorView, err: *ErrorInfoHandle) ErrorCode {

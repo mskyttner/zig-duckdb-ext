@@ -85,6 +85,46 @@ const FirstChar = comptime_scalar_v2.Function("zig_v2_first_char_ct", struct {
     }
 }.eval);
 
+/// Proves comptime_scalar_v2's STRUCT-argument support: squared distance
+/// from the origin for a `STRUCT(x BIGINT, y BIGINT)` point.
+const PointDist2 = comptime_scalar_v2.Function("zig_v2_point_dist2_ct", struct {
+    const Point = struct { x: i64, y: i64 };
+    fn eval(p: Point) i64 {
+        return p.x * p.x + p.y * p.y;
+    }
+}.eval);
+
+/// Proves a STRUCT with a VARCHAR field, mixed with a plain argument.
+const PersonGreet = comptime_scalar_v2.Function("zig_v2_person_greet_ct", struct {
+    const Person = struct { name: []const u8, age: i64 };
+    fn eval(p: Person, excited: bool) i64 {
+        return @as(i64, @intCast(p.name.len)) + p.age + @as(i64, if (excited) 1 else 0);
+    }
+}.eval);
+
+/// Proves comptime_scalar_v2's VARIANT support, round-trip: decodes the
+/// VARIANT argument as a BIGINT, or substitutes `fallback` when it's NULL,
+/// and returns a freshly created Value either way — per the CAUTION in
+/// comptime_scalar_v2.zig: never return the same Value handle received as
+/// an argument, since the framework destroys the argument and the return
+/// value independently, so returning the same handle would double-free it.
+const VariantDefault = comptime_scalar_v2.Function("zig_v2_variant_default_ct", struct {
+    fn eval(context: db2.ContextHandle, v: db2.ValueHandle, fallback: i64) db2.ValueHandle {
+        var err: db2.ErrorInfoHandle = undefined;
+        var is_null = false;
+        _ = db2.valueIsNull(v, &is_null, &err);
+        var out: db2.ValueHandle = undefined;
+        if (is_null) {
+            _ = db2.valueCreateBigintWithContext(context, fallback, &out, &err);
+        } else {
+            var n: i64 = 0;
+            _ = db2.valueGetBigint(v, &n, &err);
+            _ = db2.valueCreateBigintWithContext(context, n, &out, &err);
+        }
+        return out;
+    }
+}.eval);
+
 /// Proves comptime_table_v2's generalized Row/init/next framework through a
 /// real table-function argument (`n`) and a real VARCHAR output column —
 /// unlike zig_v2_range3 above, bind/exec are fully generated, not
@@ -270,6 +310,9 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
     FirstChar.register(input) catch {};
+    PointDist2.register(input) catch {};
+    PersonGreet.register(input) catch {};
+    VariantDefault.register(input) catch {};
     RangeCt.register(input) catch {};
     RepeatCt.register(input) catch {};
     ArgMaxCt.register(input) catch {};
