@@ -164,6 +164,49 @@ const ArgMaxCt = comptime_aggregate_v2.Function("zig_v2_arg_max_ct", struct {
     }
 });
 
+/// Proves VARCHAR as an aggregate `update` argument through the generic
+/// framework path: total character count across a group's strings.
+const TotalLenCt = comptime_aggregate_v2.Function("zig_v2_total_len_ct", struct {
+    len: i64,
+    pub fn init() @This() {
+        return .{ .len = 0 };
+    }
+    pub fn update(self: *@This(), s: []const u8) void {
+        self.len += @intCast(s.len);
+    }
+    pub fn combine(self: *@This(), other: @This()) void {
+        self.len += other.len;
+    }
+    pub fn finalize(self: @This()) i64 {
+        return self.len;
+    }
+});
+
+/// Proves VARCHAR as an aggregate `finalize` return type through the
+/// generic framework path: last string seen in the group, both under and
+/// over the 12-byte inline threshold (exercises both `makeBytesValue`
+/// branches against the live runtime).
+const LastSeenCt = comptime_aggregate_v2.Function("zig_v2_last_seen_ct", struct {
+    buf: [128]u8,
+    len: usize,
+    pub fn init() @This() {
+        return .{ .buf = undefined, .len = 0 };
+    }
+    pub fn update(self: *@This(), s: []const u8) void {
+        self.len = @min(s.len, self.buf.len);
+        @memcpy(self.buf[0..self.len], s[0..self.len]);
+    }
+    pub fn combine(self: *@This(), other: @This()) void {
+        if (other.len != 0) {
+            self.len = other.len;
+            @memcpy(self.buf[0..self.len], other.buf[0..other.len]);
+        }
+    }
+    pub fn finalize(self: @This()) []const u8 {
+        return self.buf[0..self.len];
+    }
+});
+
 fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
@@ -172,6 +215,8 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     ArgMaxCt.register(input) catch {};
     AggSumCt.register(input) catch {};
     WeightedAvgCt.register(input) catch {};
+    TotalLenCt.register(input) catch {};
+    LastSeenCt.register(input) catch {};
 }
 
 fn registerDouble(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {

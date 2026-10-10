@@ -44,6 +44,7 @@ fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
         f32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT,
         f64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE,
         bool => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN,
+        []const u8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR,
         else => @compileError("unsupported type for DuckDB v2 mapping: " ++ @typeName(T)),
     };
 }
@@ -61,6 +62,7 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
     // semantics at the finalize stage instead.
     const finalize_is_optional = @typeInfo(RawReturnType) == .optional;
     const ReturnType = if (finalize_is_optional) @typeInfo(RawReturnType).optional.child else RawReturnType;
+    const return_is_varchar = ReturnType == []const u8;
 
     inline for (arg_types) |t| _ = duckdbV2TypeId(t.?);
     _ = duckdbV2TypeId(ReturnType);
@@ -204,6 +206,35 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             var offset: db.idx_t = 0;
             if (db.aggregateFunctionFinalizeGetResultOffset(info, &offset, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
 
+            if (comptime return_is_varchar) {
+                // No context handle is available in any aggregate callback
+                // (unlike scalar/table `bind`), so the usual
+                // valueCreateVarcharWithContext + vectorSetValue boxing path
+                // is unavailable here — write BytesValue directly into the
+                // vector's own arena instead. See `vectorGetArena`'s doc
+                // comment in duckdb_v2.zig.
+                var arena: db.ArenaHandle = undefined;
+                if (db.vectorGetArena(result_vec, &arena, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: ?*anyopaque = null;
+                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                const out: [*]db.BytesValue = @ptrCast(@alignCast(out_data));
+
+                var i: db.idx_t = 0;
+                while (i < count) : (i += 1) {
+                    const state: *State = @ptrCast(@alignCast(states[i].?));
+                    if (finalize_is_optional) {
+                        if (state.finalize()) |value| {
+                            out[offset + i] = db.makeBytesValue(arena, value, err) catch return;
+                        } else {
+                            if (db.vectorSetNull(result_vec, offset + i, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        }
+                    } else {
+                        out[offset + i] = db.makeBytesValue(arena, state.finalize(), err) catch return;
+                    }
+                }
+                return;
+            }
+
             var out_data: ?*anyopaque = null;
             if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
             const out: [*]ReturnType = @ptrCast(@alignCast(out_data));
@@ -245,9 +276,16 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             var args: ArgsTuple = undefined;
             inline for (0..arg_types.len) |i| {
                 const T = arg_types[i].?;
-                // SAFETY: views[i].data points to a flattened, type-matched vector buffer.
-                const typed: [*]const T = @ptrCast(@alignCast(views.*[i].data));
-                args[i] = typed[row];
+                if (T == []const u8) {
+                    // SAFETY: views[i].data points to a flattened VARCHAR vector buffer
+                    // of duckdb_v2_bytes elements; see BytesValue's own doc comment.
+                    const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = db.bytesSlice(&typed[row]);
+                } else {
+                    // SAFETY: views[i].data points to a flattened, type-matched vector buffer.
+                    const typed: [*]const T = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = typed[row];
+                }
             }
             return args;
         }
@@ -326,4 +364,47 @@ test "Function supports an optional finalize return (NULL on empty/zero-weight g
     _ = &WeightedAvg.register;
     const finalize_cb: db.c.duckdb_v2_aggregate_function_finalize_callback_fn = WeightedAvg.finalizeCallback;
     try std.testing.expect(finalize_cb != null);
+}
+
+test "Function supports VARCHAR as an update argument" {
+    const TotalLen = Function("v2_test_agg_total_len", struct {
+        len: i64,
+        pub fn init() @This() {
+            return .{ .len = 0 };
+        }
+        pub fn update(self: *@This(), s: []const u8) void {
+            self.len += @intCast(s.len);
+        }
+        pub fn combine(self: *@This(), other: @This()) void {
+            self.len += other.len;
+        }
+        pub fn finalize(self: @This()) i64 {
+            return self.len;
+        }
+    });
+    _ = &TotalLen.register;
+}
+
+test "Function supports VARCHAR as finalize's return type" {
+    const LastSeen = Function("v2_test_agg_last_seen", struct {
+        buf: [64]u8,
+        len: usize,
+        pub fn init() @This() {
+            return .{ .buf = undefined, .len = 0 };
+        }
+        pub fn update(self: *@This(), s: []const u8) void {
+            self.len = @min(s.len, self.buf.len);
+            @memcpy(self.buf[0..self.len], s[0..self.len]);
+        }
+        pub fn combine(self: *@This(), other: @This()) void {
+            if (other.len != 0) {
+                self.len = other.len;
+                @memcpy(self.buf[0..self.len], other.buf[0..other.len]);
+            }
+        }
+        pub fn finalize(self: @This()) []const u8 {
+            return self.buf[0..self.len];
+        }
+    });
+    _ = &LastSeen.register;
 }
