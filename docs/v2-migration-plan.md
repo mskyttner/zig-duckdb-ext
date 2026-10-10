@@ -40,6 +40,204 @@ from returning a rendered string out of its own arena's scope
 (`tp_line_v2.zig`), and a missing NULL-output path in the aggregate
 framework before `finalize`'s optional-return convention was added.
 
+## Patterns established this session (worth keeping consistent going forward)
+
+### NULL propagation
+
+Every port this session follows the same NULL-handling shape, worth
+stating explicitly so future functions don't reinvent or drift from it:
+
+- **Row-level: skip the row if *any* argument is invalid.** Every scalar/
+  table/aggregate `update` callback checks all of its argument vectors'
+  `VectorView.validity` for the current row before doing any work, via a
+  small per-file `isValid`/`rowIsValid`/`anyInvalid` helper (duplicated by
+  hand in each `*_v2.zig` file rather than factored out — a candidate for
+  the "Cleanup" consolidation above). `comptime_scalar_v2.zig` generates
+  this check automatically from the registered parameter list;
+  hand-written functions (`add_numbers_v2`, `tp_bar_v2`, `tokenize_v2`,
+  `tp_line_v2`, `tp_treemap_v2`, `tp_snakemap_v2`) each re-derive it.
+- **Fast/slow path split**: when *no* argument vector has a validity
+  bitmap at all (`view.validity == null` for every arg), skip the
+  per-row validity check entirely rather than calling a no-op check
+  `row_count` times — carried over faithfully from v1's equivalent
+  optimization in `comptime_scalar.zig`.
+- **Result-level, for aggregates: a `has_value`-style flag distinguishes
+  "legitimately computed a zero/default" from "never updated."**
+  `zig_v2_weighted_avg_ct` and `zig_v2_arg_max_ct` both carry this in
+  their `State` (`weight_sum == 0` and `has_value`, respectively) so an
+  empty or degenerate group's `finalize` can return SQL `NULL` via the
+  framework's `?ReturnType` convention, instead of a bogus or
+  IEEE-754-leaked value.
+- **Concrete evidence this matters**: DuckDB's own built-in `weighted_avg`
+  macro — `sum(v*w) / sum(CASE WHEN v IS NOT NULL THEN w ELSE 0 END)` —
+  returns `-nan` for an all-zero-weight group, because both sums are
+  genuinely `0.0` (not SQL NULL) and float division leaks the IEEE-754
+  bit pattern straight into the result column. Our `zig_v2_weighted_avg_ct`
+  returns proper `NULL` for the identical input, confirmed side-by-side.
+  `NaN`-vs-`NULL` is invisible until you specifically test the degenerate
+  case — anything with a division (ratios, averages) should get this test
+  deliberately, not as an afterthought.
+
+### Function parameter naming & catalog discoverability
+
+Investigated with an eye to
+[posit-dev/ggsql-duckdb#16](https://github.com/posit-dev/ggsql-duckdb/issues/16)
+(DuckDB extension functions should be discoverable — real parameter
+names, descriptions, examples — from `duckdb_functions()`, since an
+agent connected to a database can't read a README). Findings, confirmed
+live:
+
+- **v2's native named-parameter support means every hand-registered
+  function already gets real parameter names in the catalog, for free.**
+  `functionSignatureAddParameter` requires a real name per parameter, so
+  anything registered by hand (`tp_bar_v2`, `hello_v2`, ...) shows real
+  names: `SELECT parameters FROM duckdb_functions() WHERE function_name =
+  'tp_bar'` → `[value, on, off, width]`. No macro wrapper needed, unlike
+  v1 (see next point).
+- **`comptime_scalar_v2.Function(name, implFn)` synthesizes `a0`/`a1`**
+  (documented in its own doc comment, since Zig function parameters carry
+  no names at the ABI level) — confirmed live: `ct_add_numbers` shows
+  `[a0, a1]` in the catalog, exactly the anti-pattern the issue flags.
+  **Fix, not yet done**: extend `Function()` (and `comptime_table_v2`/
+  `comptime_aggregate_v2`) to accept real names, e.g. a `Cfg`-style struct
+  like `comptime_table_v2` already uses, or a parallel tuple argument.
+  Small, concrete, matches the issue's stated highest-leverage ask
+  ("if you only do one thing, do parameter names").
+- **`description`/`examples`/`categories` are unreachable from the C
+  extension API in both v1 and v2** — grepped both vendored headers for
+  anything resembling C++'s `FunctionDescription`; nothing exists. Not a
+  comptime-solvable gap; it's a missing C-API hook in DuckDB itself.
+- **The one partially-reachable field, SQL `COMMENT ON FUNCTION`, only
+  works on real catalog objects (macros), not raw C-API-registered
+  functions** — confirmed live on both versions: `COMMENT ON FUNCTION
+  zig_add_numbers ...` fails with `"Can not comment on System Catalog
+  entries"` whether registered via v1 or v2, hand-written or comptime.
+  It *does* work on v1's macro-wrapped functions (`tp_bar`, `tp_line`,
+  `tp_treemap`, `tp_snakemap`) — confirmed: `comment` populates correctly
+  in `duckdb_functions()` after `COMMENT ON FUNCTION tp_bar IS '...'`.
+- **v2 extensions have no way to run SQL at init time at all** — checked
+  the `context` handle's full function surface for anything
+  query/execute-shaped; nothing exists (consistent with its own doc
+  comment: "for constructing values and types, not for registration").
+  v1's `db.query(conn, "CREATE OR REPLACE MACRO ...")` has no v2
+  equivalent. This means v2 can't self-register a `COMMENT ON FUNCTION`
+  the way a v1 extension's macro-wrapper step could — a genuine,
+  previously-unnoted tradeoff of eliminating the macro-wrapper
+  requirement: v2 wins on parameter names without a macro, but loses the
+  one mechanism that let v1 attach a `comment` at all.
+- **Possible follow-on** (not scoped in detail, not started): a comptime
+  macro+comment emitter for v1-targeted extensions — four of the nine v1
+  functions (`tp_bar`, `tp_line`, `tp_treemap`, `tp_snakemap`) already
+  hand-write a near-identical `CREATE OR REPLACE MACRO` string purely for
+  named-parameter calling convenience; a `comptime_scalar.FunctionWithMacro`-
+  style helper could generate that SQL *and* a `COMMENT ON FUNCTION` from
+  a declared description, from the same param-name/default info the
+  framework already has — real deduplication and ggsql#16 compliance in
+  one change, for v1. No v2 equivalent is possible until/unless v2 gains
+  an init-time SQL-execution capability.
+
+## Patterns worth reusing (from reviewing `quack-zig`)
+
+[`quack-zig`](https://github.com/duckdb/duckdb) (a Zig-built port of
+DuckDB's official "quack" example extension — plain C extension source,
+`build.zig` doing cross-compilation/matrix orchestration rather than
+language-level API bindings) has several techniques directly relevant to
+gaps already identified above.
+
+### Version × platform build matrix
+
+Their `build.zig` loops `for (duckdb_versions) |v| for (platforms) |p|`,
+each combination its own `b.addLibrary`, selectable via repeatable
+`-Dduckdb-version=`/`-Dplatform=` options (default: build everything).
+Applied to this project, the matrix would be **DuckDB v1.5.6 and v2.0
+alpha × {linux, windows, macos}** (amd64/arm64 each, so really 2×6):
+
+```zig
+const DuckDBVersion = enum {
+    v1_5_6,
+    v2_0_alpha,
+    // headers(self, b) -> Build.LazyPath, same shape as quack-zig's,
+    // but v2.0-alpha has no tagged GitHub release to fetch from yet —
+    // would need to stay a local/untracked header set (see "Testing
+    // infrastructure gaps") until DuckDB actually tags v2.0.
+};
+const Platform = enum {
+    linux_amd64, linux_arm64,
+    windows_amd64, windows_arm64,
+    macos_amd64, macos_arm64,
+    // target(self, b) -> Build.ResolvedTarget via resolveTargetQuery,
+    // identical mechanism to quack-zig's.
+};
+```
+
+This is a bigger lift than it looks for us specifically, because unlike
+`quack_extension.c` (single C file, no OS-specific code), our `*_v2.zig`
+files use `std.heap.page_allocator`/`std.heap.c_allocator` and arena
+allocators throughout — worth a quick check that cross-compiled Windows/
+macOS targets don't hit a libc or allocator availability snag before
+assuming the matrix "just works" the way it does for quack-zig's pure-C
+code. Scope as: get `linux_amd64` × both DuckDB versions working first
+(already true today, just not expressed as a matrix), then add the other
+5 platform combinations one at a time, not all at once.
+
+### Git-derived extension version
+
+```zig
+fn detectGitVersion(b: *std.Build) ![]const u8 {
+    return b.runAllowFail(&.{"git", "-C", ..., "describe", "--tags",
+        "--match", "v[0-9]*", "--always"}, &code, .Ignore);
+}
+```
+
+Replaces our hardcoded `extension_version = "v0.1.0"` constant in
+`build.zig`. Small, worth adopting whenever this project starts tagging
+releases — no value before then.
+
+### Version-pinned DuckDB header vendoring
+
+`build.zig.zon` dependencies with real content hashes, fetched from
+DuckDB's own tagged GitHub releases:
+
+```zig
+.libduckdb_1_5_6 = .{
+    .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-src.zip",
+    .hash = "...", // from `zig fetch`
+},
+```
+
+Directly addresses the "Testing infrastructure gaps" complaint below:
+this project's `duckdb_capi/duckdb.h`/`duckdb_extension.h` (v1.2.0) are
+committed as plain vendored files with no provenance/hash, and the
+v1.5.6/v2.0-alpha headers used for comparison this session were manually
+`curl`'d into a scratchpad and never pinned anywhere. Applies cleanly to
+v1.5.6 (tagged release exists); **does not yet apply to v2.0-alpha** —
+`install.duckdb.org`'s staged alpha build isn't a tagged GitHub release,
+so there's nothing a `url`+`hash` pair could point at yet. Revisit once
+DuckDB publishes an actual v2.0 release artifact.
+
+### sqllogictest adoption
+
+Covered in detail in the prior findings (`require <ext>` / `statement ok`
+/ `query I` + `----` + expected output, run via `uv run --with
+sqllogictest --with duckdb==X python3 -m duckdb_sqllogictest`). This is
+the concrete mechanism to close the "No automated v1-vs-v2 parity test"
+gap below — replace the planned `test/sql/v2_parity.sql` ad-hoc script
+with real `.test` files, one set run against `zig_ext.duckdb_extension`
+and the same set run against `zig_ext_v2.duckdb_extension`, asserting
+identical output DuckDB-natively rather than via a hand-rolled diff.
+
+### Metadata appender checkup
+
+`quack-zig` invokes DuckDB's own `extension-ci-tools` repo's
+`scripts/append_extension_metadata.py` (via `uv run`) rather than writing
+the binary metadata footer by hand. **Action item, not yet done**: diff
+our `src/append_metadata_main.zig`'s output against that script's output
+for the same input library file — byte-for-byte, not just "does DuckDB
+load it" — to catch any drift from the real format our hand-rolled
+implementation might have accumulated. If they diverge, either fix ours
+or switch to invoking the official script directly the way `quack-zig`
+does.
+
 ## What's NOT done
 
 ### 1. Cleanup / consolidation
