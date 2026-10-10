@@ -217,9 +217,3 @@ pub fn register(input: *const db.ExtensionInput) !void {
         return error.FailedToRegisterFunction;
     }
 }
-
-// Re-exposed so ct_tokenize_v2.zig can register the same bind/init_global/
-// exec callbacks through comptime_table_v2 instead of by hand.
-pub const bindForCt = bind;
-pub const initGlobalForCt = initGlobal;
-pub const execForCt = exec;

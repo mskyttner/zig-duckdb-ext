@@ -8,12 +8,12 @@
 ///! `zig_v2_agg_sum(x BIGINT) -> BIGINT`, using the hand-written
 ///! exec/bind/size/init/update/combine/finalize callbacks already
 ///! type-checked under `v2-check` — plus `zig_v2_triple`/`zig_v2_add`,
-///! registered through `comptime_scalar_v2.Function`, `zig_v2_range3_ct`,
-///! registered through `comptime_table_v2.Function` (reusing the same
-///! bind/init_global/exec callbacks as `zig_v2_range3`, to isolate what's
-///! being tested to the framework's registration wiring, not the callback
-///! logic — already proven separately by the hand-written version), and
+///! registered through `comptime_scalar_v2.Function`, `zig_v2_range_ct`/
+///! `zig_v2_repeat_ct`, registered through `comptime_table_v2.Function`'s
+///! generalized Row/init/next shape (fully generated bind/exec, not
+///! hand-written callbacks reused from `zig_v2_range3`), and
 ///! `zig_v2_agg_sum_ct`, registered through `comptime_aggregate_v2.Function`.
+const std = @import("std");
 const db2 = @import("duckdb_v2");
 const examples = @import("duckdb_v2_examples");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
@@ -85,12 +85,44 @@ const FirstChar = comptime_scalar_v2.Function("zig_v2_first_char_ct", struct {
     }
 }.eval);
 
-const Range3Ct = comptime_table_v2.Function(struct {
-    pub const name: [:0]const u8 = "zig_v2_range3_ct";
-    pub const param_types = [_]db2.LogicalTypeId{};
-    pub const bind = exampleTableBind;
-    pub const initGlobal = exampleTableInitGlobal;
-    pub const exec = exampleTableExec;
+/// Proves comptime_table_v2's generalized Row/init/next framework through a
+/// real table-function argument (`n`) and a real VARCHAR output column —
+/// unlike zig_v2_range3 above, bind/exec are fully generated, not
+/// hand-written.
+const RangeCt = comptime_table_v2.Function("zig_v2_range_ct", struct {
+    n: i64,
+    i: i64,
+    pub const Row = struct { value: i64 };
+    pub fn init(n: i64) @This() {
+        return .{ .n = n, .i = 0 };
+    }
+    pub fn next(self: *@This()) ?Row {
+        if (self.i >= self.n) return null;
+        defer self.i += 1;
+        return .{ .value = self.i };
+    }
+});
+
+/// Proves VARCHAR as both a table-function constructor argument and a Row
+/// output column through the generalized framework — the two cases
+/// `comptime_table_v2.zig`'s module doc comment calls out as needing the
+/// extra heap-copy/`deinit` dance (a bind-time `Value` doesn't outlive `bind`).
+const RepeatCt = comptime_table_v2.Function("zig_v2_repeat_ct", struct {
+    text: []const u8,
+    n: i64,
+    i: i64,
+    pub const Row = struct { value: []const u8 };
+    pub fn init(text: []const u8, n: i64) @This() {
+        return .{ .text = text, .n = n, .i = 0 };
+    }
+    pub fn next(self: *@This()) ?Row {
+        if (self.i >= self.n) return null;
+        defer self.i += 1;
+        return .{ .value = self.text };
+    }
+    pub fn deinit(self: *@This()) void {
+        std.heap.c_allocator.free(self.text);
+    }
 });
 
 const AggSumCt = comptime_aggregate_v2.Function("zig_v2_agg_sum_ct", struct {
@@ -211,7 +243,8 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
     FirstChar.register(input) catch {};
-    Range3Ct.register(input) catch {};
+    RangeCt.register(input) catch {};
+    RepeatCt.register(input) catch {};
     ArgMaxCt.register(input) catch {};
     AggSumCt.register(input) catch {};
     WeightedAvgCt.register(input) catch {};

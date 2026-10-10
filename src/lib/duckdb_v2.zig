@@ -665,6 +665,33 @@ pub fn valueGetVarchar(value: ValueHandle, out: *Str, err: *ErrorInfoHandle) Err
     return getApi().duckdb_v2_value_get_varchar.?(value, out, err);
 }
 
+// Numeric `Value` readers, mirroring the same type set `duckdbV2TypeId`
+// maps across the comptime frameworks (i8/i16/i32/i64/f32/f64/bool) —
+// needed for reading table-function constructor arguments at bind time,
+// where (unlike scalar/aggregate `exec`/`update`) the argument arrives as
+// a boxed `Value`, not a vector.
+pub fn valueGetTinyint(value: ValueHandle, out: *i8, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_tinyint.?(value, out, err);
+}
+pub fn valueGetSmallint(value: ValueHandle, out: *i16, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_smallint.?(value, out, err);
+}
+pub fn valueGetInt(value: ValueHandle, out: *i32, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_int.?(value, out, err);
+}
+pub fn valueGetBigint(value: ValueHandle, out: *i64, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_bigint.?(value, out, err);
+}
+pub fn valueGetFloat(value: ValueHandle, out: *f32, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_float.?(value, out, err);
+}
+pub fn valueGetDouble(value: ValueHandle, out: *f64, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_double.?(value, out, err);
+}
+pub fn valueGetBool(value: ValueHandle, out: *bool, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_bool.?(value, out, err);
+}
+
 /// Box a Zig string as a VARCHAR `Value`, for use with `vectorSetValue`.
 /// The caller must `valueDestroy` the result once written.
 pub fn valueCreateVarcharWithContext(
