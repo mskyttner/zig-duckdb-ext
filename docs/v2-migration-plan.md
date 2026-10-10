@@ -21,10 +21,11 @@ modified except for one pure, verified-behavior-preserving refactor (see
 Binding layer: `src/lib/duckdb_v2.zig` (vtable singleton + wrapped
 functions) plus three comptime frameworks — `comptime_scalar_v2.zig`
 (full per-row-function → vectorized-callback generation, including
-VARCHAR), `comptime_table_v2.zig` (thin registration helper, caller
-supplies bind/exec), `comptime_aggregate_v2.zig` (full
-init/update/combine/finalize generation from a `State` type, including an
-optional-return convention for NULL output).
+VARCHAR), `comptime_table_v2.zig` (full bind/exec generation from a
+`Row`/`init`/`next` `State` type, including VARCHAR arguments/columns),
+`comptime_aggregate_v2.zig` (full init/update/combine/finalize generation
+from a `State` type, including an optional-return convention for NULL
+output and VARCHAR as an argument or return type).
 
 Proven against a live `v2.0.0-alpha46057` runtime (installed via
 `DUCKDB_VERSION=alpha bash <(curl https://install.duckdb.org)`, not
@@ -354,29 +355,52 @@ already in `duckdb_v2.zig` are STRUCT-ready (per their own doc comments:
 - A reasonable first target: a STRUCT-typed argument to a scalar function
   (read-only), before attempting a STRUCT-returning function.
 
-### 3. Comptime table-function framework generalization
+### 3. Comptime table-function framework generalization — done
 
-`comptime_table_v2.Function` today is deliberately thin — the caller
-writes real bind/init_global/exec callbacks by hand, same as v1's
-`comptime_table.zig`. A genuine generalization (mirroring what
-`comptime_scalar_v2.Function` already does: derive the vectorized
-plumbing from a plain per-row shape) would mean something like:
+`comptime_table_v2.Function(name, State)` now generates bind/exec from a
+plain `State` type instead of requiring hand-written callbacks:
 
 ```zig
 comptime_table_v2.Function("my_source", struct {
     pub const Row = struct { a: i64, b: []const u8 };
-    pub fn next(state: *MyState) ?Row { ... } // pull-iterator shape
+    pub fn init(n: i64) @This() { ... }       // constructor args -> SQL params
+    pub fn next(self: *@This()) ?Row { ... }  // pull-iterator shape
+    pub fn deinit(self: *@This()) void { ... } // optional cleanup
 });
 ```
 
-generating bind (result columns from `Row`'s fields, via the same
-`duckdbV2TypeId` mapping `comptime_scalar_v2` already has), init_global,
-and an exec loop that calls `next()` until it returns `null`, writing each
-field through the same numeric/VARCHAR-aware machinery
-`comptime_scalar_v2`'s `execute` already has. This is new design, not a
-port — scope it as its own task, probably after STRUCT support (a `Row`
-is structurally a STRUCT), and expect it to be more involved than any
-single thing built so far this session.
+`Row`'s field names become the real output column names directly — unlike
+`comptime_scalar_v2`/`comptime_aggregate_v2`, a struct's field names ARE
+available at comptime, so no `a0`/`a1` synthesis is needed there (`init`'s
+own parameters still get synthesized names, same as everywhere else, since
+those are plain function parameters). `State` lives entirely in bind data
+(no `init_global`/local-init callback used), forcing the same
+single-threaded-scan model the hand-written v1/v2 table functions already
+assume.
+
+Proved against a real, non-trivial function, not just a toy example:
+`ct_tokenize_v2.zig` (one of the 9 ported functions) was rewritten against
+this framework — its custom, stateful tokenizing logic now expressed as a
+plain `Row`/`init`/`next` `State`, bind/exec fully generated — verified
+live, byte-identical output to the hand-written version it replaced.
+
+One real bug found and fixed along the way: an output vector's size must
+be set to its final row count *before* any row is written into it
+(`vector_set_value` returns `"row out of range"` otherwise) — so `exec`
+must pull a whole batch via `next()` first, then set sizes, then write,
+not interleave pull-and-write per row as an earlier draft attempted. This
+means a `Row`'s `[]const u8` field must stay valid for the whole `exec`
+call, not just until the next `next()` call — safe when it borrows from
+stable backing storage (`ct_tokenize_v2.zig`'s `State.input`), unsafe if
+`next` reused one mutable scratch buffer across calls (documented as a
+constraint in `comptime_table_v2.zig`'s module doc comment, not currently
+enforced by the framework).
+
+Not done: STRUCT-typed `Row` fields or arguments (naturally blocked on
+item 2), and no cardinality hint (`tableFunctionBindSetCardinality`) is
+set — the row count isn't knowable ahead of a pull iterator in general; a
+`State` that can report an estimate up front could opt in later via an
+optional declaration, not scoped here.
 
 ### 4. VARCHAR support for comptime aggregates — first two increments done
 
