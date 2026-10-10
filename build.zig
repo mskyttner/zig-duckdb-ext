@@ -51,6 +51,17 @@ pub fn build(b: *std.Build) void {
     const v2_check = b.addTest(.{ .root_module = duckdb_v2_mod });
     const run_v2_check = b.addRunArtifact(v2_check);
 
+    // Worked examples kept separate from duckdb_v2.zig itself — see that
+    // file's own doc comment for why.
+    const duckdb_v2_examples_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/duckdb_v2_examples.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    duckdb_v2_examples_mod.addImport("duckdb_v2", duckdb_v2_mod);
+    const duckdb_v2_examples_check = b.addTest(.{ .root_module = duckdb_v2_examples_mod });
+    const run_duckdb_v2_examples_check = b.addRunArtifact(duckdb_v2_examples_check);
+
     const comptime_scalar_v2_mod = b.createModule(.{
         .root_source_file = b.path("src/lib/comptime_scalar_v2.zig"),
         .target = target,
@@ -80,6 +91,7 @@ pub fn build(b: *std.Build) void {
 
     const v2_check_step = b.step("v2-check", "Type-check the in-progress duckdb v2 API bindings");
     v2_check_step.dependOn(&run_v2_check.step);
+    v2_check_step.dependOn(&run_duckdb_v2_examples_check.step);
     v2_check_step.dependOn(&run_comptime_scalar_v2_check.step);
     v2_check_step.dependOn(&run_comptime_table_v2_check.step);
     v2_check_step.dependOn(&run_comptime_aggregate_v2_check.step);
@@ -97,6 +109,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     v2_poc_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
+    v2_poc_lib.root_module.addImport("duckdb_v2_examples", duckdb_v2_examples_mod);
     v2_poc_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
     v2_poc_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
     v2_poc_lib.root_module.addImport("comptime_aggregate_v2", comptime_aggregate_v2_mod);

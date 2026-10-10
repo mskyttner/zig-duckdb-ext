@@ -15,6 +15,7 @@
 ///! logic — already proven separately by the hand-written version), and
 ///! `zig_v2_agg_sum_ct`, registered through `comptime_aggregate_v2.Function`.
 const db2 = @import("duckdb_v2");
+const examples = @import("duckdb_v2_examples");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const comptime_table_v2 = @import("comptime_table_v2");
 const comptime_aggregate_v2 = @import("comptime_aggregate_v2");
@@ -258,13 +259,13 @@ fn registerAggSum(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) v
 // Private test-only decls of duckdb_v2.zig, re-exposed here so this file
 // can wire them up without making them a permanent public API of the
 // bindings module.
-const exampleDoubleExec = db2.exampleDoubleExecForPoc;
-const exampleHelloExec = db2.exampleHelloExecForPoc;
-const exampleTableBind = db2.exampleTableBindForPoc;
-const exampleTableInitGlobal = db2.exampleTableInitGlobalForPoc;
-const exampleTableExec = db2.exampleTableExecForPoc;
-const exampleAggSize = db2.exampleAggregateSizeForPoc;
-const exampleAggInit = db2.exampleAggregateInitForPoc;
-const exampleAggUpdate = db2.exampleAggregateUpdateForPoc;
-const exampleAggCombine = db2.exampleAggregateCombineForPoc;
-const exampleAggFinalize = db2.exampleAggregateFinalizeForPoc;
+const exampleDoubleExec = examples.exampleDoubleExecForPoc;
+const exampleHelloExec = examples.exampleHelloExecForPoc;
+const exampleTableBind = examples.exampleTableBindForPoc;
+const exampleTableInitGlobal = examples.exampleTableInitGlobalForPoc;
+const exampleTableExec = examples.exampleTableExecForPoc;
+const exampleAggSize = examples.exampleAggregateSizeForPoc;
+const exampleAggInit = examples.exampleAggregateInitForPoc;
+const exampleAggUpdate = examples.exampleAggregateUpdateForPoc;
+const exampleAggCombine = examples.exampleAggregateCombineForPoc;
+const exampleAggFinalize = examples.exampleAggregateFinalizeForPoc;
