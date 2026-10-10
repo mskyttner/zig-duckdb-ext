@@ -238,6 +238,49 @@ implementation might have accumulated. If they diverge, either fix ours
 or switch to invoking the official script directly the way `quack-zig`
 does.
 
+## Patterns worth reusing (from reviewing `habedi/template-duckdb-extension-zig`)
+
+A third DuckDB-extension-in-Zig project, structured differently from both
+this one and `quack-zig`: C owns all DuckDB API interaction
+(registration, vector iteration, validity masks), Zig is reduced to
+`export fn`s doing isolated pure computation, called from C via FFI. Named
+explicitly to confirm this project's all-Zig approach (including the
+vectorized/validity-mask code, not just leaf computations) is a
+deliberate choice consistent with ADR-0001/0002, not a missed simpler
+option. Two of its ideas were worth adopting directly, done this round:
+
+### `zig build duckdb-extension` / `duckdb-extension-v1` — interactive REPL with the extension pre-loaded
+
+Added. The template computes the installed extension's path as a plain
+string at configure time (`b.getInstallPath`) and writes an init script
+via `addWriteFiles()`. **That doesn't carry over to this project's Zig
+version**: 0.17 split build.zig execution into a "Configurer" (evaluates
+the build graph) and a "Maker" (actually runs steps) — `b.getInstallPath`
+doesn't exist at all in 0.17's `std.Build` (confirmed: removed), because
+no concrete filesystem path is known until make time. Adapted instead
+with `-cmd` (DuckDB CLI runs one command, then drops into the REPL,
+unlike `-c` which exits afterward) combined with `Step.Run.addFileArg2`'s
+`prefix`/`suffix` options, which build `"LOAD '<path>';"` as a single argv
+token with the path substituted lazily, at the point the step actually
+runs — no string available, or needed, at configure time. Verified
+correct directly: the exact command Zig printed when the step hit an
+unrelated, pre-existing `~/.duckdbrc` issue (`LOAD
+'./.zig-cache/.../zig_ext.duckdb_extension';`) was byte-correct, and
+running that same `-cmd` manually with the dotfile bypassed loaded the
+extension and ran `zig_add_numbers(2,3)` correctly.
+
+### `zig build docs` / `docs-v2` — Zig's built-in autodoc
+
+Added, via the existing `lib`/`ext_v2_lib` compile steps'
+`getEmittedDocs()` + `addInstallDirectory`, rather than the template's
+separate `zig build-lib -fno-emit-bin -femit-docs=...` shell-out — reusing
+the real compile step means the actual module graph (`duckdb_c`/
+`duckdb_v2` imports, etc.) is picked up automatically instead of needing
+to be reconstructed by hand for a standalone invocation. Output:
+`zig-out/docs/index.html` (v1), `zig-out/docs-v2/index.html` (v2) — free
+documentation given how extensively this project already uses `///!` doc
+comments.
+
 ## What's NOT done
 
 ### 1. Cleanup / consolidation
