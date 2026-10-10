@@ -6,6 +6,39 @@ const target_duckdb_version = "v1.2.0";
 const extension_version = "v0.1.0";
 const abi_type = "C_STRUCT";
 
+/// Append DuckDB extension metadata to an already-configured shared
+/// library, producing a `.duckdb_extension` file. Factors out the
+/// metadata-tool-executable + run-command + four-args + output-arg
+/// pattern that was hand-copied for the v1 extension, the real v2
+/// extension, and the v2 proof-of-concept — the caller is still
+/// responsible for `b.addLibrary(...)` and whatever imports/linkage that
+/// particular target needs, since those differ too much per target to be
+/// worth forcing into one shared signature.
+fn addDuckdbExtensionMetadata(
+    b: *std.Build,
+    lib: *std.Build.Step.Compile,
+    name: []const u8,
+    duckdb_version: []const u8,
+    ext_version: []const u8,
+    abi: []const u8,
+) std.Build.LazyPath {
+    const metadata_tool = b.addExecutable(.{
+        .name = b.fmt("append_metadata_{s}", .{name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/append_metadata_main.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const append_cmd = b.addRunArtifact(metadata_tool);
+    append_cmd.step.dependOn(&lib.step);
+    append_cmd.addArtifactArg(lib);
+    append_cmd.addArg(name);
+    append_cmd.addArg(duckdb_version);
+    append_cmd.addArg(ext_version);
+    append_cmd.addArg(abi);
+    return append_cmd.addOutputFileArg(b.fmt("{s}.duckdb_extension", .{name}));
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -115,21 +148,7 @@ pub fn build(b: *std.Build) void {
     v2_poc_lib.root_module.addImport("comptime_aggregate_v2", comptime_aggregate_v2_mod);
     v2_poc_lib.root_module.link_libc = true;
 
-    const metadata_tool_v2_poc = b.addExecutable(.{
-        .name = "append_metadata_v2_poc",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/append_metadata_main.zig"),
-            .target = b.graph.host,
-        }),
-    });
-    const v2_poc_append = b.addRunArtifact(metadata_tool_v2_poc);
-    v2_poc_append.step.dependOn(&v2_poc_lib.step);
-    v2_poc_append.addArtifactArg(v2_poc_lib);
-    v2_poc_append.addArg("zig_ext_v2_poc");
-    v2_poc_append.addArg("v2.0.0");
-    v2_poc_append.addArg("v0.0.0-poc");
-    v2_poc_append.addArg("C_STRUCT");
-    const v2_poc_output = v2_poc_append.addOutputFileArg("zig_ext_v2_poc.duckdb_extension");
+    const v2_poc_output = addDuckdbExtensionMetadata(b, v2_poc_lib, "zig_ext_v2_poc", "v2.0.0", "v0.0.0-poc", "C_STRUCT");
 
     // ── Real, parallel v2 extension (zig_ext_v2) — migrated-off-v1
     // functions only (see src/ext/init_v2.zig); v1's real `zig_ext` target
@@ -148,21 +167,7 @@ pub fn build(b: *std.Build) void {
     ext_v2_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
     ext_v2_lib.root_module.link_libc = true;
 
-    const metadata_tool_ext_v2 = b.addExecutable(.{
-        .name = "append_metadata_ext_v2",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/append_metadata_main.zig"),
-            .target = b.graph.host,
-        }),
-    });
-    const ext_v2_append = b.addRunArtifact(metadata_tool_ext_v2);
-    ext_v2_append.step.dependOn(&ext_v2_lib.step);
-    ext_v2_append.addArtifactArg(ext_v2_lib);
-    ext_v2_append.addArg("zig_ext_v2");
-    ext_v2_append.addArg("v2.0.0");
-    ext_v2_append.addArg("v0.1.0");
-    ext_v2_append.addArg("C_STRUCT");
-    const ext_v2_output = ext_v2_append.addOutputFileArg("zig_ext_v2.duckdb_extension");
+    const ext_v2_output = addDuckdbExtensionMetadata(b, ext_v2_lib, "zig_ext_v2", "v2.0.0", "v0.1.0", "C_STRUCT");
     const install_ext_v2 = b.addInstallFile(ext_v2_output, "lib/zig_ext_v2.duckdb_extension");
 
     const ext_v2_step = b.step("ext-v2", "Build the real, parallel v2 .duckdb_extension file");
@@ -206,27 +211,8 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(lib);
 
-    // ── Metadata appender tool ──────────────────────────────────────────
-    const metadata_tool = b.addExecutable(.{
-        .name = "append_metadata",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/append_metadata_main.zig"),
-            .target = b.graph.host,
-        }),
-    });
-
     // ── Post-build step: append metadata to produce .duckdb_extension ────
-    const append_cmd = b.addRunArtifact(metadata_tool);
-    append_cmd.step.dependOn(&lib.step);
-
-    // Pass the library output path and extension metadata as arguments
-    append_cmd.addArtifactArg(lib);
-    append_cmd.addArg(extension_name);
-    append_cmd.addArg(target_duckdb_version);
-    append_cmd.addArg(extension_version);
-    append_cmd.addArg(abi_type);
-    // The tool writes the output to a known location
-    const ext_output = append_cmd.addOutputFileArg(extension_name ++ ".duckdb_extension");
+    const ext_output = addDuckdbExtensionMetadata(b, lib, extension_name, target_duckdb_version, extension_version, abi_type);
 
     // Install the .duckdb_extension file into zig-out/lib/
     const install_ext = b.addInstallFile(ext_output, "lib/" ++ extension_name ++ ".duckdb_extension");
@@ -234,7 +220,7 @@ pub fn build(b: *std.Build) void {
 
     // ── "ext" step: just build the .duckdb_extension ─────────────────────
     const ext_step = b.step("ext", "Build the .duckdb_extension file with metadata");
-    ext_step.dependOn(&append_cmd.step);
+    ext_step.dependOn(&install_ext.step);
 
     // ── Interactive session with the real v1 extension pre-loaded ────────
     // See the v2 step above for why this uses -cmd + addFileArg2's
