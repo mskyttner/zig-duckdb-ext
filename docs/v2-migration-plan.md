@@ -226,17 +226,17 @@ with real `.test` files, one set run against `zig_ext.duckdb_extension`
 and the same set run against `zig_ext_v2.duckdb_extension`, asserting
 identical output DuckDB-natively rather than via a hand-rolled diff.
 
-### Metadata appender checkup
+### Metadata appender checkup — done, no drift found
 
-`quack-zig` invokes DuckDB's own `extension-ci-tools` repo's
-`scripts/append_extension_metadata.py` (via `uv run`) rather than writing
-the binary metadata footer by hand. **Action item, not yet done**: diff
-our `src/append_metadata_main.zig`'s output against that script's output
-for the same input library file — byte-for-byte, not just "does DuckDB
-load it" — to catch any drift from the real format our hand-rolled
-implementation might have accumulated. If they diverge, either fix ours
-or switch to invoking the official script directly the way `quack-zig`
-does.
+Fetched DuckDB's own `extension-ci-tools@v1.2.0`
+`scripts/append_extension_metadata.py` directly and ran both it and our
+`append_metadata_main.zig` against the identical raw, pre-metadata
+`libzig_ext.so`, with matching arguments (`zig_ext`, `v1.2.0`, `v0.1.0`,
+`C_STRUCT`, platform `linux_amd64`). Compared outputs with `cmp` and
+`sha256sum`, not just "does DuckDB load it": **byte-for-byte identical**,
+same SHA256. Our hand-rolled implementation has accumulated no drift from
+the real format — nothing to fix, no reason to switch to shelling out to
+the official script the way `quack-zig` does.
 
 ## Patterns worth reusing (from reviewing `habedi/template-duckdb-extension-zig`)
 
