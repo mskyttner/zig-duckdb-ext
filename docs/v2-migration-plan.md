@@ -378,19 +378,31 @@ port — scope it as its own task, probably after STRUCT support (a `Row`
 is structurally a STRUCT), and expect it to be more involved than any
 single thing built so far this session.
 
-### 4. VARCHAR support for comptime aggregates
+### 4. VARCHAR support for comptime aggregates — first two increments done
 
-`comptime_aggregate_v2.zig`'s `duckdbV2TypeId` has no `[]const u8` case,
-unlike the scalar framework. Two separable increments:
+`comptime_aggregate_v2.zig`'s `duckdbV2TypeId` now has a `[]const u8` case.
+Two increments landed; a third remains out of scope:
 
-- **VARCHAR as an `update` argument only** (e.g. a `count_distinct`-style
-  aggregate that reads strings but accumulates a non-string state) — a
-  direct mirror of `comptime_scalar_v2`'s arg-decode branch
-  (`BytesValue`/`bytesSlice`), no new state-ownership concerns.
-- **VARCHAR as `finalize`'s return type** (e.g. "concatenate all values in
-  the group") — needs `finalize`'s write path to box through `Value`
-  instead of a flat buffer, mirroring `comptime_scalar_v2`'s
-  `return_is_varchar` branch, straightforward on its own.
+- **VARCHAR as an `update` argument — done.** `buildArgs` mirrors
+  `comptime_scalar_v2`'s arg-decode branch exactly (`BytesValue`/
+  `bytesSlice`); no new state-ownership concerns, as expected.
+- **VARCHAR as `finalize`'s return type — done, but not as this section
+  originally assumed.** The original plan said this would "box through
+  `Value`, mirroring `comptime_scalar_v2`'s `return_is_varchar` branch" —
+  **wrong**: confirmed via direct header grep that none of the aggregate
+  callbacks (`size`/`init`/`update`/`combine`/`finalize`) take a `context`
+  or `connection` parameter, unlike `bind` (the only aggregate callback
+  that does). `value_create_varchar_with_context` needs a context, so the
+  boxed-`Value` approach `comptime_scalar_v2` uses is unavailable here.
+  The actual fix: `finalize` writes directly into the result vector's own
+  arena. `duckdb_v2_vector_get_arena` only needs a vector handle (no
+  context), so `duckdb_v2.zig` gained `ArenaHandle`/`vectorGetArena`/
+  `arenaAllocate`/`makeBytesValue` wrappers that hand-construct a
+  `duckdb_v2_bytes` directly — inlined for ≤12 bytes, arena-allocated
+  otherwise — bypassing `Value` boxing entirely for this one case.
+  Verified against the live v2.0.0-alpha46057 runtime (`zig_v2_total_len_ct`,
+  `zig_v2_last_seen_ct`), including GROUP BY to exercise both the inline
+  and arena-pointer `BytesValue` encodings under real parallel `combine`.
 - **A `State` that owns growable string/list data** (e.g. real
   `string_agg`, or the "collect subtree values into a list" aggregate
   discussed but deferred this session) is a different, harder problem:
