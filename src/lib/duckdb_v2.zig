@@ -41,6 +41,7 @@ pub const AggregateFunctionInitInfoHandle = c.duckdb_v2_aggregate_function_init_
 pub const AggregateFunctionUpdateInfoHandle = c.duckdb_v2_aggregate_function_update_info_handle;
 pub const AggregateFunctionCombineInfoHandle = c.duckdb_v2_aggregate_function_combine_info_handle;
 pub const AggregateFunctionFinalizeInfoHandle = c.duckdb_v2_aggregate_function_finalize_info_handle;
+pub const AggregateFunctionDestroyInfoHandle = c.duckdb_v2_aggregate_function_destroy_info_handle;
 
 // ─── Re-export enums / structs ────────────────────────────────────────────────
 
@@ -455,6 +456,33 @@ pub fn aggregateFunctionFinalizeGetResult(
 
 pub fn aggregateFunctionFinalizeGetResultOffset(info: AggregateFunctionFinalizeInfoHandle, out_offset: *idx_t, err: *ErrorInfoHandle) ErrorCode {
     return getApi().duckdb_v2_aggregate_function_finalize_get_result_offset.?(info, out_offset, err);
+}
+
+/// Optional — only needed when aggregate states own resources that must be
+/// released (e.g. a growable buffer backing `string_agg`-style state). Runs
+/// on states discarded without being finalized (combine's merged-away
+/// sources, states abandoned on error/cancellation): the complement of
+/// finalize, which is otherwise the only other place a state's lifetime
+/// ends. Must not fail — an error reported through its error slot is
+/// ignored (per the header's own doc comment).
+pub fn aggregateFunctionSetDestroyCallback(
+    function: AggregateFunctionHandle,
+    callback: c.duckdb_v2_aggregate_function_destroy_callback_fn,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_aggregate_function_set_destroy_callback.?(function, callback, err);
+}
+
+pub fn aggregateFunctionDestroyGetStateCount(info: AggregateFunctionDestroyInfoHandle, out_count: *idx_t, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_aggregate_function_destroy_get_state_count.?(info, out_count, err);
+}
+
+pub fn aggregateFunctionDestroyGetStates(
+    info: AggregateFunctionDestroyInfoHandle,
+    out_states: *[*c]?*anyopaque,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_aggregate_function_destroy_get_states.?(info, out_states, err);
 }
 
 // --- Function Signature (shared by scalar/aggregate/table functions) ---

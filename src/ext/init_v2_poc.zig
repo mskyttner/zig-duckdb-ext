@@ -239,6 +239,33 @@ const LastSeenCt = comptime_aggregate_v2.Function("zig_v2_last_seen_ct", struct 
     }
 });
 
+/// Proves the growable-string-state case live: a real `string_agg`
+/// equivalent whose `State` holds a heap-allocated, comma-growing buffer —
+/// `@sizeOf(State)` can't hold that directly, so `update`/`combine` grow a
+/// separately allocated `std.ArrayList(u8)`, freed via `deinit`, wired up
+/// as the aggregate's destroy callback by `comptime_aggregate_v2.Function`.
+const StringAggCt = comptime_aggregate_v2.Function("zig_v2_string_agg_ct", struct {
+    buf: std.ArrayList(u8),
+    pub fn init() @This() {
+        return .{ .buf = .empty };
+    }
+    pub fn update(self: *@This(), s: []const u8) void {
+        if (self.buf.items.len != 0) self.buf.append(std.heap.c_allocator, ',') catch return;
+        self.buf.appendSlice(std.heap.c_allocator, s) catch return;
+    }
+    pub fn combine(self: *@This(), other: @This()) void {
+        if (other.buf.items.len == 0) return;
+        if (self.buf.items.len != 0) self.buf.append(std.heap.c_allocator, ',') catch return;
+        self.buf.appendSlice(std.heap.c_allocator, other.buf.items) catch return;
+    }
+    pub fn finalize(self: @This()) []const u8 {
+        return self.buf.items;
+    }
+    pub fn deinit(self: *@This()) void {
+        self.buf.deinit(std.heap.c_allocator);
+    }
+});
+
 fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
@@ -249,6 +276,7 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     AggSumCt.register(input) catch {};
     WeightedAvgCt.register(input) catch {};
     TotalLenCt.register(input) catch {};
+    StringAggCt.register(input) catch {};
     LastSeenCt.register(input) catch {};
 }
 

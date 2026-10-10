@@ -18,10 +18,30 @@
 ///!
 ///! `update`'s parameters (after `self`) and `finalize`'s return type are
 ///! introspected at comptime to build the function signature, the same way
-///! `comptime_scalar_v2.Function` reads a per-row function's shape. No size,
-///! bind, or destroy callback is needed from the caller: size is
-///! `@sizeOf(State)`, there's no dynamic return type, and State owns no
-///! resources requiring a destructor.
+///! `comptime_scalar_v2.Function` reads a per-row function's shape. No size
+///! or bind callback is needed from the caller: size is `@sizeOf(State)`,
+///! and there's no dynamic return type.
+///!
+///! Optional fifth decl, for a `State` that owns a resource (e.g. a
+///! growable buffer backing a `string_agg`-style aggregate — `@sizeOf(State)`
+///! is fixed at registration time, so growable data can only live behind a
+///! separately heap-allocated pointer the state holds):
+///!   - `pub fn deinit(self: *State) void` — release it.
+///!
+///! Wired up as the aggregate's destroy callback ONLY — `finalize` must not
+///! call `deinit` itself. Confirmed live (crashed otherwise, a double-free
+///! caught by Zig 0.17's `ArrayList` pointer-stability assertion): DuckDB's
+///! v2.0 alpha calls `destroy` on every state that was ever allocated,
+///! including ones `finalize` already ran on, not just states discarded
+///! without being finalized the way the header's own doc comment on
+///! `duckdb_v2_aggregate_function_set_destroy_callback` suggests — `destroy`
+///! is the one and only place a state's resources may be released.
+///! `finalize` may read a resource `deinit` will later free (e.g. return a
+///! `[]const u8` borrowed from the state's own buffer) as long as the
+///! caller copies it out before `destroy` runs, which it does here (see
+///! `makeBytesValue`'s immediate-copy-into-arena below). `combine`'s
+///! `other` argument must NOT be freed by `combine` itself — `other`'s
+///! owning state gets its own, separate `deinit` call from `destroy` later.
 ///!
 ///! Usage:
 ///!   const Sum = comptime_aggregate_v2.Function("my_sum", struct {
@@ -63,6 +83,14 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
     const finalize_is_optional = @typeInfo(RawReturnType) == .optional;
     const ReturnType = if (finalize_is_optional) @typeInfo(RawReturnType).optional.child else RawReturnType;
     const return_is_varchar = ReturnType == []const u8;
+    // Optional: a State that owns a resource (e.g. a growable buffer
+    // backing a string_agg-style aggregate) declares `deinit` to release
+    // it. Called once per state, exactly once: after `finalize` produces
+    // its result for states that get finalized, or from `destroyCallback`
+    // for states discarded without being finalized (combine's merged-away
+    // sources, states abandoned on error/cancellation) — see
+    // `duckdb_v2.zig`'s `aggregateFunctionSetDestroyCallback` doc comment.
+    const has_deinit = @hasDecl(State, "deinit");
 
     inline for (arg_types) |t| _ = duckdbV2TypeId(t.?);
     _ = duckdbV2TypeId(ReturnType);
@@ -131,6 +159,11 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             }
             if (db.aggregateFunctionSetFinalizeCallback(function, finalizeCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
                 return error.FailedToSetFinalizeCallback;
+            }
+            if (comptime has_deinit) {
+                if (db.aggregateFunctionSetDestroyCallback(function, destroyCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                    return error.FailedToSetDestroyCallback;
+                }
             }
 
             if (db.aggregateFunctionRegister(function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
@@ -251,6 +284,19 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
                 } else {
                     out[offset + i] = state.finalize();
                 }
+            }
+        }
+
+        fn destroyCallback(info: db.AggregateFunctionDestroyInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
+            var count: db.idx_t = 0;
+            if (db.aggregateFunctionDestroyGetStateCount(info, &count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            var states: [*c]?*anyopaque = null;
+            if (db.aggregateFunctionDestroyGetStates(info, &states, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+
+            var i: db.idx_t = 0;
+            while (i < count) : (i += 1) {
+                const state: *State = @ptrCast(@alignCast(states[i].?));
+                state.deinit();
             }
         }
 
@@ -407,4 +453,34 @@ test "Function supports VARCHAR as finalize's return type" {
         }
     });
     _ = &LastSeen.register;
+}
+
+test "Function supports a State that owns growable string data, freed via deinit/destroy" {
+    const StringAgg = Function("v2_test_agg_string_agg", struct {
+        buf: std.ArrayList(u8),
+        pub fn init() @This() {
+            return .{ .buf = .empty };
+        }
+        pub fn update(self: *@This(), s: []const u8) void {
+            if (self.buf.items.len != 0) self.buf.append(std.heap.c_allocator, ',') catch return;
+            self.buf.appendSlice(std.heap.c_allocator, s) catch return;
+        }
+        pub fn combine(self: *@This(), other: @This()) void {
+            // `other`'s own backing buffer is NOT freed here — its owning
+            // state gets its own `deinit` call later (see this file's
+            // module doc comment on `deinit`'s contract).
+            if (other.buf.items.len == 0) return;
+            if (self.buf.items.len != 0) self.buf.append(std.heap.c_allocator, ',') catch return;
+            self.buf.appendSlice(std.heap.c_allocator, other.buf.items) catch return;
+        }
+        pub fn finalize(self: @This()) []const u8 {
+            return self.buf.items;
+        }
+        pub fn deinit(self: *@This()) void {
+            self.buf.deinit(std.heap.c_allocator);
+        }
+    });
+    _ = &StringAgg.register;
+    const destroy_cb: db.c.duckdb_v2_aggregate_function_destroy_callback_fn = StringAgg.destroyCallback;
+    try std.testing.expect(destroy_cb != null);
 }
