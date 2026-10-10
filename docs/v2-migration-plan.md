@@ -21,7 +21,8 @@ modified except for one pure, verified-behavior-preserving refactor (see
 Binding layer: `src/lib/duckdb_v2.zig` (vtable singleton + wrapped
 functions) plus three comptime frameworks — `comptime_scalar_v2.zig`
 (full per-row-function → vectorized-callback generation, including
-VARCHAR), `comptime_table_v2.zig` (full bind/exec generation from a
+VARCHAR, a one-level STRUCT argument, and VARIANT as an argument or return
+type), `comptime_table_v2.zig` (full bind/exec generation from a
 `Row`/`init`/`next` `State` type, including VARCHAR arguments/columns),
 `comptime_aggregate_v2.zig` (full init/update/combine/finalize generation
 from a `State` type, including an optional-return convention for NULL
@@ -33,8 +34,9 @@ Proven against a live `v2.0.0-alpha46057` runtime (installed via
 vendored — see "Testing infrastructure gaps" below): scalar, table, and
 aggregate functions; native named parameters + defaults; VARCHAR (inline
 and pointer/arena encoding); LIST(T) including parallel multi-LIST
-arguments; BOOLEAN; non-additive aggregate `combine`; NULL propagation
-throughout.
+arguments; STRUCT (scalar argument direction only); VARIANT (scalar
+argument and return); BOOLEAN; non-additive aggregate `combine`; NULL
+propagation throughout, including VARIANT's deliberate opt-out of it.
 
 Two real bugs found and fixed along the way (both documented in their
 commit messages and the relevant file's doc comments): a use-after-free
@@ -337,24 +339,74 @@ comments.
     verification stays the live-runtime-CLI comparisons this branch
     already relies on.
 
-### 2. STRUCT support
+### 2. STRUCT support — argument direction done; VARIANT also added
 
-No current function needs it, but it's the natural next composite-type
-gap, and several `vector_get_child`/`vector_get_child_count` semantics
-already in `duckdb_v2.zig` are STRUCT-ready (per their own doc comments:
-"STRUCT and TUPLE `[i]` = field `i`"). Scope:
+`comptime_scalar_v2.Function` now accepts a one-level Zig `struct`
+parameter type, mapped to SQL STRUCT. Each increment from this section's
+original scope landed as expected:
 
-- Logical type construction: STRUCT needs named parameters (one per
-  field), unlike LIST's single positional one —
-  `context_create_type_from_id`'s `param_names` array (currently always
-  passed `null` by `contextCreateListType`) would need real identifiers.
-- Reading: no `list_entry`-style offset/length indirection — each child
-  vector is already aligned 1:1 with the parent's rows, read directly.
-- Writing: likely needs the same `Value`-boxing approach VARCHAR uses
-  (`value_create_struct_with_context`-equivalent, if one exists — not yet
-  checked) rather than a direct-buffer write.
-- A reasonable first target: a STRUCT-typed argument to a scalar function
-  (read-only), before attempting a STRUCT-returning function.
+- **Logical type construction**: `contextCreateStructType` in
+  `duckdb_v2.zig` takes real field names (unlike `contextCreateListType`'s
+  single positional child) — builds one named TYPE-kind `Value` parameter
+  per field via the same `value_create_type_with_context` dance, then
+  calls `context_create_type_from_id(ctx, STRUCT, names, values, n, ...)`.
+- **Reading**: confirmed no `list_entry`-style indirection — each field's
+  child vector (`vectorGetChild(vec, field_index, ...)`) is already
+  aligned 1:1 with the parent's rows, flattened and view-cached exactly
+  like a plain argument. DuckDB's nested-NULL invariant (a NULL STRUCT row
+  implies NULL field rows) means per-field validity checks are sufficient
+  on their own — no separate STRUCT-level validity check needed.
+- **Writing**: confirmed `value_create_struct_with_context` exists, but
+  **not implemented** — STRUCT-typed *return* values stay out of scope, as
+  originally planned ("a reasonable first target: argument only").
+- A new, dedicated exec path (`executeStruct`) handles STRUCT arguments —
+  the existing numeric/VARCHAR path is untouched, kept simple by not
+  trying to unify the two.
+
+Verified live against `v2.0.0-alpha46057`: `zig_v2_point_dist2_ct`
+(`STRUCT(x BIGINT, y BIGINT)` → BIGINT, including a NULL struct row
+propagating to NULL output) and `zig_v2_person_greet_ct` (a STRUCT with a
+VARCHAR field, mixed with a plain BIGINT argument).
+
+**Also added while investigating this, not originally scoped: VARIANT.**
+`db.ValueHandle` as a parameter or return type maps to SQL VARIANT.
+VARIANT has no committed view layout at all (confirmed: `vectorGetView`
+doesn't support it), so a third dedicated path (`executeDynamic`) reads/
+writes one boxed `Value` per row via `vectorGetValue`/`vectorSetValue`
+instead of the flatten+view machinery every other type uses. Two
+load-bearing, non-obvious findings, both confirmed live, both documented
+in `comptime_scalar_v2.zig`'s module doc comment and `duckdb_v2.zig`'s
+wrapper comments so they aren't rediscovered the hard way again:
+
+- `context_create_type_from_id(ctx, VARIANT, null, null, 0, ...)`
+  **segfaults** in DuckDB's own C++ internals on this alpha build, despite
+  VARIANT needing no parameters at the SQL level (`SELECT 1::VARIANT`
+  works fine from the CLI). Worked around with the new
+  `contextCreateTypeFromText(ctx, "VARIANT", ...)`, which parses the type
+  from SQL text instead and doesn't hit the bug.
+- A VARIANT argument's NULL does **not** participate in the framework's
+  usual "any NULL argument skips the row" convention — SQL NULL is
+  ordinary data VARIANT can hold, not an absent argument, so `implFn`
+  always runs and decides what NULL means itself via the new
+  `valueIsNull` wrapper. This also required declaring
+  `FUNCTION_PROPERTY_NULL_HANDLING_SPECIAL` (new
+  `scalarFunctionSetNullHandlingSpecial` wrapper) for any VARIANT-involving
+  function — without it, DuckDB constant-folds a literal NULL argument
+  straight to a NULL result without ever calling the function at all,
+  confirmed live (`SELECT my_fn(NULL::VARIANT, ...)` never reached our
+  code until this was set).
+- Constructing any `Value` needs a context, which `implFn` has no other
+  way to reach — so a VARIANT-involving `implFn` takes
+  `context: db.ContextHandle` as its first parameter, not counted as a SQL
+  parameter.
+
+Verified live: `zig_v2_variant_default_ct(v VARIANT, fallback BIGINT) ->
+VARIANT` — decodes `v` when non-NULL, substitutes `fallback` otherwise,
+always returning a freshly created `Value` (never the same handle received
+as the argument — the framework destroys the argument and the return
+value independently, so returning the same handle would double-free it,
+confirmed live and documented as a CAUTION). Exercised over a literal
+constant, a table column with real NULLs, and 20k rows.
 
 ### 3. Comptime table-function framework generalization — done
 
