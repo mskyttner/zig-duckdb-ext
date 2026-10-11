@@ -45,6 +45,33 @@
 ///! separately heap-allocated pointer the state holds):
 ///!   - `pub fn deinit(self: *State) void` — release it.
 ///!
+///! Optional sixth decl, for a batch-at-a-time fast path over the
+///! *ungrouped* case (`SELECT my_agg(x) FROM t`, no `GROUP BY`):
+///!   - `pub fn updateBatch(self: *State, views: *const [N]db.VectorView, row_count: db.idx_t) void`
+///!     where N is `arg_types.len` (the same count `update`'s own
+///!     parameters have, after `self`).
+///!
+///! `update` is called once per row, every time — DuckDB's v2 update
+///! callback hands it one state pointer per row regardless of GROUP BY,
+///! so for an ungrouped aggregate every one of those pointers is the SAME
+///! pointer, and the per-row dispatch (NULL-check + function call +
+///! tuple-unpack) is pure overhead the row loop pays 2048 times a chunk
+///! for what is, underneath, one reduction over a contiguous column.
+///! `updateBatch`, when present, is tried FIRST: the framework checks
+///! whether every state pointer in the current chunk is identical, and if
+///! so calls `updateBatch` ONCE with the chunk's raw argument
+///! `VectorView`s instead of looping `update` per row — the whole point
+///! being to fold the chunk's NULL-masking and reduction into one SIMD
+///! pass (`@Vector`/`@select`/`@reduce`) rather than 2048 scalar calls.
+///! Falls back to the ordinary `update` per-row loop whenever the
+///! pointers differ (a GROUP BY query) or `updateBatch` isn't declared at
+///! all — every existing `State` with no `updateBatch` is completely
+///! unaffected. `updateBatch` must apply the same "skip a row where any
+///! argument is NULL" rule `update`'s per-row path gets for free via
+///! `rowIsValid` — decode `views[i].validity` directly (see
+///! `isValid`-style helpers; same 64-bit-word layout `rowIsValid` already
+///! uses) since there is no row-by-row call to skip through instead.
+///!
 ///! Wired up as the aggregate's destroy callback ONLY — `finalize` must not
 ///! call `deinit` itself. Confirmed live (crashed otherwise, a double-free
 ///! caught by Zig 0.17's `ArrayList` pointer-stability assertion): DuckDB's
@@ -108,6 +135,9 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
     // sources, states abandoned on error/cancellation) — see
     // `duckdb_v2.zig`'s `aggregateFunctionSetDestroyCallback` doc comment.
     const has_deinit = @hasDecl(State, "deinit");
+    // Optional ungrouped batch fast path — see this file's module doc
+    // comment on `updateBatch`.
+    const has_update_batch = @hasDecl(State, "updateBatch");
 
     inline for (arg_types) |t| _ = duckdbV2TypeId(t.?);
     _ = duckdbV2TypeId(ReturnType);
@@ -220,6 +250,14 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             var states: [*c]?*anyopaque = null;
             if (db.aggregateFunctionUpdateGetStates(info, &states, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
 
+            if (comptime has_update_batch) {
+                if (row_count > 0 and allStatesEqual(states, row_count)) {
+                    const state: *State = @ptrCast(@alignCast(states[0].?));
+                    State.updateBatch(state, &views, row_count);
+                    return;
+                }
+            }
+
             var row: db.idx_t = 0;
             while (row < row_count) : (row += 1) {
                 // Standard SQL aggregate semantics: a row with any NULL
@@ -228,6 +266,18 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
                 const state: *State = @ptrCast(@alignCast(states[row].?));
                 @call(.auto, State.update, .{state} ++ buildArgs(&views, row));
             }
+        }
+
+        /// True when every row in this chunk targets the same state — the
+        /// case `updateBatch` exists for (an ungrouped aggregate; a GROUP
+        /// BY query's rows target different states and always fail this).
+        inline fn allStatesEqual(states: [*c]?*anyopaque, row_count: db.idx_t) bool {
+            const first = states[0];
+            var row: db.idx_t = 1;
+            while (row < row_count) : (row += 1) {
+                if (states[row] != first) return false;
+            }
+            return true;
         }
 
         fn combineCallback(info: db.AggregateFunctionCombineInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
@@ -500,4 +550,38 @@ test "Function supports a State that owns growable string data, freed via deinit
     _ = &StringAgg.register;
     const destroy_cb: db.c.duckdb_v2_aggregate_function_destroy_callback_fn = StringAgg.destroyCallback;
     try std.testing.expect(destroy_cb != null);
+}
+
+test "Function supports an optional updateBatch fast path" {
+    const WeightedAvgSimd = Function("v2_test_agg_weighted_avg_simd", struct {
+        weighted_sum: f64,
+        weight_sum: f64,
+        pub fn init() @This() {
+            return .{ .weighted_sum = 0, .weight_sum = 0 };
+        }
+        pub fn update(self: *@This(), x: f64, weight: f64) void {
+            self.weighted_sum += x * weight;
+            self.weight_sum += weight;
+        }
+        pub fn updateBatch(self: *@This(), views: *const [2]db.VectorView, row_count: db.idx_t) void {
+            // Trivial scalar stand-in for the test — the real SIMD kernel
+            // lives in init_v2_poc.zig's live example.
+            const x: [*]const f64 = @ptrCast(@alignCast(views[0].data));
+            const w: [*]const f64 = @ptrCast(@alignCast(views[1].data));
+            var row: db.idx_t = 0;
+            while (row < row_count) : (row += 1) {
+                self.weighted_sum += x[row] * w[row];
+                self.weight_sum += w[row];
+            }
+        }
+        pub fn combine(self: *@This(), other: @This()) void {
+            self.weighted_sum += other.weighted_sum;
+            self.weight_sum += other.weight_sum;
+        }
+        pub fn finalize(self: @This()) ?f64 {
+            if (self.weight_sum == 0) return null;
+            return self.weighted_sum / self.weight_sum;
+        }
+    });
+    _ = &WeightedAvgSimd.register;
 }

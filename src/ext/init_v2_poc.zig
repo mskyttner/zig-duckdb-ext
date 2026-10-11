@@ -242,6 +242,107 @@ const WeightedAvgCt = comptime_aggregate_v2.Function("zig_v2_weighted_avg_ct", s
     }
 });
 
+/// `@Vector`-accelerated twin of `WeightedAvgCt`, identical SQL semantics
+/// (including NULL handling), differing ONLY in `updateBatch`: the
+/// `comptime_aggregate_v2.zig` framework tries it first for an ungrouped
+/// `SELECT zig_v2_weighted_avg_simd_ct(x, w) FROM t` (every row's state
+/// pointer the same), folding the whole chunk's NULL-masked `Σ(x·w)`/`Σw`
+/// into one SIMD pass instead of 2048 scalar `update` calls — see
+/// `comptime_aggregate_v2.zig`'s module doc comment on `updateBatch` for
+/// the full contract, and `task bench` / this file's own benchmark note
+/// for the live comparison against `WeightedAvgCt`.
+const lanes = std.simd.suggestVectorLength(f64) orelse 2;
+const V = @Vector(lanes, f64);
+
+inline fn simdIsValid(bits: [*]const u64, i: db2.idx_t) bool {
+    const entry_idx = i / 64;
+    const bit_idx: u6 = @intCast(i % 64);
+    return (bits[entry_idx] >> bit_idx) & 1 == 1;
+}
+
+const WeightedAvgSimdCt = comptime_aggregate_v2.Function("zig_v2_weighted_avg_simd_ct", struct {
+    weighted_sum: f64,
+    weight_sum: f64,
+    pub fn init() @This() {
+        return .{ .weighted_sum = 0, .weight_sum = 0 };
+    }
+    pub fn update(self: *@This(), x: f64, weight: f64) void {
+        self.weighted_sum += x * weight;
+        self.weight_sum += weight;
+    }
+    pub fn updateBatch(self: *@This(), views: *const [2]db2.VectorView, row_count: db2.idx_t) void {
+        // SAFETY: the signature registered this function's args as (DOUBLE, DOUBLE).
+        const x: [*]const f64 = @ptrCast(@alignCast(views[0].data));
+        const w: [*]const f64 = @ptrCast(@alignCast(views[1].data));
+        const x_valid = views[0].validity;
+        const w_valid = views[1].validity;
+
+        var wsum_acc: V = @splat(0);
+        var w_acc: V = @splat(0);
+        var i: db2.idx_t = 0;
+        while (i + lanes <= row_count) : (i += lanes) {
+            const xv: V = x[i..][0..lanes].*;
+            const wv: V = w[i..][0..lanes].*;
+            var mask: @Vector(lanes, bool) = @splat(true);
+            inline for (0..lanes) |l| {
+                if (x_valid) |b| {
+                    if (!simdIsValid(b, i + l)) mask[l] = false;
+                }
+                if (w_valid) |b| {
+                    if (!simdIsValid(b, i + l)) mask[l] = false;
+                }
+            }
+            wsum_acc += @select(f64, mask, xv * wv, @as(V, @splat(0)));
+            w_acc += @select(f64, mask, wv, @as(V, @splat(0)));
+        }
+        // Masked final partial vector instead of a scalar tail: gather
+        // the remaining 0..lanes-1 rows into a zero-padded local buffer
+        // (`inline for` unrolls at comptime — no runtime loop — and never
+        // reads past `row_count`, so this needs no assumption about what
+        // lies beyond it in the vector's own backing storage) and fold
+        // them in through the SAME vector op, with out-of-range lanes
+        // masked off exactly like NULL lanes are.
+        const remaining = row_count - i;
+        if (remaining > 0) {
+            var x_buf: [lanes]f64 = @splat(0);
+            var w_buf: [lanes]f64 = @splat(0);
+            var mask: @Vector(lanes, bool) = @splat(false);
+            inline for (0..lanes) |l| {
+                if (l < remaining) {
+                    const row = i + l;
+                    var valid = true;
+                    if (x_valid) |b| {
+                        if (!simdIsValid(b, row)) valid = false;
+                    }
+                    if (w_valid) |b| {
+                        if (!simdIsValid(b, row)) valid = false;
+                    }
+                    if (valid) {
+                        x_buf[l] = x[row];
+                        w_buf[l] = w[row];
+                        mask[l] = true;
+                    }
+                }
+            }
+            const xv: V = x_buf;
+            const wv: V = w_buf;
+            wsum_acc += @select(f64, mask, xv * wv, @as(V, @splat(0)));
+            w_acc += @select(f64, mask, wv, @as(V, @splat(0)));
+        }
+
+        self.weighted_sum += @reduce(.Add, wsum_acc);
+        self.weight_sum += @reduce(.Add, w_acc);
+    }
+    pub fn combine(self: *@This(), other: @This()) void {
+        self.weighted_sum += other.weighted_sum;
+        self.weight_sum += other.weight_sum;
+    }
+    pub fn finalize(self: @This()) ?f64 {
+        if (self.weight_sum == 0) return null;
+        return self.weighted_sum / self.weight_sum;
+    }
+});
+
 /// Returns the id of the row with the largest value in each group — e.g.
 /// "which leaf dominates this subtree". Unlike sum/weighted_avg, `combine`
 /// isn't additive: it picks whichever side's best value wins, the first
@@ -416,6 +517,7 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     ArgMaxCt.register(input) catch {};
     AggSumCt.register(input) catch {};
     WeightedAvgCt.register(input) catch {};
+    WeightedAvgSimdCt.register(input) catch {};
     TotalLenCt.register(input) catch {};
     StringAggCt.register(input) catch {};
     Stats1BrcCt.register(input) catch {};
