@@ -77,7 +77,7 @@ pub fn main(init: std.process.Init) !void {
     try writePaddedField(&writer, "4"); // FIELD1 (magic value)
 
     // Write 256 bytes for digital signature placeholder
-    const zeroes = [_]u8{0} ** 256;
+    const zeroes: [256]u8 = @splat(0);
     try writer.interface.writeAll(&zeroes);
 
     try writer.flush();
@@ -92,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
 
 /// Write a 32-byte zero-padded field to the output.
 fn writePaddedField(writer: *File.Writer, value: []const u8) !void {
-    var field: [32]u8 = [_]u8{0} ** 32;
+    var field: [32]u8 = @splat(0);
     const len = @min(value.len, 32);
     @memcpy(field[0..len], value[0..len]);
     try writer.interface.writeAll(&field);

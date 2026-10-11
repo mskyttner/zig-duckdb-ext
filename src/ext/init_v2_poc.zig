@@ -125,6 +125,42 @@ const VariantDefault = comptime_scalar_v2.Function("zig_v2_variant_default_ct", 
     }
 }.eval);
 
+/// Proves the smaller integer/float types (i8/i16/i32/f32) are actually
+/// registered and callable live, not just type-checked — the real gap
+/// `docs/v2-migration-plan.md` flagged ("mapped in duckdbV2TypeId but only
+/// i64/f64/bool/[]const u8 have actually been registered and called
+/// against the real runtime").
+const NarrowSum = comptime_scalar_v2.Function("zig_v2_narrow_sum_ct", struct {
+    fn eval(a: i8, b: i16, c: i32, d: f32) f32 {
+        return @as(f32, @floatFromInt(@as(i32, a) + @as(i32, b) + c)) + d;
+    }
+}.eval);
+
+/// Proves TIMESTAMP and INTERVAL: adds an INTERVAL to a TIMESTAMP and
+/// returns the result, both fixed-width types read/written through the
+/// same direct-buffer path as any numeric type — no new exec-path code,
+/// just a new duckdbV2TypeId case each (see duckdb_v2.zig's doc comments
+/// on Date/Time/Timestamp/Interval for why).
+const TimestampAddCt = comptime_scalar_v2.Function("zig_v2_timestamp_add_ct", struct {
+    fn eval(ts: db2.Timestamp, iv: db2.Interval) db2.Timestamp {
+        const micros: i64 = @backingInt(ts);
+        // Calendar-aware add (months/days need the catalog's calendar,
+        // not pure arithmetic) is out of scope here — this proves the
+        // type plumbing, so a pure micros-based add covers the common
+        // "add a fixed duration" case without needing calendar lookups.
+        const added = micros + iv.micros + @as(i64, iv.days) * 86_400_000_000 + @as(i64, iv.months) * 30 * 86_400_000_000;
+        return @fromBackingInt(@intCast(added));
+    }
+}.eval);
+
+/// Proves BLOB as a parameter and return type: first N bytes of a blob.
+const BlobPrefixCt = comptime_scalar_v2.Function("zig_v2_blob_prefix_ct", struct {
+    fn eval(b: db2.Blob, n: i64) db2.Blob {
+        const len = @min(@as(usize, @intCast(@max(n, 0))), b.bytes.len);
+        return .{ .bytes = b.bytes[0..len] };
+    }
+}.eval);
+
 /// Proves comptime_table_v2's generalized Row/init/next framework through a
 /// real table-function argument (`n`) and a real VARCHAR output column —
 /// unlike zig_v2_range3 above, bind/exec are fully generated, not
@@ -367,6 +403,9 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     PointDist2.register(input) catch {};
     PersonGreet.register(input) catch {};
     VariantDefault.register(input) catch {};
+    NarrowSum.register(input) catch {};
+    TimestampAddCt.register(input) catch {};
+    BlobPrefixCt.register(input) catch {};
     RangeCt.register(input) catch {};
     RepeatCt.register(input) catch {};
     ArgMaxCt.register(input) catch {};

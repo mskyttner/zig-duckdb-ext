@@ -2,12 +2,20 @@
 /// Draws onto a Canvas using Bresenham lines. No DuckDB dependency.
 const std = @import("std");
 const Canvas = @import("canvas.zig").Canvas;
+const box = @import("box.zig");
 const testing = std.testing;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /// A single rewrite rule: replace character `from` with string `to`.
 pub const Rule = struct { from: u8, to: []const u8 };
+
+/// Controls how forward motion renders onto the canvas.
+pub const Ink = union(enum) {
+    auto, // pick ─ │ ╱ ╲ from heading (default)
+    connections: u8, // box.zig encoding; cells are merged via Canvas.putMerge
+    glyph: u21, // exact codepoint written at every cell (overwrite)
+};
 
 /// Atomic turtle command. Store in a caller-managed ArrayList(TurtleOp).
 pub const TurtleOp = union(enum) {
@@ -17,6 +25,8 @@ pub const TurtleOp = union(enum) {
     turn_right: f64,
     turn_left: f64,
     color: u8,
+    ink: Ink,
+    stamp: u21, // write this codepoint at current position without moving
 };
 
 /// Mutable turtle state. Create with Turtle.init; pass *Turtle to execute/interpret.
@@ -26,9 +36,15 @@ pub const Turtle = struct {
     heading_deg: f64, // screen-space: 0=right, 90=down, 180=left, 270=up
     pen: bool,
     color: u8,
+    /// Canvas columns per forward step in the x direction.
+    /// Set from FitResult.x_step to correct for terminal character aspect ratio.
+    x_step: f64,
+    /// Canvas rows per forward step in the y direction.
+    y_step: f64,
+    ink: Ink,
 
     pub fn init(x: f64, y: f64) Turtle {
-        return .{ .x = x, .y = y, .heading_deg = 0.0, .pen = false, .color = 7 };
+        return .{ .x = x, .y = y, .heading_deg = 0.0, .pen = false, .color = 7, .x_step = 1.0, .y_step = 1.0, .ink = .auto };
     }
 
     /// Walk `ops` in order. `forward` draws with Bresenham when `pen` is true.
@@ -41,20 +57,27 @@ pub const Turtle = struct {
                 .forward => |steps| self.stepForward(canvas, steps),
                 .turn_right => |deg| self.heading_deg = normalizeAngle(self.heading_deg + deg),
                 .turn_left => |deg| self.heading_deg = normalizeAngle(self.heading_deg - deg),
+                .ink => |i| self.ink = i,
+                .stamp => |cp| {
+                    const col: i64 = @intFromFloat(@round(self.x));
+                    const row: i64 = @intFromFloat(@round(self.y));
+                    if (col >= 0 and row >= 0)
+                        canvas.put(@intCast(col), @intCast(row), cp, self.color);
+                },
             }
         }
     }
 
     fn stepForward(self: *Turtle, canvas: *Canvas, steps: f64) void {
         const rad = self.heading_deg * std.math.pi / 180.0;
-        const new_x = self.x + std.math.cos(rad) * steps;
-        const new_y = self.y + std.math.sin(rad) * steps;
+        const new_x = self.x + std.math.cos(rad) * steps * self.x_step;
+        const new_y = self.y + std.math.sin(rad) * steps * self.y_step;
         if (self.pen) {
             const x0: i64 = @intFromFloat(@round(self.x));
             const y0: i64 = @intFromFloat(@round(self.y));
             const x1: i64 = @intFromFloat(@round(new_x));
             const y1: i64 = @intFromFloat(@round(new_y));
-            bresenhamSigned(canvas, x0, y0, x1, y1, self.color);
+            bresenhamSigned(canvas, x0, y0, x1, y1, self.ink, self.color);
         }
         self.x = new_x;
         self.y = new_y;
@@ -177,34 +200,47 @@ pub fn boundingBox(string: []const u8, system: LSystem, start_angle: f64, step: 
     return .{ .min_x = min_x, .max_x = max_x, .min_y = min_y, .max_y = max_y };
 }
 
-/// Turtle start position and step size that scales `bounds` (computed at step=1)
-/// to fill a canvas of size `canvas_width × canvas_height` with `margin` cell padding.
-/// Pass the returned `x`, `y` to `Turtle.init` and `step` to `interpretLSystem`.
-pub const FitResult = struct { x: f64, y: f64, step: f64 };
+/// Start position and per-axis cell steps computed by `fitToCanvas`.
+/// Assign `x_step` and `y_step` to the Turtle before drawing.
+pub const FitResult = struct { x: f64, y: f64, x_step: f64, y_step: f64 };
 
+/// Compute start position and per-axis steps to fill a canvas with `margin`
+/// cell padding. `char_aspect` is the terminal character's width-to-height
+/// ratio (≈ 0.5 for a typical monospace font); pass 1.0 for square pixels.
+/// The returned `x_step`/`y_step` scale horizontal/vertical moves separately
+/// so that a square data region appears visually square on screen.
 pub fn fitToCanvas(
     bounds: Bounds,
     canvas_width: usize,
     canvas_height: usize,
     margin: usize,
+    char_aspect: f64,
 ) FitResult {
     const avail_w: f64 = @floatFromInt(if (canvas_width > 2 * margin) canvas_width - 2 * margin else 1);
     const avail_h: f64 = @floatFromInt(if (canvas_height > 2 * margin) canvas_height - 2 * margin else 1);
+    // Express available space in visual units: columns are char_aspect wide, rows are 1.0 tall.
+    const avail_vw = avail_w * char_aspect;
+    const avail_vh = avail_h;
     const span_x = bounds.width();
     const span_y = bounds.height();
-    const scale: f64 = if (span_x == 0 and span_y == 0)
+    const safe_aspect = if (char_aspect == 0.0) 1.0 else char_aspect;
+    const visual_scale: f64 = if (span_x == 0 and span_y == 0)
         1.0
     else if (span_x == 0)
-        avail_h / span_y
+        avail_vh / span_y
     else if (span_y == 0)
-        avail_w / span_x
+        avail_vw / span_x
     else
-        @min(avail_w / span_x, avail_h / span_y);
+        @min(avail_vw / span_x, avail_vh / span_y);
+    // Convert visual scale back to per-axis cell steps.
+    const x_step = visual_scale / safe_aspect;
+    const y_step = visual_scale;
     const m: f64 = @floatFromInt(margin);
     return .{
-        .x = m + (-bounds.min_x) * scale,
-        .y = m + (-bounds.min_y) * scale,
-        .step = scale,
+        .x = m + (-bounds.min_x) * x_step,
+        .y = m + (-bounds.min_y) * y_step,
+        .x_step = x_step,
+        .y_step = y_step,
     };
 }
 
@@ -224,8 +260,8 @@ fn lineChar(adx: i64, ady: i64, sx: i64, sy: i64) u21 {
 }
 
 /// Bresenham line with signed i64 coordinates so the turtle can walk to negative
-/// positions. Out-of-bounds pixels are dropped by Canvas.put.
-fn bresenhamSigned(canvas: *Canvas, x0: i64, y0: i64, x1: i64, y1: i64, color: u8) void {
+/// positions. Out-of-bounds pixels are dropped by Canvas.put / putMerge.
+fn bresenhamSigned(canvas: *Canvas, x0: i64, y0: i64, x1: i64, y1: i64, ink: Ink, color: u8) void {
     var cx: i64 = x0;
     var cy: i64 = y0;
     const adx: i64 = @intCast(@abs(x1 - x0));
@@ -234,8 +270,15 @@ fn bresenhamSigned(canvas: *Canvas, x0: i64, y0: i64, x1: i64, y1: i64, color: u
     const sy: i64 = if (y0 <= y1) 1 else -1;
     var err: i64 = adx - ady;
     while (true) {
-        if (cx >= 0 and cy >= 0)
-            canvas.put(@intCast(cx), @intCast(cy), lineChar(adx, ady, sx, sy), color);
+        if (cx >= 0 and cy >= 0) {
+            const col: usize = @intCast(cx);
+            const row: usize = @intCast(cy);
+            switch (ink) {
+                .auto => canvas.put(col, row, lineChar(adx, ady, sx, sy), color),
+                .connections => |conn| canvas.putMerge(col, row, conn, color),
+                .glyph => |cp| canvas.put(col, row, cp, color),
+            }
+        }
         if (cx == x1 and cy == y1) break;
         const e2 = 2 * err;
         if (e2 > -ady) {
@@ -491,10 +534,12 @@ test "interpretLSystem: Hilbert curve depth 5 draws non-empty canvas" {
     var c = try Canvas.init(testing.allocator, 36, 36);
     defer c.deinit();
     const bounds = boundingBox(expanded, hilbert, 270.0, 1.0);
-    const fit = fitToCanvas(bounds, c.width, c.height, 1);
+    const fit = fitToCanvas(bounds, c.width, c.height, 1, 1.0);
     var t = Turtle.init(fit.x, fit.y);
+    t.x_step = fit.x_step;
+    t.y_step = fit.y_step;
     t.pen = true;
-    interpretLSystem(&t, &c, expanded, fit.step, hilbert, 270.0);
+    interpretLSystem(&t, &c, expanded, 1.0, hilbert, 270.0);
     var drawn: usize = 0;
     for (c.cells) |cell| if (cell != ' ') {
         drawn += 1;
@@ -511,11 +556,67 @@ test "boundingBox: horizontal line step=1 has correct span" {
     try testing.expectApproxEqAbs(@as(f64, 0.0), b.max_y, 1e-9);
 }
 
-test "fitToCanvas: step scales to fill available width" {
-    // span_x=10, span_y=0 → scale = avail_w / 10
+test "fitToCanvas: char_aspect=1 fills available width" {
+    // span_x=10, span_y=0 → visual_scale = avail_vw / span_x = 20*1.0/10 = 2.0
+    // x_step = 2.0/1.0 = 2.0, y_step = 2.0
     const b = Bounds{ .min_x = 0.0, .max_x = 10.0, .min_y = 0.0, .max_y = 0.0 };
-    const fit = fitToCanvas(b, 22, 10, 1); // avail_w=20, avail_h=8
-    try testing.expectApproxEqAbs(@as(f64, 2.0), fit.step, 1e-9); // 20/10
+    const fit = fitToCanvas(b, 22, 10, 1, 1.0); // avail_w=20
+    try testing.expectApproxEqAbs(@as(f64, 2.0), fit.x_step, 1e-9);
+    try testing.expectApproxEqAbs(@as(f64, 2.0), fit.y_step, 1e-9);
     try testing.expectApproxEqAbs(@as(f64, 1.0), fit.x, 1e-9); // margin
     try testing.expectApproxEqAbs(@as(f64, 1.0), fit.y, 1e-9);
+}
+
+test "fitToCanvas: char_aspect=0.5 doubles x_step to appear square" {
+    // avail_vw = 20*0.5=10, avail_vh=8; span_x=span_y=8
+    // visual_scale = min(10/8, 8/8) = min(1.25, 1.0) = 1.0
+    // x_step = 1.0/0.5 = 2.0, y_step = 1.0
+    const b = Bounds{ .min_x = 0.0, .max_x = 8.0, .min_y = 0.0, .max_y = 8.0 };
+    const fit = fitToCanvas(b, 22, 10, 1, 0.5);
+    try testing.expectApproxEqAbs(@as(f64, 2.0), fit.x_step, 1e-9);
+    try testing.expectApproxEqAbs(@as(f64, 1.0), fit.y_step, 1e-9);
+}
+
+test "Turtle.execute: ink.connections draws ─ on canvas" {
+    var c = try Canvas.init(testing.allocator, 12, 5);
+    defer c.deinit();
+    var t = Turtle.init(1.0, 2.0);
+    t.pen = true;
+    const ops = [_]TurtleOp{
+        .{ .ink = .{ .connections = box.encode(0, 0, 1, 1) } },
+        .{ .forward = 5.0 },
+    };
+    t.execute(&c, &ops);
+    var drawn: usize = 0;
+    for (c.cells) |cell| if (cell == '─') {
+        drawn += 1;
+    };
+    try testing.expect(drawn >= 4);
+}
+
+test "Turtle.execute: stamp places glyph at current position" {
+    var c = try Canvas.init(testing.allocator, 10, 5);
+    defer c.deinit();
+    var t = Turtle.init(3.0, 2.0);
+    const ops = [_]TurtleOp{.{ .stamp = '★' }};
+    t.execute(&c, &ops);
+    try testing.expectEqual(@as(u32, '★'), c.cells[2 * 10 + 3]);
+}
+
+test "Turtle.execute: VLT and HLT on same cell merge to ┼" {
+    var c = try Canvas.init(testing.allocator, 10, 10);
+    defer c.deinit();
+    // VLT downward through col 5, rows 3..7
+    var t1 = Turtle.init(5.0, 3.0);
+    t1.pen = true;
+    t1.heading_deg = 90.0; // down
+    const vops = [_]TurtleOp{ .{ .ink = .{ .connections = box.encode(1, 1, 0, 0) } }, .{ .forward = 4.0 } };
+    t1.execute(&c, &vops);
+    // HLT rightward through row 5, cols 3..7
+    var t2 = Turtle.init(3.0, 5.0);
+    t2.pen = true;
+    const hops = [_]TurtleOp{ .{ .ink = .{ .connections = box.encode(0, 0, 1, 1) } }, .{ .forward = 4.0 } };
+    t2.execute(&c, &hops);
+    // Intersection at (col=5, row=5) must be ┼
+    try testing.expectEqual(@as(u32, '┼'), c.cells[5 * 10 + 5]);
 }

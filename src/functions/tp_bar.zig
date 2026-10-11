@@ -20,7 +20,11 @@ pub fn buildBar(
     width: i64,
 ) ![]u8 {
     if (width <= 0 or on.len == 0 or off.len == 0) return allocator.alloc(u8, 0);
-    const w: usize = @intCast(width);
+    // Cap width so filled*on.len + empty*off.len always fits in the 4096-byte FixedBufferAllocator.
+    const max_w: i64 = @intCast(4096 / @max(on.len, off.len));
+    const w: usize = @intCast(@min(width, max_w));
+    // NaN is unrepresentable as a fraction; treat as 0 (empty bar) rather than silently becoming 1.
+    if (std.math.isNan(value)) return allocator.alloc(u8, 0);
     const clamped = std.math.clamp(value, 0.0, 1.0);
     const filled: usize = @intFromFloat(@round(clamped * @as(f64, @floatFromInt(w))));
     const empty = w - filled;
@@ -38,16 +42,6 @@ pub fn buildBar(
 }
 
 /// Extract a []const u8 slice from a DuckDB inline/pointer string.
-fn sliceFromStringT(s: *const db.StringT) []const u8 {
-    const len = s.value.inlined.length;
-    // SAFETY: duckdb_string_t union — strings ≤ 12 bytes are inlined; longer ones use a pointer.
-    const ptr: [*]const u8 = if (len <= 12)
-        &s.value.inlined.inlined
-    else
-        @ptrCast(s.value.pointer.ptr.?);
-    return ptr[0..len];
-}
-
 /// Vectorized execute callback for tp_bar_impl.
 pub fn tpBarExec(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) callconv(.c) void {
     _ = info;
@@ -104,8 +98,8 @@ fn writeRow(
     const result = buildBar(
         fba.allocator(),
         val_data[row],
-        sliceFromStringT(&on_data[row]),
-        sliceFromStringT(&off_data[row]),
+        db.stringSlice(&on_data[row]),
+        db.stringSlice(&off_data[row]),
         width_data[row],
     ) catch {
         db.vectorAssignStringElement(output, row, "");
@@ -201,4 +195,25 @@ test "buildBar: width 0 → empty string" {
     var fba = std.heap.FixedBufferAllocator.init(&buf);
     const result = try buildBar(fba.allocator(), 0.5, "X", ".", 0);
     try std.testing.expectEqualStrings("", result);
+}
+
+test "buildBar: NaN value → empty string (no panic)" {
+    var buf: [64]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const result = try buildBar(fba.allocator(), std.math.nan(f64), "X", ".", 10);
+    try std.testing.expectEqualStrings("", result);
+}
+
+test "buildBar: +Inf value clamped to full bar (no panic)" {
+    var buf: [64]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const result = try buildBar(fba.allocator(), std.math.inf(f64), "X", ".", 4);
+    try std.testing.expectEqualStrings("XXXX", result);
+}
+
+test "buildBar: maxInt(i64) width capped, no overflow" {
+    var buf: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const result = try buildBar(fba.allocator(), 0.5, "X", ".", std.math.maxInt(i64));
+    try std.testing.expect(result.len > 0);
 }

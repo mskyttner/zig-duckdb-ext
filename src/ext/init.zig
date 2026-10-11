@@ -12,6 +12,8 @@ const ct_add_numbers = @import("../functions/ct_add_numbers.zig");
 const ct_tokenize = @import("../functions/ct_tokenize.zig");
 const tp_bar = @import("../functions/tp_bar.zig");
 const tp_line = @import("../functions/tp_line.zig");
+const tp_treemap = @import("../functions/tp_treemap.zig");
+const tp_snakemap = @import("../functions/tp_snakemap.zig");
 
 const extension_api_version = "v1.2.0";
 
@@ -68,6 +70,16 @@ export fn zig_ext_init_c_api(info: db.ExtensionInfo, access: *db.ExtensionAccess
 
     tp_line.register(conn) catch {
         access.set_error.?(info, "Failed to register tp_line function");
+        return false;
+    };
+
+    tp_treemap.register(conn) catch {
+        access.set_error.?(info, "Failed to register tp_treemap function");
+        return false;
+    };
+
+    tp_snakemap.register(conn) catch {
+        access.set_error.?(info, "Failed to register tp_snakemap function");
         return false;
     };
 

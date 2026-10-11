@@ -36,12 +36,12 @@ fn duckdbTypeId(comptime T: type) db.c.DUCKDB_TYPE {
 /// numeric type. NULL propagation is automatic: if any input is NULL, the output is NULL.
 pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
     const fn_info = @typeInfo(@TypeOf(implFn)).@"fn";
-    const params = fn_info.params;
+    const param_types = fn_info.param_types;
     const ReturnType = fn_info.return_type.?;
 
     // Validate all parameter and return types at comptime.
-    inline for (params) |p| {
-        _ = duckdbTypeId(p.type.?);
+    inline for (param_types) |t| {
+        _ = duckdbTypeId(t.?);
     }
     _ = duckdbTypeId(ReturnType);
 
@@ -53,8 +53,8 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
 
             db.scalarFunctionSetName(function, name);
 
-            inline for (params) |p| {
-                var lt = db.createLogicalType(duckdbTypeId(p.type.?));
+            inline for (param_types) |t| {
+                var lt = db.createLogicalType(duckdbTypeId(t.?));
                 defer db.destroyLogicalType(&lt);
                 db.scalarFunctionAddParameter(function, lt);
             }
@@ -77,9 +77,9 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
 
             // Cache raw data pointers and validity masks before the loop (one vtable
             // call per parameter, not per row).
-            var raw_data: [params.len]?*anyopaque = undefined;
-            var valids: [params.len]?[*]u64 = undefined;
-            inline for (0..params.len) |i| {
+            var raw_data: [param_types.len]?*anyopaque = undefined;
+            var valids: [param_types.len]?[*]u64 = undefined;
+            inline for (0..param_types.len) |i| {
                 const vec = db.dataChunkGetVector(input, i);
                 raw_data[i] = db.vectorGetData(vec);
                 valids[i] = db.vectorGetValidity(vec);
@@ -91,7 +91,7 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
             // Runtime check: does any input column contain NULLs?
             var has_nulls = false;
             var idx: usize = 0;
-            while (idx < params.len) : (idx += 1) {
+            while (idx < param_types.len) : (idx += 1) {
                 if (valids[idx] != null) {
                     has_nulls = true;
                     break;
@@ -118,23 +118,23 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
         }
 
         /// Check if a row is valid across all input columns.
-        inline fn rowIsValid(valids: *const [params.len]?[*]u64, row: usize) bool {
-            inline for (0..params.len) |i| {
+        inline fn rowIsValid(valids: *const [param_types.len]?[*]u64, row: usize) bool {
+            inline for (0..param_types.len) |i| {
                 if (!db.validityRowIsValid(valids.*[i], row)) return false;
             }
             return true;
         }
 
         /// Extract typed values from raw data pointers and call the user function.
-        inline fn invoke(raw_data: *const [params.len]?*anyopaque, row: usize) ReturnType {
+        inline fn invoke(raw_data: *const [param_types.len]?*anyopaque, row: usize) ReturnType {
             return @call(.auto, implFn, makeArgs(raw_data, row));
         }
 
         /// Build a tuple type matching the parameter types of the user function.
         fn MakeArgsTuple() type {
-            var types: [params.len]type = undefined;
-            for (0..params.len) |i| {
-                types[i] = params[i].type.?;
+            var types: [param_types.len]type = undefined;
+            for (0..param_types.len) |i| {
+                types[i] = param_types[i].?;
             }
             return @Tuple(&types);
         }
@@ -142,10 +142,10 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
         const ArgsTuple = MakeArgsTuple();
 
         /// Build the argument tuple for one row, extracting typed values.
-        inline fn makeArgs(raw_data: *const [params.len]?*anyopaque, row: usize) ArgsTuple {
+        inline fn makeArgs(raw_data: *const [param_types.len]?*anyopaque, row: usize) ArgsTuple {
             var args: ArgsTuple = undefined;
-            inline for (0..params.len) |i| {
-                const T = params[i].type.?;
+            inline for (0..param_types.len) |i| {
+                const T = param_types[i].?;
                 // SAFETY: raw_data[i] points to a DuckDB vector buffer of the registered type.
                 const typed: [*]T = @ptrCast(@alignCast(raw_data.*[i]));
                 args[i] = typed[row];

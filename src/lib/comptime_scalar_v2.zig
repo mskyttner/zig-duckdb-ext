@@ -8,6 +8,11 @@
 ///! f32, f64, bool), plus `[]const u8` for VARCHAR parameters and/or return
 ///! type — see duckdb_v2.zig's `bytesSlice`/`valueCreateVarcharWithContext`
 ///! doc comments for how vector-stored strings differ from numeric types.
+///! Also: `db.Date`/`db.Time`/`db.Timestamp`/`db.Interval` (fixed-width,
+///! same direct-buffer path as the numeric types — see their doc comments
+///! in duckdb_v2.zig for why no new exec-path code was needed) and
+///! `db.Blob` (VARCHAR's `BytesValue`/boxed-`Value` machinery, reused as-is,
+///! just tagged as BLOB instead of VARCHAR at registration).
 ///!
 ///! CAUTION: a `[]const u8`-returning `implFn` must return a slice that
 ///! outlives the call — one borrowed from its own arguments (a substring,
@@ -68,11 +73,21 @@ fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
         bool => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN,
         []const u8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR,
         db.ValueHandle => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARIANT,
+        db.Blob => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BLOB,
+        db.Date => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_DATE,
+        db.Time => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_TIME,
+        db.Timestamp => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP,
+        db.Interval => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL,
         else => @compileError("unsupported type for DuckDB v2 mapping: " ++ @typeName(T)),
     };
 }
 
 fn isStructType(comptime T: type) bool {
+    // db.Blob is a Zig struct (wraps a []const u8) but must never be
+    // treated as a one-field SQL STRUCT — it has its own VARCHAR-like
+    // Value-boxing path instead (see the `return_is_blob`/`T == db.Blob`
+    // branches below).
+    if (T == db.Blob) return false;
     return @typeInfo(T) == .@"struct";
 }
 
@@ -225,6 +240,7 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
         }
 
         const return_is_varchar = ReturnType == []const u8;
+        const return_is_blob = ReturnType == db.Blob;
 
         /// Vectorized exec callback invoked by DuckDB for each batch of rows.
         fn execute(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
@@ -258,19 +274,25 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
                 if (views[i].validity != null) has_nulls = true;
             }
 
-            // VARCHAR results can't be written through a flat typed buffer
-            // (variable width) — each row boxes through a Value instead, via
-            // duckdb_v2.zig's valueCreateVarcharWithContext + vectorSetValue.
-            if (return_is_varchar) {
+            // VARCHAR/BLOB results can't be written through a flat typed
+            // buffer (variable width) — each row boxes through a Value
+            // instead, via duckdb_v2.zig's valueCreateVarcharWithContext/
+            // valueCreateBlobWithContext + vectorSetValue.
+            if (comptime return_is_varchar or return_is_blob) {
                 var row: db.idx_t = 0;
                 while (row < row_count) : (row += 1) {
                     if (has_nulls and !rowIsValid(&views, row)) {
                         if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
                         continue;
                     }
-                    const text = invoke(&views, row);
+                    const produced = invoke(&views, row);
+                    const bytes = if (comptime return_is_blob) produced.bytes else produced;
                     var value: db.ValueHandle = undefined;
-                    if (db.valueCreateVarcharWithContext(context, text, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    const create_err = if (comptime return_is_blob)
+                        db.valueCreateBlobWithContext(context, bytes, &value, err)
+                    else
+                        db.valueCreateVarcharWithContext(context, bytes, &value, err);
+                    if (create_err != db.c.DUCKDB_V2_ERROR_NONE) return;
                     defer _ = db.valueDestroy(&value);
                     if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
                 }
@@ -326,6 +348,11 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
                     // duckdb_v2_bytes elements (the signature registered this param as VARCHAR).
                     const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i].data));
                     args[i] = db.bytesSlice(&typed[row]);
+                } else if (T == db.Blob) {
+                    // SAFETY: same duckdb_v2_bytes storage shape as VARCHAR,
+                    // registered as BLOB instead (see duckdbV2TypeId).
+                    const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = .{ .bytes = db.bytesSlice(&typed[row]) };
                 } else {
                     // SAFETY: views[i].data points to a flattened, type-matched vector buffer.
                     const typed: [*]const T = @ptrCast(@alignCast(views.*[i].data));
@@ -629,5 +656,37 @@ test "Function supports VARIANT as a parameter and return type" {
     }.eval);
     _ = &IsNull.register;
     const exec_cb: db.ScalarFunctionExecCallback = IsNull.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports the smaller integer/float types" {
+    const Narrow = Function("v2_test_narrow_types", struct {
+        fn eval(a: i8, b: i16, c: i32, d: f32) f32 {
+            return @as(f32, @floatFromInt(@as(i32, a) + @as(i32, b) + c)) + d;
+        }
+    }.eval);
+    _ = &Narrow.register;
+}
+
+test "Function supports DATE/TIME/TIMESTAMP/INTERVAL" {
+    const DateTimeStuff = Function("v2_test_date_time", struct {
+        fn eval(d: db.Date, t: db.Time, ts: db.Timestamp, iv: db.Interval) db.Timestamp {
+            _ = d;
+            _ = t;
+            _ = iv;
+            return ts;
+        }
+    }.eval);
+    _ = &DateTimeStuff.register;
+}
+
+test "Function supports BLOB as a parameter and return type" {
+    const FirstByte = Function("v2_test_blob_first_byte", struct {
+        fn eval(b: db.Blob) db.Blob {
+            return .{ .bytes = b.bytes[0..@min(1, b.bytes.len)] };
+        }
+    }.eval);
+    _ = &FirstByte.register;
+    const exec_cb: db.ScalarFunctionExecCallback = FirstByte.execute;
     try std.testing.expect(exec_cb != null);
 }
