@@ -81,13 +81,6 @@ pub fn main(init: std.process.Init) !void {
     try writer.interface.writeAll(&zeroes);
 
     try writer.flush();
-
-    // Log to stderr
-    const stderr = File.stderr();
-    var stderr_buf: [512]u8 = undefined;
-    var stderr_writer = stderr.writer(io, &stderr_buf);
-    try stderr_writer.interface.print("Created DuckDB extension: {s}\n  Platform: {s}\n  DuckDB version: {s}\n  Extension version: {s}\n  ABI type: {s}\n", .{ output_path, platform, duckdb_version, ext_version, abi_type });
-    try stderr_writer.flush();
 }
 
 /// Write a 32-byte zero-padded field to the output.
