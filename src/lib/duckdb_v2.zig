@@ -814,6 +814,53 @@ pub fn valueCreateVarcharWithContext(
     return getApi().duckdb_v2_value_create_varchar_with_context.?(ctx, &text_str, out_value, err);
 }
 
+/// Box a Zig byte slice as a BLOB `Value`, for use with `vectorSetValue`.
+/// The caller must `valueDestroy` the result once written. BLOB shares
+/// VARCHAR's vector storage shape (`duckdb_v2_bytes`, see `BytesValue`'s
+/// own doc comment) but is a distinct logical type (no UTF-8 requirement)
+/// — kept as its own wrapper rather than reusing `valueCreateVarcharWithContext`
+/// so the two never get silently conflated.
+pub fn valueCreateBlobWithContext(
+    ctx: ContextHandle,
+    bytes: []const u8,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    const bytes_str = str(bytes);
+    return getApi().duckdb_v2_value_create_blob_with_context.?(ctx, &bytes_str, out_value, err);
+}
+
+// --- DATE/TIME/TIMESTAMP/INTERVAL: fixed-width, no Value boxing needed ---
+//
+// Unlike VARCHAR/BLOB/VARIANT, these are plain fixed-width vector storage
+// (the C API has no `duckdb_v2_date_t`/`duckdb_v2_time_t`/
+// `duckdb_v2_timestamp_t` struct at all — DATE is a raw `int32_t` (days
+// since 1970-01-01), TIME/TIMESTAMP a raw `int64_t` (micros since midnight/
+// epoch), same physical layout as INTEGER/BIGINT), so the comptime scalar
+// framework's existing direct-buffer read/write path handles them with no
+// new exec-path code — only a distinct Zig type is needed so
+// `duckdbV2TypeId` can tell them apart from plain `i32`/`i64`. A
+// non-exhaustive enum wrapping the same backing int is a zero-cost way to
+// get a distinct type with identical layout.
+pub const Date = enum(i32) { _ };
+pub const Time = enum(i64) { _ };
+pub const Timestamp = enum(i64) { _ };
+
+/// INTERVAL's vector storage is the raw `duckdb_v2_interval_t` struct
+/// (months/days/micros) inline, same reasoning as DATE/TIME/TIMESTAMP
+/// above — a direct type alias (not a wrapper) since the C struct is
+/// already a distinct Zig type.
+pub const Interval = c.duckdb_v2_interval_t;
+
+/// BLOB marker type for `comptime_scalar_v2`: wraps a byte slice, decoded/
+/// encoded exactly like VARCHAR's `BytesValue`/boxed-`Value` machinery, but
+/// a distinct Zig type so it maps to SQL BLOB, not VARCHAR. NOTE: this is a
+/// Zig `struct`, so framework code that distinguishes "is this a STRUCT
+/// argument" from "is this some other framework-provided marker type" must
+/// special-case `Blob` explicitly (see `comptime_scalar_v2.zig`'s
+/// `isStructType`) — it must never be treated as a one-field SQL STRUCT.
+pub const Blob = struct { bytes: []const u8 };
+
 pub fn valueCreateBigintWithContext(
     ctx: ContextHandle,
     in_value: i64,

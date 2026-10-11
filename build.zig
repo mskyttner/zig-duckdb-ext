@@ -185,7 +185,9 @@ pub fn build(b: *std.Build) void {
     // extension's path lazily, as part of running the step, not before.
     {
         const run_duckdb_v2 = b.addSystemCommand(&.{ "duckdb", "-unsigned", "-cmd" });
-        run_duckdb_v2.addFileArg2(ext_v2_output, .{ .prefix = "LOAD '", .suffix = "';" });
+        // '/home/markus/repos/zig-duckdb-ext/zig-out/lib/zig_ext_v2.duckdb_extension'
+        // from duckdb_functions() where extension_name like '%v2%';
+        run_duckdb_v2.addFileArg2(ext_v2_output, .{ .prefix = "LOAD '", .suffix = "'; select tp_bar(0.1); from duckdb_functions() select function_name, function_type, parameter_types, examples, comment where extension_name like '%v2%'; "});
         run_duckdb_v2.stdio = .inherit;
 
         const duckdb_v2_step = b.step("duckdb-extension", "Start an interactive DuckDB session with the real v2 extension loaded");

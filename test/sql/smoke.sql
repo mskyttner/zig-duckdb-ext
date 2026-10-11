@@ -192,3 +192,39 @@ SELECT tp_line([]::DOUBLE[]) AS graph;
 -- From aggregated column
 SELECT tp_line(list(v::DOUBLE) ORDER BY i) AS graph
 FROM (VALUES (1, 1.0), (2, 3.0), (3, 2.0), (4, 4.0), (5, 1.0)) t(i, v);
+
+-- ── tp_snakemap ──────────────────────────────────────────────────────────────
+
+-- Two groups, three items each
+SELECT tp_snakemap(
+    [10.0, 20.0, 30.0, 5.0, 15.0, 25.0],
+    ['a', 'b', 'c', 'x', 'y', 'z'],
+    ['G1', 'G1', 'G1', 'G2', 'G2', 'G2'],
+    width := 40, height := 20
+) AS map;
+
+-- Named params with defaults
+SELECT tp_snakemap(
+    [1.0, 2.0, 3.0, 4.0],
+    ['p', 'q', 'r', 's'],
+    ['Alpha', 'Alpha', 'Beta', 'Beta']
+) AS map;
+
+-- no_color := true strips ANSI escape sequences
+SELECT tp_snakemap(
+    [10.0, 20.0, 30.0, 5.0, 15.0, 25.0],
+    ['a', 'b', 'c', 'x', 'y', 'z'],
+    ['G1', 'G1', 'G1', 'G2', 'G2', 'G2'],
+    width := 40, height := 20, no_color := true
+) AS map;
+
+-- NULL propagation
+SELECT tp_snakemap(NULL, ['a'], ['g'], width := 40, height := 20) AS map;
+
+-- Single group degenerates to a flat treemap inside one heavy box
+SELECT tp_snakemap(
+    [5.0, 10.0, 15.0],
+    ['small', 'medium', 'large'],
+    ['only'],
+    width := 40, height := 12
+) AS map;
