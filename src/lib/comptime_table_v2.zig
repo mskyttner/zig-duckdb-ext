@@ -32,6 +32,18 @@
 ///!     allocated (e.g. a `[]const u8` argument the framework copied onto
 ///!     the heap before calling `init` — see the note on VARCHAR arguments
 ///!     below).
+///!   - `pub fn pushdown(self: *State, info: db.TableFunctionFilterPushdownInfoHandle, err: [*c]db.ErrorInfoHandle) void`
+///!     — optional. Called during optimization, after `bind` and before
+///!     any `next`, with the filter predicates the query applies to this
+///!     function's rows (see `duckdb_v2.zig`'s
+///!     `tableFunctionSetFilterPushdownCallback` doc comment for the full
+///!     accept/not-accept contract). Inspect predicates via
+///!     `tableFunctionFilterPushdownGetFilter` + the `expression*`
+///!     functions, mutate `self` to record what to filter, and
+///!     `tableFunctionFilterPushdownAccept` each one `next` now promises
+///!     to enforce itself. A `State` with no `pushdown` decl gets no
+///!     filter-pushdown callback at all — every predicate is then applied
+///!     by the engine as usual, same as today.
 ///!
 ///! No bind-time result-column cardinality hint is set (the row count isn't
 ///! knowable ahead of a pull iterator) and no `init_global`/local-init
@@ -89,6 +101,7 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
     const init_info = @typeInfo(@TypeOf(State.init)).@"fn";
     const arg_types = init_info.param_types;
     const has_deinit = @hasDecl(State, "deinit");
+    const has_pushdown = @hasDecl(State, "pushdown");
 
     inline for (row_field_types) |t| _ = duckdbV2TypeId(t);
     inline for (arg_types) |t| _ = duckdbV2TypeId(t.?);
@@ -141,6 +154,11 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             if (db.tableFunctionSetExecCallback(function, execCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
                 return error.FailedToSetExecCallback;
             }
+            if (has_pushdown) {
+                if (db.tableFunctionSetFilterPushdownCallback(function, pushdownCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                    return error.FailedToSetFilterPushdownCallback;
+                }
+            }
 
             if (db.tableFunctionRegister(function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
                 return error.FailedToRegisterFunction;
@@ -151,6 +169,14 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             const state: *State = @ptrCast(@alignCast(ptr.?));
             if (has_deinit) state.deinit();
             std.heap.c_allocator.destroy(state);
+        }
+
+        fn pushdownCallback(info: db.TableFunctionFilterPushdownInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
+            _ = context;
+            var bind_data_ptr: ?*anyopaque = null;
+            if (db.tableFunctionFilterPushdownGetBindData(info, &bind_data_ptr, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            const state: *State = @ptrCast(@alignCast(bind_data_ptr.?));
+            State.pushdown(state, info, err);
         }
 
         fn MakeArgsTuple() type {
@@ -350,4 +376,34 @@ test "Function supports a VARCHAR argument and a VARCHAR output column" {
         }
     });
     _ = &Repeat.register;
+}
+
+test "Function supports an optional pushdown hook" {
+    const RangeFiltered = Function("v2_test_table_range_filtered", struct {
+        n: i64,
+        i: i64,
+        predicate: ?i64 = null,
+        pub const Row = struct { value: i64 };
+        pub fn init(n: i64) @This() {
+            return .{ .n = n, .i = 0 };
+        }
+        pub fn next(self: *@This()) ?Row {
+            while (self.i < self.n) {
+                const v = self.i;
+                self.i += 1;
+                if (self.predicate) |p| {
+                    if (v != p) continue;
+                }
+                return .{ .value = v };
+            }
+            return null;
+        }
+        pub fn pushdown(self: *@This(), info: db.TableFunctionFilterPushdownInfoHandle, err: [*c]db.ErrorInfoHandle) void {
+            _ = self;
+            _ = info;
+            _ = err;
+        }
+    });
+    // Referencing .register forces analysis of the pushdown-callback body too.
+    _ = &RangeFiltered.register;
 }

@@ -42,6 +42,10 @@ pub const AggregateFunctionUpdateInfoHandle = c.duckdb_v2_aggregate_function_upd
 pub const AggregateFunctionCombineInfoHandle = c.duckdb_v2_aggregate_function_combine_info_handle;
 pub const AggregateFunctionFinalizeInfoHandle = c.duckdb_v2_aggregate_function_finalize_info_handle;
 pub const AggregateFunctionDestroyInfoHandle = c.duckdb_v2_aggregate_function_destroy_info_handle;
+pub const ColumnDataCollectionHandle = c.duckdb_v2_column_data_collection_handle;
+pub const ColumnDataCollectionAppendStateHandle = c.duckdb_v2_column_data_collection_append_state_handle;
+pub const ExpressionHandle = c.duckdb_v2_expression_handle;
+pub const TableFunctionFilterPushdownInfoHandle = c.duckdb_v2_table_function_filter_pushdown_info_handle;
 
 // ─── Re-export enums / structs ────────────────────────────────────────────────
 
@@ -52,6 +56,9 @@ pub const ExtensionInput = c.duckdb_v2_extension_input;
 pub const VectorView = c.duckdb_v2_vector_view;
 pub const ListEntry = c.duckdb_v2_list_entry;
 pub const ScalarFunctionExecCallback = c.duckdb_v2_scalar_function_exec_callback_fn;
+pub const TableFunctionFilterPushdownCallback = c.duckdb_v2_table_function_filter_pushdown_callback_fn;
+pub const ExpressionType = c.DUCKDB_V2_EXPRESSION_TYPE;
+pub const CastMode = c.DUCKDB_V2_CAST_MODE;
 pub const idx_t = c.idx_t;
 
 // ─── Extension API singleton ─────────────────────────────────────────────────
@@ -208,6 +215,171 @@ pub fn tableFunctionSetExecCallback(
     return getApi().duckdb_v2_table_function_set_exec_callback.?(function, callback, err);
 }
 
+/// Called during optimization, after bind and before any init callback,
+/// with the filter predicates the query applies to this function's rows
+/// (AND-combined; see `tableFunctionFilterPushdownGetFilterCount`'s doc
+/// comment). Accept a predicate via `tableFunctionFilterPushdownAccept` to
+/// promise the scan filters it itself — DuckDB then stops applying it
+/// above the scan; anything left unaccepted it keeps applying as a safety
+/// net, so a callback that recognizes nothing can simply return. May be
+/// called more than once per query, each time with only the
+/// not-yet-accepted predicates; never called when there are none.
+pub fn tableFunctionSetFilterPushdownCallback(
+    function: TableFunctionHandle,
+    callback: TableFunctionFilterPushdownCallback,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_set_filter_pushdown_callback.?(function, callback, err);
+}
+
+// --- Table Function Filter Pushdown ---
+
+/// The bind data set via `functionBindSetBindData` — the same object
+/// `init`/`exec` later receive, so a predicate accepted here can be
+/// recorded in it for the scan to apply.
+pub fn tableFunctionFilterPushdownGetBindData(
+    info: TableFunctionFilterPushdownInfoHandle,
+    out_data: *?*anyopaque,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_filter_pushdown_get_bind_data.?(info, out_data, err);
+}
+
+/// Number of AND-combined predicates offered. Valid indices for
+/// `tableFunctionFilterPushdownGetFilter`/`Accept` are `0..count`.
+pub fn tableFunctionFilterPushdownGetFilterCount(
+    info: TableFunctionFilterPushdownInfoHandle,
+    out_count: *idx_t,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_filter_pushdown_get_filter_count.?(info, out_count, err);
+}
+
+/// The predicate at `index`, as a BOOLEAN-typed bound expression —
+/// inspect it with the `expression*` functions. Borrowed; valid only for
+/// the duration of the filter-pushdown callback.
+pub fn tableFunctionFilterPushdownGetFilter(
+    info: TableFunctionFilterPushdownInfoHandle,
+    index: idx_t,
+    out_filter: *ExpressionHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_filter_pushdown_get_filter.?(info, index, out_filter, err);
+}
+
+/// Promise the scan will apply the predicate at `index` itself — see
+/// `tableFunctionSetFilterPushdownCallback`'s doc comment on what
+/// accepting means.
+pub fn tableFunctionFilterPushdownAccept(
+    info: TableFunctionFilterPushdownInfoHandle,
+    index: idx_t,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_filter_pushdown_accept.?(info, index, err);
+}
+
+/// Number of columns a `BOUND_COLUMN_REF` node inside a predicate may
+/// index into (see `tableFunctionFilterPushdownGetColumnIndex`).
+pub fn tableFunctionFilterPushdownGetColumnCount(
+    info: TableFunctionFilterPushdownInfoHandle,
+    out_count: *idx_t,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_filter_pushdown_get_column_count.?(info, out_count, err);
+}
+
+/// Resolve the index a `BOUND_COLUMN_REF` node reports
+/// (`expressionColumnRefGetIndex`) to the index of the column among the
+/// ones declared via `tableFunctionBindAddResultColumn`, in declaration
+/// order — a column reference's own index counts the columns the query
+/// reads, not necessarily every declared column.
+pub fn tableFunctionFilterPushdownGetColumnIndex(
+    info: TableFunctionFilterPushdownInfoHandle,
+    index: idx_t,
+    out_column_index: *idx_t,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_filter_pushdown_get_column_index.?(info, index, out_column_index, err);
+}
+
+// --- Expression ---
+//
+// Read-only introspection of a bound expression tree. Every handle here
+// (including every child borrowed via `expressionGetChild`) is owned by
+// the engine and valid only for the duration of the callback that handed
+// it out — never stash one, only values decoded out of it. In this v2
+// alpha, the only producer of `ExpressionHandle`s anywhere in the header
+// is table-function filter pushdown, above.
+
+pub fn expressionGetType(expression: ExpressionHandle, out_type: *ExpressionType, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_expression_get_type.?(expression, out_type, err);
+}
+
+/// The logical type the expression evaluates to (the target type, for a
+/// cast). Caller-owned; destroy via `logicalTypeDestroy`.
+pub fn expressionGetReturnType(
+    expression: ExpressionHandle,
+    out_type: *LogicalTypeHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_expression_get_return_type.?(expression, out_type, err);
+}
+
+/// Works for every node type, including `EXPRESSION_TYPE_INVALID`.
+/// Constants, parameters, and column references have no children.
+pub fn expressionGetChildCount(expression: ExpressionHandle, out_count: *idx_t, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_expression_get_child_count.?(expression, out_count, err);
+}
+
+/// Children are ordered as the node's `ExpressionType` describes. Borrowed;
+/// shares its parent's lifetime.
+pub fn expressionGetChild(
+    expression: ExpressionHandle,
+    index: idx_t,
+    out_child: *ExpressionHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_expression_get_child.?(expression, index, out_child, err);
+}
+
+/// Fails unless `expression` is `EXPRESSION_TYPE_VALUE_CONSTANT`.
+/// Caller-owned; destroy via `valueDestroy`.
+pub fn expressionConstantGetValue(
+    expression: ExpressionHandle,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_expression_constant_get_value.?(expression, out_value, err);
+}
+
+/// Fails unless `expression` is `EXPRESSION_TYPE_BOUND_COLUMN_REF`. The
+/// index counts the columns of whatever operator the predicate is
+/// evaluated against — resolve it through
+/// `tableFunctionFilterPushdownGetColumnIndex` for a table-function filter.
+pub fn expressionColumnRefGetIndex(
+    expression: ExpressionHandle,
+    out_index: *idx_t,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_expression_column_ref_get_index.?(expression, out_index, err);
+}
+
+/// The name of the scalar function a `BOUND_FUNCTION` node (or a
+/// comparison/`BETWEEN`/cast, which are function calls underneath) calls.
+/// Borrowed; shares the node's lifetime.
+pub fn expressionFunctionGetName(
+    expression: ExpressionHandle,
+    out_name: *IdentifierT,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_expression_function_get_name.?(expression, out_name, err);
+}
+
+/// Fails unless `expression` is `EXPRESSION_TYPE_OPERATOR_CAST`.
+pub fn expressionCastGetMode(expression: ExpressionHandle, out_mode: *CastMode, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_expression_cast_get_mode.?(expression, out_mode, err);
+}
+
 // --- Table Function bind/init/exec info ---
 
 pub fn tableFunctionBindAddResultColumn(
@@ -297,6 +469,157 @@ pub fn dataChunkGetVector(
     err: *ErrorInfoHandle,
 ) ErrorCode {
     return getApi().duckdb_v2_data_chunk_get_vector.?(chunk, index, out_vector, err);
+}
+
+/// Allocate a fresh, standalone `DataChunk` typed by `types`. Unlike
+/// `tableFunctionExecGetOutputChunk`'s borrowed, DuckDB-owned chunk, this one
+/// is caller-owned — needed by anything that builds rows itself instead of
+/// being handed a chunk to fill (e.g. a bulk-insert/appender helper). Must be
+/// released with `dataChunkDestroy`.
+pub fn dataChunkCreateWithConnection(
+    conn: ConnectionHandle,
+    types: []const LogicalTypeHandle,
+    out_chunk: *DataChunkHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_data_chunk_create_with_connection.?(conn, types.ptr, types.len, out_chunk, err);
+}
+
+/// Context-based counterpart to `dataChunkCreateWithConnection` — the one
+/// actually usable from inside a function callback, which is handed a
+/// `ContextHandle`, never a `ConnectionHandle` (see `connectionCreateTypeFromId`).
+pub fn dataChunkCreateWithContext(
+    ctx: ContextHandle,
+    types: []const LogicalTypeHandle,
+    out_chunk: *DataChunkHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_data_chunk_create_with_context.?(ctx, types.ptr, types.len, out_chunk, err);
+}
+
+pub fn dataChunkDestroy(chunk: *DataChunkHandle) ErrorCode {
+    return getApi().duckdb_v2_data_chunk_destroy.?(chunk);
+}
+
+pub fn dataChunkGetSize(chunk: DataChunkHandle, out_size: *idx_t, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_data_chunk_get_size.?(chunk, out_size, err);
+}
+
+// NOTE: `duckdb_v2_data_chunk_get_capacity` exists in the header but is
+// gated behind `#if DUCKDB_V2_API_ALLOW_UNSTABLE` (not defined by this
+// build's translate-c invocation), so it isn't in the compiled vtable —
+// callers that need a chunk's capacity use the same hand-pinned
+// `max_rows_per_batch = 2048` constant `comptime_table_v2.zig` already
+// relies on (DuckDB's standard vector size) instead of querying it.
+
+// --- Column Data Collection ---
+//
+// v2's bulk-insert primitive — there is no `duckdb_v2_appender_*` family at
+// all (v1's row-based Appender, `duckdb_appender_create` +
+// `duckdb_append_*`, has no v2 equivalent). Build rows into a `DataChunk`
+// yourself, then hand whole chunks to a `ColumnDataCollection` via `append`.
+// See `comptime_appender_v2.zig` for the batching helper built on top of
+// this and `dataChunkCreateWithConnection`.
+
+pub fn columnDataCollectionCreateWithConnection(
+    conn: ConnectionHandle,
+    types: []const LogicalTypeHandle,
+    out_collection: *ColumnDataCollectionHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_create_with_connection.?(conn, types.ptr, types.len, out_collection, err);
+}
+
+/// Context-based counterpart to `columnDataCollectionCreateWithConnection`
+/// (see `dataChunkCreateWithContext`'s doc comment on why this is the one
+/// actually usable from inside a function callback).
+pub fn columnDataCollectionCreateWithContext(
+    ctx: ContextHandle,
+    types: []const LogicalTypeHandle,
+    out_collection: *ColumnDataCollectionHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_create_with_context.?(ctx, types.ptr, types.len, out_collection, err);
+}
+
+pub fn columnDataCollectionDestroy(collection: *ColumnDataCollectionHandle) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_destroy.?(collection);
+}
+
+pub fn columnDataCollectionAppendStateCreate(
+    collection: ColumnDataCollectionHandle,
+    out_state: *ColumnDataCollectionAppendStateHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_append_state_create.?(collection, out_state, err);
+}
+
+pub fn columnDataCollectionAppendStateDestroy(state: *ColumnDataCollectionAppendStateHandle) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_append_state_destroy.?(state);
+}
+
+/// Append `chunk`'s current rows (per its own vector sizes, not its
+/// capacity) into `collection`. Assumed to copy — `chunk` is caller-owned
+/// and reused across calls by `comptime_appender_v2.zig` — unconfirmed
+/// against a live v2 build; verify before relying on reusing `chunk`
+/// after this call.
+pub fn columnDataCollectionAppend(
+    collection: ColumnDataCollectionHandle,
+    state: ColumnDataCollectionAppendStateHandle,
+    chunk: DataChunkHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_append.?(collection, state, chunk, err);
+}
+
+pub fn columnDataCollectionRowCount(
+    collection: ColumnDataCollectionHandle,
+    out_row_count: *idx_t,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_row_count.?(collection, out_row_count, err);
+}
+
+pub const ColumnDataCollectionSharedScanStateHandle = c.duckdb_v2_column_data_collection_shared_scan_state_handle;
+pub const ColumnDataCollectionWorkerScanStateHandle = c.duckdb_v2_column_data_collection_worker_scan_state_handle;
+
+pub fn columnDataCollectionSharedScanStateCreate(
+    collection: ColumnDataCollectionHandle,
+    out_state: *ColumnDataCollectionSharedScanStateHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_shared_scan_state_create.?(collection, out_state, err);
+}
+
+pub fn columnDataCollectionSharedScanStateDestroy(state: *ColumnDataCollectionSharedScanStateHandle) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_shared_scan_state_destroy.?(state);
+}
+
+pub fn columnDataCollectionWorkerScanStateCreate(
+    collection: ColumnDataCollectionHandle,
+    out_state: *ColumnDataCollectionWorkerScanStateHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_worker_scan_state_create.?(collection, out_state, err);
+}
+
+pub fn columnDataCollectionWorkerScanStateDestroy(state: *ColumnDataCollectionWorkerScanStateHandle) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_worker_scan_state_destroy.?(state);
+}
+
+/// Scan the next chunk's worth of rows out of `collection` into `out_chunk`
+/// (caller-owned, typed to match the collection — e.g. via
+/// `dataChunkCreateWithContext`). `did_produce_chunk` is false once the scan
+/// is exhausted; `out_chunk`'s contents are then undefined.
+pub fn columnDataCollectionScan(
+    collection: ColumnDataCollectionHandle,
+    shared_state: ColumnDataCollectionSharedScanStateHandle,
+    worker_state: ColumnDataCollectionWorkerScanStateHandle,
+    out_chunk: DataChunkHandle,
+    did_produce_chunk: *bool,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_column_data_collection_scan.?(collection, shared_state, worker_state, out_chunk, did_produce_chunk, err);
 }
 
 // --- Aggregate Function ---
@@ -525,6 +848,18 @@ pub fn contextCreateTypeFromId(
     err: *ErrorInfoHandle,
 ) ErrorCode {
     return getApi().duckdb_v2_context_create_type_from_id.?(ctx, type_id, null, null, 0, out_type, err);
+}
+
+/// Connection-based counterpart to `contextCreateTypeFromId`, for callers
+/// with only a `ConnectionHandle` (e.g. a bulk-insert helper used outside
+/// any function callback, which is never handed a `ContextHandle`).
+pub fn connectionCreateTypeFromId(
+    conn: ConnectionHandle,
+    type_id: LogicalTypeId,
+    out_type: *LogicalTypeHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_connection_create_type_from_id.?(conn, type_id, null, null, 0, out_type, err);
 }
 
 /// Parse a SQL type expression ("INTEGER", "STRUCT(a INTEGER)", "VARIANT",
@@ -802,6 +1137,17 @@ pub fn valueGetBool(value: ValueHandle, out: *bool, err: *ErrorInfoHandle) Error
     return getApi().duckdb_v2_value_get_bool.?(value, out, err);
 }
 
+/// Child count of a nested `Value` (LIST/ARRAY element count, or STRUCT
+/// field count). Caller-owned `out_child` results from `valueGetChild`
+/// must be destroyed via `valueDestroy`.
+pub fn valueGetChildCount(value: ValueHandle, out_count: *idx_t, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_child_count.?(value, out_count, err);
+}
+
+pub fn valueGetChild(value: ValueHandle, index: idx_t, out_child: *ValueHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_value_get_child.?(value, index, out_child, err);
+}
+
 /// Box a Zig string as a VARCHAR `Value`, for use with `vectorSetValue`.
 /// The caller must `valueDestroy` the result once written.
 pub fn valueCreateVarcharWithContext(
@@ -812,6 +1158,18 @@ pub fn valueCreateVarcharWithContext(
 ) ErrorCode {
     const text_str = str(text);
     return getApi().duckdb_v2_value_create_varchar_with_context.?(ctx, &text_str, out_value, err);
+}
+
+/// Connection-based counterpart to `valueCreateVarcharWithContext`, for
+/// callers with only a `ConnectionHandle` (see `connectionCreateTypeFromId`).
+pub fn valueCreateVarcharWithConnection(
+    conn: ConnectionHandle,
+    text: []const u8,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    const text_str = str(text);
+    return getApi().duckdb_v2_value_create_varchar_with_connection.?(conn, &text_str, out_value, err);
 }
 
 /// Box a Zig byte slice as a BLOB `Value`, for use with `vectorSetValue`.
@@ -861,6 +1219,33 @@ pub const Interval = c.duckdb_v2_interval_t;
 /// `isStructType`) — it must never be treated as a one-field SQL STRUCT.
 pub const Blob = struct { bytes: []const u8 };
 
+pub fn valueCreateTinyintWithContext(
+    ctx: ContextHandle,
+    in_value: i8,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_tinyint_with_context.?(ctx, in_value, out_value, err);
+}
+
+pub fn valueCreateSmallintWithContext(
+    ctx: ContextHandle,
+    in_value: i16,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_smallint_with_context.?(ctx, in_value, out_value, err);
+}
+
+pub fn valueCreateIntWithContext(
+    ctx: ContextHandle,
+    in_value: i32,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_int_with_context.?(ctx, in_value, out_value, err);
+}
+
 pub fn valueCreateBigintWithContext(
     ctx: ContextHandle,
     in_value: i64,
@@ -868,6 +1253,15 @@ pub fn valueCreateBigintWithContext(
     err: *ErrorInfoHandle,
 ) ErrorCode {
     return getApi().duckdb_v2_value_create_bigint_with_context.?(ctx, in_value, out_value, err);
+}
+
+pub fn valueCreateFloatWithContext(
+    ctx: ContextHandle,
+    in_value: f32,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_float_with_context.?(ctx, in_value, out_value, err);
 }
 
 pub fn valueCreateDoubleWithContext(
@@ -890,6 +1284,62 @@ pub fn valueCreateBoolWithContext(
 
 pub fn valueDestroy(value: *ValueHandle) ErrorCode {
     return getApi().duckdb_v2_value_destroy.?(value);
+}
+
+/// Box `children` (already-boxed `Value`s, all of `child_type`) as a LIST
+/// `Value`, for use with `vectorSetValue`. The caller destroys `children`
+/// and the result independently once written — mirrors
+/// `valueCreateVarcharWithContext`'s ownership shape, just for a LIST
+/// rather than a scalar leaf.
+pub fn valueCreateListWithContext(
+    ctx: ContextHandle,
+    child_type: LogicalTypeHandle,
+    children: []const ValueHandle,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_list_with_context.?(ctx, child_type, children.ptr, children.len, out_value, err);
+}
+
+/// Box `names`/`children` (already-boxed `Value`s, one per field, same
+/// order as `names`) as a STRUCT `Value`, for use with `vectorSetValue`.
+/// Same ownership shape as `valueCreateListWithContext`.
+pub fn valueCreateStructWithContext(
+    ctx: ContextHandle,
+    names: []const IdentifierT,
+    children: []const ValueHandle,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_struct_with_context.?(ctx, names.ptr, children.ptr, names.len, out_value, err);
+}
+
+/// Box `children` as an ARRAY `Value` (fixed-size: the array's length IS
+/// `children.len`, there is no separate size parameter). Same shape and
+/// ownership as `valueCreateListWithContext` otherwise.
+pub fn valueCreateArrayWithContext(
+    ctx: ContextHandle,
+    child_type: LogicalTypeHandle,
+    children: []const ValueHandle,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_array_with_context.?(ctx, child_type, children.ptr, children.len, out_value, err);
+}
+
+/// Cast a boxed `Value` to `target_type`, e.g. a VARCHAR `Value` to an
+/// ENUM type — the only way to produce an ENUM `Value`: there is no
+/// `duckdb_v2_value_create_enum_*` family at all (confirmed by grepping
+/// the header), so building one goes through this the same way SQL casts
+/// a string literal to an enum (`'a'::my_enum`).
+pub fn valueCastWithContext(
+    ctx: ContextHandle,
+    value: ValueHandle,
+    target_type: LogicalTypeHandle,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_cast_with_context.?(ctx, value, target_type, out_value, err);
 }
 
 /// Write a boxed `Value` into a vector at `row`, copying it in and casting

@@ -19,6 +19,7 @@ const examples = @import("duckdb_v2_examples");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const comptime_table_v2 = @import("comptime_table_v2");
 const comptime_aggregate_v2 = @import("comptime_aggregate_v2");
+const comptime_appender_v2 = @import("comptime_appender_v2");
 
 export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callconv(.c) void {
     if (!db2.initApi(input, "v2.0.0")) return;
@@ -29,6 +30,10 @@ export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callcon
     registerRange3(input, &err);
     registerAggSum(input, &err);
     registerHello(input, &err);
+    registerAppenderTest(input, &err);
+    registerAppenderNestedTest(input, &err);
+    registerAppenderArrayEnumTest(input, &err);
+    registerFilterPushdownTest(input);
     registerComptimeExamples(input);
 }
 
@@ -497,6 +502,660 @@ fn registerAggSum(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) v
     if (db2.aggregateFunctionSetFinalizeCallback(function, exampleAggFinalize, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
 
     _ = db2.aggregateFunctionRegister(function, err);
+}
+
+/// Live round-trip test for `comptime_appender_v2.Appender`: builds three
+/// rows with it, `finish`es into a `ColumnDataCollection`, scans the
+/// collection back out, and formats what it reads as the result string —
+/// proof (run against a real v2.0 alpha, not just `v2-check`'s
+/// type-checking) that append → finish → scan round-trips BIGINT/VARCHAR/
+/// DOUBLE correctly. `zig_v2_appender_test()` takes no arguments; its
+/// result should read exactly
+/// "1:alice:1.50|2:bob:2.75|3:carol:-4.00" if the round trip is intact.
+fn registerAppenderTest(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
+    var function: db2.ScalarFunctionHandle = undefined;
+    if (db2.scalarFunctionCreateWithExtension(input.extension, &function, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.scalarFunctionDestroy(&function);
+
+    const fn_name = db2.str("zig_v2_appender_test");
+    if (db2.scalarFunctionSetName(function, &fn_name, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var varchar_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.logicalTypeDestroy(&varchar_type);
+
+    var sig: db2.FunctionSignatureHandle = undefined;
+    if (db2.scalarFunctionGetSignature(function, &sig, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.functionSignatureSetReturnType(sig, varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    if (db2.scalarFunctionSetExecCallback(function, appenderTestExec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    _ = db2.scalarFunctionRegister(function, err);
+}
+
+const AppenderTestRow = struct { id: i64, name: []const u8, score: f64 };
+
+fn appenderTestExec(info: db2.ScalarFunctionExecInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    var row_count: db2.idx_t = 0;
+    if (db2.scalarFunctionExecGetRowCount(info, &row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var result_vec: db2.VectorHandle = undefined;
+    if (db2.scalarFunctionExecGetResult(info, &result_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.vectorSetSize(result_vec, row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var buf: [256]u8 = undefined;
+    const text = appenderTestRoundTrip(context, &buf, err) catch "appender round-trip FAILED";
+
+    var row: db2.idx_t = 0;
+    while (row < row_count) : (row += 1) {
+        var value: db2.ValueHandle = undefined;
+        if (db2.valueCreateVarcharWithContext(context, text, &value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+        defer _ = db2.valueDestroy(&value);
+        if (db2.vectorSetValue(result_vec, row, value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    }
+}
+
+const Appender = comptime_appender_v2.Appender(AppenderTestRow);
+
+fn appenderTestRoundTrip(context: db2.ContextHandle, buf: []u8, err: [*c]db2.ErrorInfoHandle) ![]const u8 {
+    var e: db2.ErrorInfoHandle = undefined;
+
+    var appender = Appender.create(context, &e) catch return error.CreateFailed;
+    defer appender.destroy();
+
+    appender.append(.{ .id = 1, .name = "alice", .score = 1.5 }, &e) catch return error.AppendFailed;
+    appender.append(.{ .id = 2, .name = "bob", .score = 2.75 }, &e) catch return error.AppendFailed;
+    appender.append(.{ .id = 3, .name = "carol", .score = -4.0 }, &e) catch return error.AppendFailed;
+
+    var collection = appender.finish(&e) catch return error.FinishFailed;
+    defer _ = db2.columnDataCollectionDestroy(&collection);
+
+    var types: [3]db2.LogicalTypeHandle = undefined;
+    inline for (.{ i64, []const u8, f64 }, 0..) |T, i| {
+        if (db2.contextCreateTypeFromId(context, comptime_appender_v2.duckdbV2TypeId(T), &types[i], &e) != db2.c.DUCKDB_V2_ERROR_NONE) {
+            return error.TypeFailed;
+        }
+    }
+    defer {
+        for (&types) |*ty| _ = db2.logicalTypeDestroy(ty);
+    }
+
+    var scan_chunk: db2.DataChunkHandle = undefined;
+    if (db2.dataChunkCreateWithContext(context, &types, &scan_chunk, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ChunkFailed;
+    defer _ = db2.dataChunkDestroy(&scan_chunk);
+
+    var shared_state: db2.ColumnDataCollectionSharedScanStateHandle = undefined;
+    if (db2.columnDataCollectionSharedScanStateCreate(collection, &shared_state, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanStateFailed;
+    defer _ = db2.columnDataCollectionSharedScanStateDestroy(&shared_state);
+
+    var worker_state: db2.ColumnDataCollectionWorkerScanStateHandle = undefined;
+    if (db2.columnDataCollectionWorkerScanStateCreate(collection, &worker_state, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanStateFailed;
+    defer _ = db2.columnDataCollectionWorkerScanStateDestroy(&worker_state);
+
+    var pos: usize = 0;
+    var wrote_any = false;
+
+    while (true) {
+        var did_produce = false;
+        if (db2.columnDataCollectionScan(collection, shared_state, worker_state, scan_chunk, &did_produce, &e) != db2.c.DUCKDB_V2_ERROR_NONE) {
+            return error.ScanFailed;
+        }
+        if (!did_produce) break;
+
+        var chunk_size: db2.idx_t = 0;
+        if (db2.dataChunkGetSize(scan_chunk, &chunk_size, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+        var id_vec: db2.VectorHandle = undefined;
+        var name_vec: db2.VectorHandle = undefined;
+        var score_vec: db2.VectorHandle = undefined;
+        if (db2.dataChunkGetVector(scan_chunk, 0, &id_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.dataChunkGetVector(scan_chunk, 1, &name_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.dataChunkGetVector(scan_chunk, 2, &score_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorFlatten(id_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorFlatten(name_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorFlatten(score_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+        var id_view: db2.VectorView = undefined;
+        var name_view: db2.VectorView = undefined;
+        var score_view: db2.VectorView = undefined;
+        if (db2.vectorGetView(id_vec, &id_view, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorGetView(name_vec, &name_view, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorGetView(score_vec, &score_view, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+        // SAFETY: `scan_chunk`'s columns were declared BIGINT/VARCHAR/DOUBLE above.
+        const ids: [*]const i64 = @ptrCast(@alignCast(id_view.data));
+        const names: [*]const db2.BytesValue = @ptrCast(@alignCast(name_view.data));
+        const scores: [*]const f64 = @ptrCast(@alignCast(score_view.data));
+
+        var row: db2.idx_t = 0;
+        while (row < chunk_size) : (row += 1) {
+            if (wrote_any) {
+                if (pos >= buf.len) return error.FormatFailed;
+                buf[pos] = '|';
+                pos += 1;
+            }
+            const segment = std.fmt.bufPrint(buf[pos..], "{d}:{s}:{d:.2}", .{ ids[row], db2.bytesSlice(&names[row]), scores[row] }) catch return error.FormatFailed;
+            pos += segment.len;
+            wrote_any = true;
+        }
+    }
+
+    // Stress the auto-flush path: 2500 rows forces two flushes (2048 + 452)
+    // through the SAME scratch chunk, live-confirming assumption 2 (`append`
+    // copies rather than taking ownership, so the chunk is safe to reuse).
+    var stress = Appender.create(context, &e) catch return error.CreateFailed;
+    defer stress.destroy();
+    var i: i64 = 0;
+    while (i < 2500) : (i += 1) {
+        stress.append(.{ .id = i, .name = "x", .score = 0.0 }, &e) catch return error.AppendFailed;
+    }
+    var stress_collection = stress.finish(&e) catch return error.FinishFailed;
+    defer _ = db2.columnDataCollectionDestroy(&stress_collection);
+    var stress_count: db2.idx_t = 0;
+    if (db2.columnDataCollectionRowCount(stress_collection, &stress_count, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+    const suffix = std.fmt.bufPrint(buf[pos..], "|stress:{d}", .{stress_count}) catch return error.FormatFailed;
+    pos += suffix.len;
+
+    _ = err;
+    return buf[0..pos];
+}
+
+/// Live round-trip test for `comptime_appender_v2.Appender`'s LIST and
+/// STRUCT support: builds two rows (`tags LIST(BIGINT)`, `point
+/// STRUCT(x DOUBLE, y DOUBLE)`), `finish`es, scans back, and formats what
+/// it reads. `zig_v2_appender_nested_test()` takes no arguments; its
+/// result should read exactly "[1,2,3]:(1.5,2.5)|[]:(-1.0,0.0)" if the
+/// round trip is intact.
+fn registerAppenderNestedTest(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
+    var function: db2.ScalarFunctionHandle = undefined;
+    if (db2.scalarFunctionCreateWithExtension(input.extension, &function, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.scalarFunctionDestroy(&function);
+
+    const fn_name = db2.str("zig_v2_appender_nested_test");
+    if (db2.scalarFunctionSetName(function, &fn_name, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var varchar_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.logicalTypeDestroy(&varchar_type);
+
+    var sig: db2.FunctionSignatureHandle = undefined;
+    if (db2.scalarFunctionGetSignature(function, &sig, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.functionSignatureSetReturnType(sig, varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    if (db2.scalarFunctionSetExecCallback(function, appenderNestedTestExec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    _ = db2.scalarFunctionRegister(function, err);
+}
+
+const NestedTestRow = struct { tags: []const i64, point: struct { x: f64, y: f64 } };
+const NestedAppender = comptime_appender_v2.Appender(NestedTestRow);
+
+fn appenderNestedTestExec(info: db2.ScalarFunctionExecInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    var row_count: db2.idx_t = 0;
+    if (db2.scalarFunctionExecGetRowCount(info, &row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var result_vec: db2.VectorHandle = undefined;
+    if (db2.scalarFunctionExecGetResult(info, &result_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.vectorSetSize(result_vec, row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var buf: [256]u8 = undefined;
+    const text = nestedTestRoundTrip(context, &buf, err) catch "appender nested round-trip FAILED";
+
+    var row: db2.idx_t = 0;
+    while (row < row_count) : (row += 1) {
+        var value: db2.ValueHandle = undefined;
+        if (db2.valueCreateVarcharWithContext(context, text, &value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+        defer _ = db2.valueDestroy(&value);
+        if (db2.vectorSetValue(result_vec, row, value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    }
+}
+
+fn nestedTestRoundTrip(context: db2.ContextHandle, buf: []u8, err: [*c]db2.ErrorInfoHandle) ![]const u8 {
+    var e: db2.ErrorInfoHandle = undefined;
+
+    var appender = NestedAppender.create(context, &e) catch return error.CreateFailed;
+    defer appender.destroy();
+
+    appender.append(.{ .tags = &[_]i64{ 1, 2, 3 }, .point = .{ .x = 1.5, .y = 2.5 } }, &e) catch return error.AppendFailed;
+    appender.append(.{ .tags = &[_]i64{}, .point = .{ .x = -1.0, .y = 0.0 } }, &e) catch return error.AppendFailed;
+
+    var collection = appender.finish(&e) catch return error.FinishFailed;
+    defer _ = db2.columnDataCollectionDestroy(&collection);
+
+    // Rebuild the LIST(BIGINT)/STRUCT(x DOUBLE, y DOUBLE) types by hand for
+    // the scan output chunk — `Appender` doesn't expose the ones it built
+    // internally (they're destroyed once `create` returns).
+    var list_child_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, &list_child_type, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+    defer _ = db2.logicalTypeDestroy(&list_child_type);
+    var list_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateListType(context, list_child_type, &list_type, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+    defer _ = db2.logicalTypeDestroy(&list_type);
+
+    var x_type: db2.LogicalTypeHandle = undefined;
+    var y_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE, &x_type, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+    if (db2.contextCreateTypeFromId(context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE, &y_type, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+    var struct_names = [_]db2.IdentifierT{ db2.str("x"), db2.str("y") };
+    var struct_field_types = [_]db2.LogicalTypeHandle{ x_type, y_type };
+    var struct_field_type_values: [2]db2.ValueHandle = undefined;
+    var struct_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateStructType(context, &struct_names, &struct_field_types, &struct_field_type_values, &struct_type, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+    defer _ = db2.logicalTypeDestroy(&struct_type);
+    defer {
+        for (&struct_field_types) |*ty| _ = db2.logicalTypeDestroy(ty);
+    }
+
+    var types = [_]db2.LogicalTypeHandle{ list_type, struct_type };
+    var scan_chunk: db2.DataChunkHandle = undefined;
+    if (db2.dataChunkCreateWithContext(context, &types, &scan_chunk, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ChunkFailed;
+    defer _ = db2.dataChunkDestroy(&scan_chunk);
+
+    var shared_state: db2.ColumnDataCollectionSharedScanStateHandle = undefined;
+    if (db2.columnDataCollectionSharedScanStateCreate(collection, &shared_state, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanStateFailed;
+    defer _ = db2.columnDataCollectionSharedScanStateDestroy(&shared_state);
+    var worker_state: db2.ColumnDataCollectionWorkerScanStateHandle = undefined;
+    if (db2.columnDataCollectionWorkerScanStateCreate(collection, &worker_state, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanStateFailed;
+    defer _ = db2.columnDataCollectionWorkerScanStateDestroy(&worker_state);
+
+    var pos: usize = 0;
+    var wrote_any = false;
+
+    while (true) {
+        var did_produce = false;
+        if (db2.columnDataCollectionScan(collection, shared_state, worker_state, scan_chunk, &did_produce, &e) != db2.c.DUCKDB_V2_ERROR_NONE) {
+            return error.ScanFailed;
+        }
+        if (!did_produce) break;
+
+        var chunk_size: db2.idx_t = 0;
+        if (db2.dataChunkGetSize(scan_chunk, &chunk_size, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+        var tags_vec: db2.VectorHandle = undefined;
+        var point_vec: db2.VectorHandle = undefined;
+        if (db2.dataChunkGetVector(scan_chunk, 0, &tags_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.dataChunkGetVector(scan_chunk, 1, &point_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorFlatten(tags_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorFlatten(point_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+        var tags_view: db2.VectorView = undefined;
+        if (db2.vectorGetView(tags_vec, &tags_view, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        // SAFETY: `tags_vec` is LIST(BIGINT); a LIST vector's own data is `[*]ListEntry`.
+        const list_entries: [*]const db2.ListEntry = @ptrCast(@alignCast(tags_view.data));
+
+        var tags_child: db2.VectorHandle = undefined;
+        if (db2.vectorGetChild(tags_vec, 0, &tags_child, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorFlatten(tags_child, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        var tags_child_view: db2.VectorView = undefined;
+        if (db2.vectorGetView(tags_child, &tags_child_view, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        // SAFETY: the LIST's child vector is BIGINT.
+        const tag_elems: [*]const i64 = @ptrCast(@alignCast(tags_child_view.data));
+
+        var x_vec: db2.VectorHandle = undefined;
+        var y_vec: db2.VectorHandle = undefined;
+        if (db2.vectorGetChild(point_vec, 0, &x_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorGetChild(point_vec, 1, &y_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorFlatten(x_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorFlatten(y_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        var x_view: db2.VectorView = undefined;
+        var y_view: db2.VectorView = undefined;
+        if (db2.vectorGetView(x_vec, &x_view, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.vectorGetView(y_vec, &y_view, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        // SAFETY: STRUCT fields x/y are both DOUBLE.
+        const xs: [*]const f64 = @ptrCast(@alignCast(x_view.data));
+        const ys: [*]const f64 = @ptrCast(@alignCast(y_view.data));
+
+        var row: db2.idx_t = 0;
+        while (row < chunk_size) : (row += 1) {
+            if (wrote_any) {
+                if (pos >= buf.len) return error.FormatFailed;
+                buf[pos] = '|';
+                pos += 1;
+            }
+            if (pos >= buf.len) return error.FormatFailed;
+            buf[pos] = '[';
+            pos += 1;
+            const le = list_entries[row];
+            var k: db2.idx_t = 0;
+            while (k < le.length) : (k += 1) {
+                if (k > 0) {
+                    if (pos >= buf.len) return error.FormatFailed;
+                    buf[pos] = ',';
+                    pos += 1;
+                }
+                const seg = std.fmt.bufPrint(buf[pos..], "{d}", .{tag_elems[le.offset + k]}) catch return error.FormatFailed;
+                pos += seg.len;
+            }
+            const tail = std.fmt.bufPrint(buf[pos..], "]:({d:.1},{d:.1})", .{ xs[row], ys[row] }) catch return error.FormatFailed;
+            pos += tail.len;
+            wrote_any = true;
+        }
+    }
+
+    _ = err;
+    return buf[0..pos];
+}
+
+/// Live round-trip test for `comptime_appender_v2.Appender`'s ARRAY and
+/// ENUM support: builds two rows (`coords DOUBLE[3]`, `status` an ENUM
+/// built from a Zig `enum`), `finish`es, scans back, and formats what it
+/// reads. Reads nested-type columns via the generic `vectorGetValue` +
+/// `valueGetChild`/`valueCastWithContext` fallback rather than ARRAY's raw
+/// vector layout, which `duckdb_v2.zig`'s own `vectorGetChild` doc comment
+/// leaves ambiguous for ARRAY specifically (groups it with LIST's
+/// `ListEntry` addressing, which doesn't obviously fit a fixed-size type).
+/// `zig_v2_appender_array_enum_test()` takes no arguments; its result
+/// should read exactly "[1.5,2.5,3.5]:active|[4.0,5.0,6.0]:done" if the
+/// round trip is intact.
+fn registerAppenderArrayEnumTest(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
+    var function: db2.ScalarFunctionHandle = undefined;
+    if (db2.scalarFunctionCreateWithExtension(input.extension, &function, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.scalarFunctionDestroy(&function);
+
+    const fn_name = db2.str("zig_v2_appender_array_enum_test");
+    if (db2.scalarFunctionSetName(function, &fn_name, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var varchar_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.logicalTypeDestroy(&varchar_type);
+
+    var sig: db2.FunctionSignatureHandle = undefined;
+    if (db2.scalarFunctionGetSignature(function, &sig, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.functionSignatureSetReturnType(sig, varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    if (db2.scalarFunctionSetExecCallback(function, appenderArrayEnumTestExec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    _ = db2.scalarFunctionRegister(function, err);
+}
+
+const Status = enum { pending, active, done };
+const ArrayEnumRow = struct { coords: [3]f64, status: Status };
+const ArrayEnumAppender = comptime_appender_v2.Appender(ArrayEnumRow);
+
+fn appenderArrayEnumTestExec(info: db2.ScalarFunctionExecInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    var row_count: db2.idx_t = 0;
+    if (db2.scalarFunctionExecGetRowCount(info, &row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var result_vec: db2.VectorHandle = undefined;
+    if (db2.scalarFunctionExecGetResult(info, &result_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.vectorSetSize(result_vec, row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var buf: [256]u8 = undefined;
+    const text = arrayEnumRoundTrip(context, &buf, err) catch "appender array/enum round-trip FAILED";
+
+    var row: db2.idx_t = 0;
+    while (row < row_count) : (row += 1) {
+        var value: db2.ValueHandle = undefined;
+        if (db2.valueCreateVarcharWithContext(context, text, &value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+        defer _ = db2.valueDestroy(&value);
+        if (db2.vectorSetValue(result_vec, row, value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    }
+}
+
+fn arrayEnumRoundTrip(context: db2.ContextHandle, buf: []u8, err: [*c]db2.ErrorInfoHandle) ![]const u8 {
+    var e: db2.ErrorInfoHandle = undefined;
+
+    var appender = ArrayEnumAppender.create(context, &e) catch return error.CreateFailed;
+    defer appender.destroy();
+
+    appender.append(.{ .coords = .{ 1.5, 2.5, 3.5 }, .status = .active }, &e) catch return error.AppendFailed;
+    appender.append(.{ .coords = .{ 4.0, 5.0, 6.0 }, .status = .done }, &e) catch return error.AppendFailed;
+
+    var collection = appender.finish(&e) catch return error.FinishFailed;
+    defer _ = db2.columnDataCollectionDestroy(&collection);
+
+    var coords_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromText(context, "DOUBLE[3]", &coords_type, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+    defer _ = db2.logicalTypeDestroy(&coords_type);
+    var status_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromText(context, "ENUM('pending','active','done')", &status_type, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+    defer _ = db2.logicalTypeDestroy(&status_type);
+    var varchar_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+    defer _ = db2.logicalTypeDestroy(&varchar_type);
+
+    var types = [_]db2.LogicalTypeHandle{ coords_type, status_type };
+    var scan_chunk: db2.DataChunkHandle = undefined;
+    if (db2.dataChunkCreateWithContext(context, &types, &scan_chunk, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ChunkFailed;
+    defer _ = db2.dataChunkDestroy(&scan_chunk);
+
+    var shared_state: db2.ColumnDataCollectionSharedScanStateHandle = undefined;
+    if (db2.columnDataCollectionSharedScanStateCreate(collection, &shared_state, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanStateFailed;
+    defer _ = db2.columnDataCollectionSharedScanStateDestroy(&shared_state);
+    var worker_state: db2.ColumnDataCollectionWorkerScanStateHandle = undefined;
+    if (db2.columnDataCollectionWorkerScanStateCreate(collection, &worker_state, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanStateFailed;
+    defer _ = db2.columnDataCollectionWorkerScanStateDestroy(&worker_state);
+
+    var pos: usize = 0;
+    var wrote_any = false;
+
+    while (true) {
+        var did_produce = false;
+        if (db2.columnDataCollectionScan(collection, shared_state, worker_state, scan_chunk, &did_produce, &e) != db2.c.DUCKDB_V2_ERROR_NONE) {
+            return error.ScanFailed;
+        }
+        if (!did_produce) break;
+
+        var chunk_size: db2.idx_t = 0;
+        if (db2.dataChunkGetSize(scan_chunk, &chunk_size, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+        var coords_vec: db2.VectorHandle = undefined;
+        var status_vec: db2.VectorHandle = undefined;
+        if (db2.dataChunkGetVector(scan_chunk, 0, &coords_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (db2.dataChunkGetVector(scan_chunk, 1, &status_vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+        var row: db2.idx_t = 0;
+        while (row < chunk_size) : (row += 1) {
+            if (wrote_any) {
+                if (pos >= buf.len) return error.FormatFailed;
+                buf[pos] = '|';
+                pos += 1;
+            }
+
+            var coords_value: db2.ValueHandle = undefined;
+            if (db2.vectorGetValue(coords_vec, row, &coords_value, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+            defer _ = db2.valueDestroy(&coords_value);
+            var n: db2.idx_t = 0;
+            if (db2.valueGetChildCount(coords_value, &n, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+            if (pos >= buf.len) return error.FormatFailed;
+            buf[pos] = '[';
+            pos += 1;
+            var k: db2.idx_t = 0;
+            while (k < n) : (k += 1) {
+                if (k > 0) {
+                    if (pos >= buf.len) return error.FormatFailed;
+                    buf[pos] = ',';
+                    pos += 1;
+                }
+                var elem_value: db2.ValueHandle = undefined;
+                if (db2.valueGetChild(coords_value, k, &elem_value, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+                defer _ = db2.valueDestroy(&elem_value);
+                var elem: f64 = 0;
+                if (db2.valueGetDouble(elem_value, &elem, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+                const seg = std.fmt.bufPrint(buf[pos..], "{d:.1}", .{elem}) catch return error.FormatFailed;
+                pos += seg.len;
+            }
+            if (pos >= buf.len) return error.FormatFailed;
+            buf[pos] = ']';
+            pos += 1;
+
+            var status_value: db2.ValueHandle = undefined;
+            if (db2.vectorGetValue(status_vec, row, &status_value, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+            defer _ = db2.valueDestroy(&status_value);
+            var status_text_value: db2.ValueHandle = undefined;
+            if (db2.valueCastWithContext(context, status_value, varchar_type, &status_text_value, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+            defer _ = db2.valueDestroy(&status_text_value);
+            var status_text: db2.Str = undefined;
+            if (db2.valueGetVarchar(status_text_value, &status_text, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+            const status_slice: []const u8 = @as([*]const u8, @ptrCast(status_text.ptr))[0..status_text.len];
+
+            const tail = std.fmt.bufPrint(buf[pos..], ":{s}", .{status_slice}) catch return error.FormatFailed;
+            pos += tail.len;
+            wrote_any = true;
+        }
+    }
+
+    _ = err;
+    return buf[0..pos];
+}
+
+/// Live test for `comptime_table_v2.zig`'s optional `pushdown` hook:
+/// `zig_v2_range_pushdown_ct(n)` produces `value` 0..n, same as
+/// `zig_v2_range_ct`, except its `pushdown` recognizes `value = <constant>`
+/// and filters rows itself. `pushdown_hit_count` increments once per
+/// accepted predicate — a side channel to observe, from SQL, that the
+/// pushdown callback actually fired and accepted (not just that the final
+/// row count happens to be right, which the engine's own un-accepted-filter
+/// fallback would also produce). `zig_v2_pushdown_hit_count()` reads it;
+/// `zig_v2_pushdown_hit_count_reset()` zeroes it so repeated test queries
+/// in the same session don't accumulate.
+var pushdown_hit_count: i64 = 0;
+
+const RangeFilterState = struct {
+    n: i64,
+    i: i64,
+    predicate: ?i64 = null,
+
+    pub const Row = struct { value: i64 };
+
+    pub fn init(n: i64) @This() {
+        return .{ .n = n, .i = 0 };
+    }
+
+    /// Filters rows itself when `predicate` is set — the actual promise
+    /// `pushdown`'s `accept` makes good on. Wrong filtering here (not just
+    /// wrong pushdown recognition) would show up as wrong query results.
+    pub fn next(self: *@This()) ?Row {
+        while (self.i < self.n) {
+            const v = self.i;
+            self.i += 1;
+            if (self.predicate) |p| {
+                if (v != p) continue;
+            }
+            return .{ .value = v };
+        }
+        return null;
+    }
+
+    /// Recognizes `value = <constant>` (COMPARE_EQUAL over a
+    /// BOUND_COLUMN_REF and a VALUE_CONSTANT, column 0) and accepts it;
+    /// anything else it leaves for the engine, per the framework's
+    /// documented contract.
+    pub fn pushdown(self: *@This(), info: db2.TableFunctionFilterPushdownInfoHandle, err: [*c]db2.ErrorInfoHandle) void {
+        var count: db2.idx_t = 0;
+        if (db2.tableFunctionFilterPushdownGetFilterCount(info, &count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+        var i: db2.idx_t = 0;
+        while (i < count) : (i += 1) {
+            var expr: db2.ExpressionHandle = undefined;
+            if (db2.tableFunctionFilterPushdownGetFilter(info, i, &expr, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+
+            var expr_type: db2.ExpressionType = undefined;
+            if (db2.expressionGetType(expr, &expr_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+            if (expr_type != db2.c.DUCKDB_V2_EXPRESSION_TYPE_COMPARE_EQUAL) continue;
+
+            var lhs: db2.ExpressionHandle = undefined;
+            var rhs: db2.ExpressionHandle = undefined;
+            if (db2.expressionGetChild(expr, 0, &lhs, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+            if (db2.expressionGetChild(expr, 1, &rhs, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+
+            var lhs_type: db2.ExpressionType = undefined;
+            var rhs_type: db2.ExpressionType = undefined;
+            if (db2.expressionGetType(lhs, &lhs_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+            if (db2.expressionGetType(rhs, &rhs_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+            if (lhs_type != db2.c.DUCKDB_V2_EXPRESSION_TYPE_BOUND_COLUMN_REF) continue;
+            if (rhs_type != db2.c.DUCKDB_V2_EXPRESSION_TYPE_VALUE_CONSTANT) continue;
+
+            var col_ref_idx: db2.idx_t = 0;
+            if (db2.expressionColumnRefGetIndex(lhs, &col_ref_idx, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+            var declared_col: db2.idx_t = 0;
+            if (db2.tableFunctionFilterPushdownGetColumnIndex(info, col_ref_idx, &declared_col, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+            if (declared_col != 0) continue; // only "value" (column 0) is recognized
+
+            var constant: db2.ValueHandle = undefined;
+            if (db2.expressionConstantGetValue(rhs, &constant, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+            defer _ = db2.valueDestroy(&constant);
+            var value: i64 = 0;
+            if (db2.valueGetBigint(constant, &value, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+
+            self.predicate = value;
+            if (db2.tableFunctionFilterPushdownAccept(info, i, err) != db2.c.DUCKDB_V2_ERROR_NONE) continue;
+            pushdown_hit_count += 1;
+        }
+    }
+};
+
+const RangeFilterTable = comptime_table_v2.Function("zig_v2_range_pushdown_ct", RangeFilterState);
+
+fn registerFilterPushdownTest(input: *const db2.ExtensionInput) void {
+    RangeFilterTable.register(input) catch {};
+
+    var err: db2.ErrorInfoHandle = undefined;
+
+    var get_fn: db2.ScalarFunctionHandle = undefined;
+    if (db2.scalarFunctionCreateWithExtension(input.extension, &get_fn, &err) == db2.c.DUCKDB_V2_ERROR_NONE) {
+        defer _ = db2.scalarFunctionDestroy(&get_fn);
+        const get_name = db2.str("zig_v2_pushdown_hit_count");
+        _ = db2.scalarFunctionSetName(get_fn, &get_name, &err);
+        var bigint_type: db2.LogicalTypeHandle = undefined;
+        if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, &bigint_type, &err) == db2.c.DUCKDB_V2_ERROR_NONE) {
+            defer _ = db2.logicalTypeDestroy(&bigint_type);
+            var sig: db2.FunctionSignatureHandle = undefined;
+            if (db2.scalarFunctionGetSignature(get_fn, &sig, &err) == db2.c.DUCKDB_V2_ERROR_NONE) {
+                _ = db2.functionSignatureSetReturnType(sig, bigint_type, &err);
+                _ = db2.scalarFunctionSetExecCallback(get_fn, pushdownHitCountExec, &err);
+                _ = db2.scalarFunctionRegister(get_fn, &err);
+            }
+        }
+    }
+
+    var reset_fn: db2.ScalarFunctionHandle = undefined;
+    if (db2.scalarFunctionCreateWithExtension(input.extension, &reset_fn, &err) == db2.c.DUCKDB_V2_ERROR_NONE) {
+        defer _ = db2.scalarFunctionDestroy(&reset_fn);
+        const reset_name = db2.str("zig_v2_pushdown_hit_count_reset");
+        _ = db2.scalarFunctionSetName(reset_fn, &reset_name, &err);
+        var bigint_type: db2.LogicalTypeHandle = undefined;
+        if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, &bigint_type, &err) == db2.c.DUCKDB_V2_ERROR_NONE) {
+            defer _ = db2.logicalTypeDestroy(&bigint_type);
+            var sig: db2.FunctionSignatureHandle = undefined;
+            if (db2.scalarFunctionGetSignature(reset_fn, &sig, &err) == db2.c.DUCKDB_V2_ERROR_NONE) {
+                _ = db2.functionSignatureSetReturnType(sig, bigint_type, &err);
+                _ = db2.scalarFunctionSetExecCallback(reset_fn, pushdownHitCountResetExec, &err);
+                _ = db2.scalarFunctionRegister(reset_fn, &err);
+            }
+        }
+    }
+}
+
+fn pushdownHitCountExec(info: db2.ScalarFunctionExecInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    _ = context;
+    var row_count: db2.idx_t = 0;
+    if (db2.scalarFunctionExecGetRowCount(info, &row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var result_vec: db2.VectorHandle = undefined;
+    if (db2.scalarFunctionExecGetResult(info, &result_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.vectorSetSize(result_vec, row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var out_data: ?*anyopaque = null;
+    if (db2.vectorGetDataMutable(result_vec, &out_data, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    const ptr: [*]i64 = @ptrCast(@alignCast(out_data));
+    var row: db2.idx_t = 0;
+    while (row < row_count) : (row += 1) ptr[row] = pushdown_hit_count;
+}
+
+fn pushdownHitCountResetExec(info: db2.ScalarFunctionExecInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    _ = context;
+    pushdown_hit_count = 0;
+    var row_count: db2.idx_t = 0;
+    if (db2.scalarFunctionExecGetRowCount(info, &row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var result_vec: db2.VectorHandle = undefined;
+    if (db2.scalarFunctionExecGetResult(info, &result_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.vectorSetSize(result_vec, row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var out_data: ?*anyopaque = null;
+    if (db2.vectorGetDataMutable(result_vec, &out_data, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    const ptr: [*]i64 = @ptrCast(@alignCast(out_data));
+    var row: db2.idx_t = 0;
+    while (row < row_count) : (row += 1) ptr[row] = 0;
 }
 
 // Private test-only decls of duckdb_v2.zig, re-exposed here so this file

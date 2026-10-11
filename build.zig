@@ -122,12 +122,22 @@ pub fn build(b: *std.Build) void {
     const comptime_aggregate_v2_check = b.addTest(.{ .root_module = comptime_aggregate_v2_mod });
     const run_comptime_aggregate_v2_check = b.addRunArtifact(comptime_aggregate_v2_check);
 
+    const comptime_appender_v2_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/comptime_appender_v2.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    comptime_appender_v2_mod.addImport("duckdb_v2", duckdb_v2_mod);
+    const comptime_appender_v2_check = b.addTest(.{ .root_module = comptime_appender_v2_mod });
+    const run_comptime_appender_v2_check = b.addRunArtifact(comptime_appender_v2_check);
+
     const v2_check_step = b.step("v2-check", "Type-check the in-progress duckdb v2 API bindings");
     v2_check_step.dependOn(&run_v2_check.step);
     v2_check_step.dependOn(&run_duckdb_v2_examples_check.step);
     v2_check_step.dependOn(&run_comptime_scalar_v2_check.step);
     v2_check_step.dependOn(&run_comptime_table_v2_check.step);
     v2_check_step.dependOn(&run_comptime_aggregate_v2_check.step);
+    v2_check_step.dependOn(&run_comptime_appender_v2_check.step);
 
     // ── v2 proof-of-concept extension (real runtime test, not the real
     // extension) — registers one scalar function against a live DuckDB
@@ -146,6 +156,7 @@ pub fn build(b: *std.Build) void {
     v2_poc_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
     v2_poc_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
     v2_poc_lib.root_module.addImport("comptime_aggregate_v2", comptime_aggregate_v2_mod);
+    v2_poc_lib.root_module.addImport("comptime_appender_v2", comptime_appender_v2_mod);
     v2_poc_lib.root_module.link_libc = true;
 
     const v2_poc_output = addDuckdbExtensionMetadata(b, v2_poc_lib, "zig_ext_v2_poc", "v2.0.0", "v0.0.0-poc", "C_STRUCT");
@@ -184,7 +195,7 @@ pub fn build(b: *std.Build) void {
     // exiting like `-c` does) plus `addFileArg2`'s prefix/suffix resolve the
     // extension's path lazily, as part of running the step, not before.
     {
-        const run_duckdb_v2 = b.addSystemCommand(&.{ "duckdb", "-unsigned", "-cmd" });
+        const run_duckdb_v2 = b.addSystemCommand(&.{ "duckdb", "-unsigned", "-no-init", "-cmd" });
         // '/home/markus/repos/zig-duckdb-ext/zig-out/lib/zig_ext_v2.duckdb_extension'
         // from duckdb_functions() where extension_name like '%v2%';
         run_duckdb_v2.addFileArg2(ext_v2_output, .{ .prefix = "LOAD '", .suffix = "'; select tp_bar(0.1); from duckdb_functions() select function_name, function_type, parameter_types, examples, comment where extension_name like '%v2%'; "});
