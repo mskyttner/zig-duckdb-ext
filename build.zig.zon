@@ -36,6 +36,34 @@
             .url = "git+https://codeberg.org/ziglang/translate-c#875969d3493e245e01bf5d7860f792d8f3eb9ef5",
             .hash = "translate_c-0.0.0-Q_BUWoFOBwAhz77Zd15HCVuhTKzdUKc94kezmCeJ7IC_",
         },
+        // Pinned, content-hashed DuckDB v2.0 alpha CLI binaries — replaces
+        // the machine-local, unpinned `DUCKDB_VERSION=alpha bash
+        // <(curl https://install.duckdb.org)` install this project's own
+        // docs (docs/v2-migration-plan.md's "Testing infrastructure gaps")
+        // previously required by hand, for the two host platforms DuckDB
+        // actually publishes a CLI for at this staged URL today (confirmed
+        // live, 2026-10-12: macOS/Windows return 404 here — only Linux
+        // amd64/arm64 exist under this path). `lazy = true` so only the
+        // one matching the build host is ever actually fetched (see
+        // `duckdbV2CliLazyPath` in build.zig); the other stays undownloaded.
+        //
+        // CAUTION: this is a *staged*, not a tagged-release, artifact — the
+        // URL tracks whatever's most recently published under the
+        // "cyanoptera" codename, so these hashes WILL need re-pinning
+        // (`zig fetch <url>`) whenever that staged build moves forward,
+        // until DuckDB 2.0 ships as a real tagged release and this switches
+        // to the immutable `github.com/duckdb/duckdb/releases/download/...`
+        // pattern already used for the v1.5.6 headers.
+        .duckdb_cli_v2_linux_amd64 = .{
+            .url = "https://artifacts.duckdb.org/staged/v2.0-cyanoptera/duckdb-cli-linux-amd64.tar.gz",
+            .hash = "N-V-__8AAOgVkwSHK16ZpcdwJyoQE2HdKzvZD27NNylVyxks",
+            .lazy = true,
+        },
+        .duckdb_cli_v2_linux_arm64 = .{
+            .url = "https://artifacts.duckdb.org/staged/v2.0-cyanoptera/duckdb-cli-linux-arm64.tar.gz",
+            .hash = "N-V-__8AAIiicQTh1HPr3MiDX9aKnSfL103zk5phspO7cTtP",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

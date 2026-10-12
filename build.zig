@@ -30,6 +30,27 @@ fn duckdbPlatformString(resolved_target: std.Build.ResolvedTarget) []const u8 {
     return "unknown";
 }
 
+/// Resolve a build-host-matched, content-hash-pinned DuckDB v2.0 alpha CLI
+/// binary via the lazy dependencies in `build.zig.zon`, or `null` if the
+/// host platform isn't one DuckDB publishes a CLI for at that staged URL
+/// (confirmed live, 2026-10-12: only linux_amd64/linux_arm64 exist there —
+/// macOS and Windows both 404). Callers fall back to a bare `"duckdb"`
+/// lookup on `PATH` when this returns `null`, so a host this can't resolve
+/// for isn't a hard build failure, just a missed convenience — same
+/// posture a developer manually installing the alpha CLI today already has
+/// to live with for those platforms.
+fn duckdbV2CliLazyPath(b: *std.Build) ?std.Build.LazyPath {
+    const host_platform = duckdbPlatformString(b.graph.host);
+    const dep_name = if (std.mem.eql(u8, host_platform, "linux_amd64"))
+        "duckdb_cli_v2_linux_amd64"
+    else if (std.mem.eql(u8, host_platform, "linux_arm64"))
+        "duckdb_cli_v2_linux_arm64"
+    else
+        return null;
+    const dep = b.lazyDependency(dep_name, .{}) orelse return null;
+    return dep.path("duckdb");
+}
+
 /// Append DuckDB extension metadata to an already-configured shared
 /// library, producing a `.duckdb_extension` file. Factors out the
 /// metadata-tool-executable + run-command + four-args + output-arg
@@ -129,6 +150,7 @@ fn addCrossBuild(
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const duckdb_cli_v2 = duckdbV2CliLazyPath(b);
 
     // ── Translate the vendored DuckDB C API headers ───────────────────────
     // `@cImport` was removed in Zig 0.17.0 in favor of this explicit
@@ -293,7 +315,17 @@ pub fn build(b: *std.Build) void {
     // exiting like `-c` does) plus `addFileArg2`'s prefix/suffix resolve the
     // extension's path lazily, as part of running the step, not before.
     {
-        const run_duckdb_v2 = b.addSystemCommand(&.{ "duckdb", "-unsigned", "-no-init", "-cmd" });
+        // Uses the pinned v2 alpha CLI resolved above when the host
+        // platform has one published (see `duckdbV2CliLazyPath`); falls
+        // back to a bare `duckdb` lookup on `PATH` otherwise (macOS/
+        // Windows hosts today, or a fetch failure) — same as before this
+        // was added.
+        const run_duckdb_v2 = if (duckdb_cli_v2) |cli| blk: {
+            const r = std.Build.Step.Run.create(b, "run duckdb (v2, pinned)");
+            r.addFileArg(cli);
+            break :blk r;
+        } else b.addSystemCommand(&.{"duckdb"});
+        run_duckdb_v2.addArgs(&.{ "-unsigned", "-no-init", "-cmd" });
         // '/home/markus/repos/zig-duckdb-ext/zig-out/lib/zig_ext_v2.duckdb_extension'
         // from duckdb_functions() where extension_name like '%v2%';
         run_duckdb_v2.addFileArg2(ext_v2_output, .{ .prefix = "LOAD '", .suffix = "'; select tp_bar(0.1); from duckdb_functions() select function_name, function_type, parameter_types, examples, comment where extension_name like '%v2%'; " });
@@ -431,7 +463,10 @@ pub fn build(b: *std.Build) void {
     }
     {
         const run = b.addRunArtifact(sqllogictest_tool);
-        run.addArg("duckdb");
+        // Pinned v2 alpha CLI when available for this host (see
+        // `duckdbV2CliLazyPath`), falling back to a bare `duckdb` on
+        // `PATH` otherwise — same as before this was added.
+        if (duckdb_cli_v2) |cli| run.addFileArg(cli) else run.addArg("duckdb");
         run.addFileArg(ext_v2_output);
         run.addFileArg(b.path("test/sql/zig_ext_v2.test"));
         run.step.dependOn(&install_ext_v2.step);
