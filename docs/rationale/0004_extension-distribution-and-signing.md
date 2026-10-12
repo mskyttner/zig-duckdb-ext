@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed
+Accepted — implemented and verified end-to-end (`.github/workflows/release.yml`,
+live at https://mskyttner.github.io/zig-duckdb-ext/).
 
 ## Context
 
@@ -174,9 +175,12 @@ build doesn't need. Instead:
    'https://<org>.github.io/<repo>/';` then works for anyone, from a
    plain public URL.
 4. **Leave the extension unsigned** (the existing all-zero signature
-   footer) and document that users need
-   `SET allow_unsigned_extensions=true;` (or the CLI's `-unsigned` flag)
-   — exactly the flag this project's own test files and manual testing
+   footer) and document that users need the CLI's `-unsigned` flag (or
+   the equivalent client config option set at connection/startup time —
+   confirmed live that `SET allow_unsigned_extensions=true` fails at
+   runtime with `"Cannot change ... while database is running"`; it's a
+   startup-only option, same as `allow_extension_repositories` below) —
+   exactly the flag this project's own test files and manual testing
    already rely on throughout this branch, so nothing new to explain.
    Self-signing with a project-generated RSA key is a **later, optional**
    addition purely for tamper-evidence (a security-conscious user could
@@ -191,6 +195,45 @@ build doesn't need. Instead:
    `INSTALL zig_ext;` with no `FROM`/`-unsigned` needed at all. Worth
    doing once this extension is mature enough to be worth that process,
    not before.
+
+## Implementation notes (from actually standing this up)
+
+- **A repository's version directory must match the installing client's
+  own exact running DuckDB version, not the extension's ABI-compat
+  minimum.** Confirmed live (an install against `v1.5.6` failed looking
+  for a `v1.5.6` directory while the workflow published under `v1.2.0`)
+  and in DuckDB's own source
+  (`ExtensionHelper::GetVersionDirectoryName()` returns
+  `DuckDB::LibraryVersion()` for a release build). This is a different
+  thing from `target_duckdb_version` in `build.zig` (the minimum C-API
+  version embedded in the extension's own metadata footer) — the
+  workflow's `DUCKDB_VERSION` env var controls the *publishing* path and
+  is pinned to `v1.5.6`, the latest stable release actually tested this
+  session. Supporting more client versions means publishing the same
+  build under more version directories (official extensions handle this
+  by rebuilding/republishing per DuckDB release) — not done here, kept as
+  a single pinned version for simplicity, matching the "simple and
+  straightforward" goal this ADR set out with.
+- **`mlugg/setup-zig@v1` (and presumably similar third-party setup
+  actions) can't resolve Zig 0.17.0** — confirmed it isn't mirrored to
+  GitHub Releases yet (only up to 0.15.1 there as of this writing), which
+  is what that action's version resolution uses. Worked around by
+  downloading the official `ziglang.org/download/<version>/...tar.xz`
+  tarball directly in the workflow — no third-party dependency on a
+  version index, same binary a local install would give you.
+- **A freshly-enabled `github-pages` deployment environment has an empty
+  branch/tag allowlist by default** (`custom_branch_policies: true`, no
+  policies yet) — the first deploy fails with "not allowed to deploy...
+  due to environment protection rules" until a policy is added (here:
+  `gh api -X POST .../environments/github-pages/deployment-branch-policies
+  -f name='v*' -F type=tag`, matching this workflow's own tag-based
+  trigger).
+- Verified past "the workflow turned green": `INSTALL zig_ext FROM
+  'https://mskyttner.github.io/zig-duckdb-ext/'` followed by `LOAD
+  zig_ext` against a real `v1.5.6` CLI (with `-unsigned` and `SET
+  allow_extensions_metadata_mismatch=true`, consistent with everything
+  else in this project) correctly ran `zig_add_numbers`/`tp_bar` end to
+  end, from the actual published URL.
 
 ## Consequences
 
