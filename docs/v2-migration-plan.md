@@ -156,41 +156,49 @@ DuckDB's official "quack" example extension — plain C extension source,
 language-level API bindings) has several techniques directly relevant to
 gaps already identified above.
 
-### Version × platform build matrix
+### Version × platform build matrix — platform axis done (v1 only)
 
-Their `build.zig` loops `for (duckdb_versions) |v| for (platforms) |p|`,
-each combination its own `b.addLibrary`, selectable via repeatable
-`-Dduckdb-version=`/`-Dplatform=` options (default: build everything).
-Applied to this project, the matrix would be **DuckDB v1.5.6 and v2.0
-alpha × {linux, windows, macos}** (amd64/arm64 each, so really 2×6):
+The platform half of the matrix landed as the new `zig build cross` step:
+loops over a `cross_targets: []const std.Target.Query` array (currently
+linux amd64/arm64, windows amd64, macos amd64/arm64 — the 5 combinations
+beyond the host build this plan already had), each its own fully
+self-contained `addCrossBuild(b, translate_c_dep, optimize, query)` call
+(its own header translation, its own `b.addLibrary`, its own metadata
+step) rather than threading a `target` parameter through the host build's
+existing `duckdb_c`/`lib`, which are also used for the docs/v2-check/etc
+steps that only make sense for the host target. Output lands under
+`zig-out/lib/<platform>/zig_ext.duckdb_extension`.
 
-```zig
-const DuckDBVersion = enum {
-    v1_5_6,
-    v2_0_alpha,
-    // headers(self, b) -> Build.LazyPath, same shape as quack-zig's,
-    // but v2.0-alpha has no tagged GitHub release to fetch from yet —
-    // would need to stay a local/untracked header set (see "Testing
-    // infrastructure gaps") until DuckDB actually tags v2.0.
-};
-const Platform = enum {
-    linux_amd64, linux_arm64,
-    windows_amd64, windows_arm64,
-    macos_amd64, macos_arm64,
-    // target(self, b) -> Build.ResolvedTarget via resolveTargetQuery,
-    // identical mechanism to quack-zig's.
-};
-```
+Scoped to the real v1 extension only, not the matrix's original
+DuckDB-version axis (v1.2.0 × v2.0-alpha) — v2.0-alpha has no tagged
+release to version-pin against yet (see "Testing infrastructure gaps"
+below), and cross-building the still-parallel, still-unreleased v2
+extension is lower priority than the one that would actually ship. Revisit
+once DuckDB 2.0 ships and header vendoring can be pinned the way v1's is.
 
-This is a bigger lift than it looks for us specifically, because unlike
-`quack_extension.c` (single C file, no OS-specific code), our `*_v2.zig`
-files use `std.heap.page_allocator`/`std.heap.c_allocator` and arena
-allocators throughout — worth a quick check that cross-compiled Windows/
-macOS targets don't hit a libc or allocator availability snag before
-assuming the matrix "just works" the way it does for quack-zig's pure-C
-code. Scope as: get `linux_amd64` × both DuckDB versions working first
-(already true today, just not expressed as a matrix), then add the other
-5 platform combinations one at a time, not all at once.
+**Real bug found immediately, not after the fact**: the metadata-appender
+tool self-detected its platform string from its own compile target
+(`builtin.target`) — always the build host, since the tool has to run
+during the build and so is never itself cross-compiled. Every
+cross-compiled extension would have silently gotten the HOST's platform
+baked in, not the target's — a correctness bug invisible until someone
+actually inspected the bytes, not something `zig build cross` succeeding
+would have caught on its own. Fixed by making `append_metadata_main.zig`
+take `platform` as an explicit CLI argument, computed per-target in
+`build.zig` instead of self-detected. Verified past "it compiled": each
+of the 5 cross targets produces the correct native binary format (ELF
+x86_64/aarch64, Mach-O x86_64/arm64, PE32+) AND the correct, distinct
+platform string read back out of its own metadata footer bytes.
+
+Not yet checked: whether these cross-compiled binaries actually *load* in
+a real DuckDB on their target platform — only the build host (linux
+amd64) could be verified that way here. The `std.heap.page_allocator`/
+`std.heap.c_allocator`/arena-allocator concern this section originally
+raised (a libc/allocator availability snag on Windows/macOS) didn't
+surface as a *build* failure, but a build succeeding doesn't rule out a
+runtime-only snag — treat "builds cross-platform" and "verified to load
+and run cross-platform" as two different claims until someone can
+actually test on those platforms.
 
 ### Git-derived extension version
 
