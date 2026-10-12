@@ -891,6 +891,33 @@ workload:
   the same zero wrapping. Lower priority than the items above since
   there's no parity regression to close — this project has simply never
   used either capability on either API version.
+- **LIST/ARRAY/MAP/UNION as `comptime_scalar_v2` argument or return
+  types — not started, not even scoped before now.** Found 2026-10-12
+  while cataloguing remaining gaps. Item 2 above only ever targeted
+  STRUCT (argument direction) and VARIANT (both directions) — LIST,
+  ARRAY, MAP, and UNION were never on the list, and STRUCT as a *return*
+  type is also still explicitly out of scope (see item 2's "argument
+  only" note). The low-level plumbing already exists and has been
+  exercised by hand, just never generalized into the comptime framework's
+  type-mapping (`duckdbV2TypeId`/`isStructType`/etc.): `contextCreateListType`/
+  `contextCreateArrayType`/`contextCreateMapType`/`contextCreateUnionType`
+  all exist in `duckdb_v2.zig`, and a hand-written POC (the nested-type
+  Appender test in `init_v2_poc.zig`) already decodes a real
+  `LIST(BIGINT)` column by hand — `vectorGetView` on the LIST vector
+  itself yields a `[*]ListEntry{offset, length}` array (not element
+  values), and `vectorGetChild(vec, 0, ...)` gets the flat child vector
+  those offsets index into, which is then read exactly like any other
+  argument. MAP decodes the same way DuckDB represents it internally
+  (child 0 is a STRUCT(key, value), confirmed via `duckdb_v2.zig`'s
+  `vectorGetChild` doc comment, carried over from item 5's STRUCT work);
+  UNION's child 0 is the tag, 1..N the members, same doc comment. So the
+  mechanism for all four is already proven at the wrapper level — what's
+  missing is comptime-generating this from a plain Zig type the way
+  STRUCT already does from a `struct`, which would need a convention for
+  each (e.g. `[]const T` for LIST, `[N]T` for ARRAY, a dedicated
+  `db.Map(K, V)`/`db.Union(...)` wrapper type for MAP/UNION, since Zig has
+  no built-in map/tagged-union-with-named-variants shape that maps 1:1).
+  Not attempted.
 - ~~**Table-function projection pushdown — not started, no wrapper
   exists**~~ — **done.** Found while comparing against
   `ducklink-extension`, same pass as the cast-function gap above. The v1
