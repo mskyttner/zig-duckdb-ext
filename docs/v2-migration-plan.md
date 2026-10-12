@@ -22,8 +22,9 @@ Binding layer: `src/lib/duckdb_v2.zig` (vtable singleton + wrapped
 functions) plus four comptime frameworks — `comptime_scalar_v2.zig`
 (full per-row-function → vectorized-callback generation, including
 VARCHAR, a one-level STRUCT argument, VARIANT as an argument or return
-type, and the smaller integer/float types, DATE/TIME/TIMESTAMP/INTERVAL,
-and BLOB), `comptime_table_v2.zig` (full bind/exec generation from a
+type, the smaller integer/float types, DATE/TIME/TIMESTAMP/INTERVAL,
+BLOB, and DECIMAL/ENUM as an argument or return type),
+`comptime_table_v2.zig` (full bind/exec generation from a
 `Row`/`init`/`next` `State` type, including VARCHAR arguments/columns and
 an optional `pushdown` hook for filter pushdown), `comptime_aggregate_v2.zig`
 (full init/update/combine/finalize generation from a `State` type,
@@ -723,13 +724,14 @@ application, or distributing a single self-contained `duckdb` binary
 without the `LOAD`/`-unsigned`/signing friction a loadable extension
 carries.
 
-### 7. DECIMAL and ENUM support — in progress
+### 7. DECIMAL and ENUM support — done
 
 The two parameterized types deliberately left out of item 5's otherwise-
 done scalar-types pass. Both need something no other supported type does:
 a type-level parameter only known at registration time (DECIMAL's
 width/scale; ENUM's member dictionary), which a plain Zig type can't
-carry on its own the way `i32`/`db.Date`/etc. do.
+carry on its own the way `i32`/`db.Date`/etc. do. `comptime_scalar_v2.zig`
+now supports both as a parameter or return type.
 
 Findings from the C API, confirmed against the header (not assumed — see
 [the C API vector docs](https://duckdb.org/docs/preview/clients/c/vector)
@@ -739,26 +741,53 @@ for the v1-era version of the same contract):
   directly on `vector_get_view`'s own doc comment**: width ≤4 → `int16`,
   ≤9 → `int32`, ≤18 → `int64`, ≤38 → `int128`, boundaries inclusive — the
   same direct-buffer path every numeric type already uses, once the right
-  storage width is picked. Width and scale come back from
-  `logical_type_get_param` (index 0/1, as UTINYINT values) given a type
-  handle, but a comptime framework already knows both at registration
-  time (the caller states them), so no runtime introspection is needed
-  for the type this project builds — only for interpreting a type handle
-  handed to it from elsewhere (not a case this framework hits).
+  storage width is picked. No dedicated exec path was needed (unlike
+  STRUCT/VARIANT): `db.Decimal(width, scale)` (a comptime type generator —
+  a one-field wrapper around whichever storage int the width selects,
+  `db.DecimalStorageInt`) plugs into the EXISTING flat-buffer read/write
+  path, just unwrapping/wrapping `.raw` first. Width and scale cross as
+  plain UTINYINT `Value`s to `context_create_type_from_id(ctx, DECIMAL,
+  null, [width, scale], 2, ...)` (confirmed: not TYPE-kind values, since
+  they aren't child types, unlike LIST/STRUCT's children) via the new
+  `contextCreateDecimalType`. Verified live at both the i16/i32/i64 tiers
+  and the i128 tier (`zig_v2_apply_tax_ct`, `zig_v2_big_decimal_double_ct`).
 - **ENUM's vector storage is also a typed leaf array**, same doc comment:
   dictionary size ≤255 → `uint8`, ≤65535 → `uint16`, beyond → `uint32`
-  (boundaries inclusive, empty dictionary → `uint8`). `comptime_appender_v2.zig`
-  already established (see item 5a) that there's no `value_create_enum_*`
-  constructor at all — writing an ENUM goes through a VARCHAR-box +
-  `valueCastWithContext` to the column's own ENUM type instead.
+  (boundaries inclusive, empty dictionary → `uint8`; only the `uint8` tier
+  was live-verified — `@Type` reification isn't available the expected
+  way in this Zig 0.17.0 install, so a quick >255-member live check was
+  skipped rather than chased further, and the u16/u32 tiers rest on the
+  header's own documented contract plus the same decode/encode code path
+  the u8 tier already proved). A plain Zig `enum` maps to SQL
+  `ENUM('member0', ...)` (same convention `comptime_appender_v2.zig`
+  already established for the Appender — member names from the Zig
+  enum's own variant names, via `contextCreateTypeFromText` since there's
+  no `value_create_enum_*` constructor to call either for reading or
+  writing). **Reading** decodes the vector's dictionary ordinal into a Zig
+  enum value via the enum's own `field_values` in declaration order
+  (matching the dictionary order the `ENUM(...)` type was built with),
+  not `@enumFromInt(ordinal)` directly — verified live specifically with
+  manually-numbered variants (`enum(u8) { sad = 1, neutral = 5, happy = 9
+  }`), not just the default-auto-numbered case, since that's exactly the
+  assumption a naive `@enumFromInt` decode would get wrong. **Writing**
+  boxes the Zig value's tag name as VARCHAR, then `valueCastWithContext`s
+  it to the result vector's own ENUM type (via the new
+  `vectorGetLogicalType` wrapper) — the same way `'a'::my_enum` works in
+  SQL, the same trick `comptime_appender_v2.zig` already used for writing.
 
-Design: `db.Decimal(width, scale)` (a comptime type generator, like a
-tiny single-field wrapper around whichever storage int the width
-selects) for DECIMAL; a plain Zig `enum` (same convention
-`comptime_appender_v2.zig` already uses) for ENUM, decoded via the
-enum's own `field_values` in declaration order (matching the dictionary
-order the `ENUM(...)` type was built with) rather than assuming default
-auto-numbering, so a manually-numbered Zig enum still decodes correctly.
+**Real bug found and fixed before anything else could be tested**: the
+first `isEnumType` implementation (`@typeInfo(T) == .@"enum"`) also
+matched `db.Date`/`db.Time`/`db.Timestamp` from item 5, since those are
+themselves non-exhaustive enums (a zero-cost way to get a distinct type
+with the same layout as their backing int) — not an unlikely edge case,
+it segfaulted DuckDB's own `context_create_type_from_text` immediately on
+extension load, building an empty `ENUM()` dictionary for the first
+`db.Timestamp` parameter it saw. Fixed by excluding the three marker
+types explicitly, the same way `db.Blob`/`db.Decimal` are excluded from
+`isStructType`. Worth remembering for any future marker type built the
+same "wrap a backing type in a distinct enum/struct" way: a generic
+`@typeInfo(T) == .@"foo"` check needs an explicit exclusion list, not an
+assumption that only "real" STRUCTs/ENUMs will ever satisfy it.
 
 ### 8. The real cutover decision
 
