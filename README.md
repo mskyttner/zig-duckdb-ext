@@ -172,8 +172,8 @@ SELECT * FROM zig_tokenize('hello world', ' ');
 # Unit tests
 task test:unit
 
-# End-to-end SQL smoke tests (builds the extension first)
-task test:e2e
+# End-to-end SQL tests (sqllogictest format, against the real v1 extension)
+task sqllogictest
 
 # All quality gates (format + build + unit tests)
 task check:all
@@ -192,7 +192,7 @@ src/
 build.zig             Build configuration
 build.zig.zon         Package manifest
 duckdb_capi/          Vendored DuckDB C headers (v1.2.0)
-test/sql/             End-to-end SQL test scripts
+test/sql/             End-to-end SQL tests (sqllogictest .test format)
 docs/rationale/       Architecture decision records
 ```
 
@@ -211,7 +211,8 @@ docs/rationale/       Architecture decision records
 | `task build`         | Compile the extension (debug)       |
 | `task build:release` | Compile the extension (release)     |
 | `task test:unit`     | Run unit tests                      |
-| `task test:e2e`      | Run end-to-end SQL tests            |
+| `task sqllogictest`  | Run end-to-end SQL tests (v1)       |
+| `task sqllogictest:v2` | Run end-to-end SQL tests (v2)     |
 | `task check:all`     | Run all quality gates               |
 | `task bench`         | Benchmark hand-written vs comptime  |
 | `task format`        | Format Zig source files             |

@@ -9,7 +9,8 @@ zig build                    # debug build → zig-out/lib/zig_ext.duckdb_extens
 zig build -Doptimize=ReleaseSafe  # release build
 zig build test               # run all unit tests
 task check:all               # format + build + unit tests (MUST pass before every commit)
-task test:e2e                # end-to-end SQL tests (loads extension into DuckDB)
+task sqllogictest            # end-to-end SQL tests against the real v1 extension (test/sql/zig_ext.test)
+task sqllogictest:v2         # same, against the real v2 extension (test/sql/zig_ext_v2.test)
 task bench                   # benchmark hand-written vs comptime implementations
 task audit                   # check for compiler warnings and deprecated patterns
 task format                  # zig fmt src/

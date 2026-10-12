@@ -36,32 +36,15 @@ tasks:
     cmds:
       - zig build test
 
-  test:e2e:
-    desc: "End-to-end tests: build, load into DuckDB, run all SQL test files"
-    deps: [build]
+  sqllogictest:
+    desc: "End-to-end SQL tests against the real v1 extension (test/sql/zig_ext.test)"
     cmds:
-      - |
-        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
-        if [ -z "$EXT_PATH" ]; then
-          echo "ERROR: No .duckdb_extension found in zig-out/lib/"
-          exit 1
-        fi
-        echo "=== Loading extension from $EXT_PATH ==="
-        FAILED=0
-        for sql_file in test/sql/*.sql; do
-          echo "--- Running $sql_file ---"
-          if duckdb -unsigned -c "LOAD '${EXT_PATH}';" < "$sql_file"; then
-            echo "    PASS"
-          else
-            echo "    FAIL"
-            FAILED=1
-          fi
-        done
-        if [ "$FAILED" -ne 0 ]; then
-          echo "=== Some e2e tests FAILED ==="
-          exit 1
-        fi
-        echo "=== All e2e tests passed ==="
+      - zig build sqllogictest
+
+  sqllogictest:v2:
+    desc: "End-to-end SQL tests against the real v2 extension (test/sql/zig_ext_v2.test)"
+    cmds:
+      - zig build sqllogictest-v2
 
   demo:hello:
     desc: "Demo zig_hello scalar function"
