@@ -190,15 +190,37 @@ of the 5 cross targets produces the correct native binary format (ELF
 x86_64/aarch64, Mach-O x86_64/arm64, PE32+) AND the correct, distinct
 platform string read back out of its own metadata footer bytes.
 
-Not yet checked: whether these cross-compiled binaries actually *load* in
-a real DuckDB on their target platform — only the build host (linux
-amd64) could be verified that way here. The `std.heap.page_allocator`/
+**`linux_arm64` — now verified to load and run, not just build.** `task
+verify:cross-arm64` loads the cross-compiled artifact into a real arm64
+`duckdb` CLI running under QEMU user-mode emulation (Docker/Podman +
+binfmt, registered via `tonistiigi/binfmt`), inside an arm64 Ubuntu
+container so the real aarch64 glibc/sysroot comes from the container
+image itself — no sysroot provisioning needed on the host. Runs real SQL
+(`zig_add_numbers`, the macro-wrapped `tp_bar`) and asserts on the
+output. One real finding along the way: registering the QEMU binfmt
+handler needs genuine root (`sudo docker run --privileged ...`), not just
+`--privileged` inside rootless podman/docker — a rootless container's
+"privileged" is scoped to its own user namespace, so it can't write the
+real host kernel's `/proc/sys/fs/binfmt_misc`; the task detects this and
+prints the exact one-time fix rather than failing silently or trying to
+self-escalate.
+
+**`windows_amd64`/`osx_amd64`/`osx_arm64` — still unverified past
+"builds", and QEMU user-mode is structurally unable to help here.** QEMU
+user-mode only translates CPU instructions and forwards Linux syscalls to
+the host kernel — it has no bearing on non-Linux targets at all, however
+it's packaged (raw `qemu-static`, or Docker/binfmt as used above). A real
+Windows or macOS environment is the only way to verify those — a VM
+(e.g. `sickcodes/docker-osx` for macOS, booting a full guest OS under
+QEMU system emulation + KVM) is the standard approach, but a
+meaningfully heavier undertaking (a large guest image, a long first boot,
+a persistent running VM) than the container-based arm64 check above, and
+one this branch hasn't attempted. The `std.heap.page_allocator`/
 `std.heap.c_allocator`/arena-allocator concern this section originally
 raised (a libc/allocator availability snag on Windows/macOS) didn't
-surface as a *build* failure, but a build succeeding doesn't rule out a
-runtime-only snag — treat "builds cross-platform" and "verified to load
-and run cross-platform" as two different claims until someone can
-actually test on those platforms.
+surface as a *build* failure on any of the 5 targets, but a build
+succeeding doesn't rule out a runtime-only snag on the two platforms
+still unverified this way.
 
 ### Git-derived extension version
 
