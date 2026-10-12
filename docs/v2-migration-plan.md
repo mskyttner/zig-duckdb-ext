@@ -1423,3 +1423,77 @@ history around that file, re-verify the refactor the same way: capture
   `0.17.0-dev`) and installed it to `~/.local/bin/zls`, also
   machine-local and also likely to need rebuilding once a tagged 0.17
   release exists upstream.
+
+## Repo-as-template UX (planned, not started, 2026-10-12)
+
+Prompted by "suggest UX enhancements for a developer wanting to create a
+DuckDB extension for 1.5.6 and 2.0 and publish it to GitHub using this
+repo" — i.e. using this repo as a fork/template, not continuing the v1→v2
+migration itself. Three items, deliberately not started yet (explicit
+"plan for it, hold off on implementing" from the user):
+
+### 1. Extension name as a build setting, plus a rename step
+
+No native `zig build init` mechanism exists for this (`zig init` is Zig's
+own CLI subcommand, but it's a generic empty-project scaffolder, unrelated
+to retrofitting an existing project). What's real and already half-built:
+`build.zig:4`'s `const extension_name = "zig_ext";` is already the single
+source of truth for the v1 target. Plan:
+- Convert it to `b.option([]const u8, "name", "Extension name") orelse
+  "zig_ext"`, so `-Dname=my_ext` renames the v1 build artifacts.
+- This only reaches what the Zig build graph touches. Confirmed by grep:
+  `zig_ext` also appears hardcoded in the v2/v2-poc targets inside
+  `build.zig` itself (`zig_ext_v2`, `zig_ext_v2_poc`), plus separately in
+  `Taskfile.yml`, `README.md`, `CLAUDE.md`, and
+  `.github/workflows/release.yml` — 28 occurrences total across 5 files.
+  A build option alone doesn't reach any of those.
+- So the full plan is two parts: (a) the `-Dname=` build option above,
+  and (b) a small rename script (`task init NAME=my_ext` or
+  `scripts/rename.sh`) doing the actual find/replace across the
+  non-build-graph files, since they're prose/config outside what
+  `zig build` itself can parameterize.
+- Investigated `codeberg.org/tensorush/liza` ("Zig codebase initializer")
+  as a possible off-the-shelf tool for this — not a fit. It generates
+  brand-new generic Zig projects from its own `exe`/`lib`/`bld` templates
+  (with CI/license/lint/coverage scaffolding); it has no DuckDB-extension
+  awareness and isn't designed to retrofit an *existing* project the way
+  this one would need. Its flag-plus-template-variable interaction
+  pattern (`-d`/`-c`/`-l` feature flags, `$y`/`$n` substitution) is worth
+  borrowing conceptually for the rename script, not the tool itself.
+
+### 5. Trim or clearly label the example functions
+
+The repo currently has ~15 example functions spanning hand-written/
+comptime × v1/v2 — great as a *reference*, ambiguous as a *starting
+point*: a newcomer forking this can't tell at a glance what's safe to
+delete versus what's load-bearing framework code. Plan:
+- Add `src/functions/README.md`: these are reference implementations
+  proving the comptime framework (one per capability — scalar, table,
+  named-params-via-macro, nested rendering); delete and replace with your
+  own; `src/lib/` is the reusable part, keep that.
+- One-line pointer from the top-level README under a new "Using this as
+  a template" section.
+- Worth considering (not decided): a separate stripped-down branch/tag
+  with the showcase functions (`tp_bar`/`tp_line`/`tp_treemap`/
+  `tp_snakemap`) removed, keeping only one minimal example
+  (`add_numbers`) as the actual fork-from starting point — avoids the
+  "which of these 15 files do I need" question entirely, at the cost of
+  maintaining two divergent states of the repo.
+
+### 6. Repo template / badges / LICENSE / CONTRIBUTING
+
+- **LICENSE**: needs an explicit choice (MIT is the DuckDB
+  community-extensions norm) — not added speculatively.
+- **CONTRIBUTING.md**: how to add a scalar/table/aggregate function, how
+  to run the test suite (`task sqllogictest`/`sqllogictest:v2`), the dual
+  v1/v2 branch structure, the release/signing process from ADR-0004.
+- **README badges**: GitHub Actions build status at minimum; a
+  Zig-version badge if useful.
+- **GitHub "template repository" flag**: a repo *setting*
+  (`repos/.../generate` via `gh api`), not a committable file. Sequenced
+  deliberately *after* item 5 above — flipping it on a repo still full of
+  one person's specific example functions is confusing UX for whoever
+  clicks "Use this template" first.
+
+None of the three have any code/file changes yet — this section exists so
+the plan survives a context reset, not as a record of work done.
