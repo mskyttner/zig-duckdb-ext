@@ -26,7 +26,8 @@ type, the smaller integer/float types, DATE/TIME/TIMESTAMP/INTERVAL,
 BLOB, and DECIMAL/ENUM as an argument or return type),
 `comptime_table_v2.zig` (full bind/exec generation from a
 `Row`/`init`/`next` `State` type, including VARCHAR arguments/columns and
-an optional `pushdown` hook for filter pushdown), `comptime_aggregate_v2.zig`
+optional `pushdown`/`progress` hooks for filter pushdown and progress
+reporting), `comptime_aggregate_v2.zig`
 (full init/update/combine/finalize generation from a `State` type,
 including an optional-return convention for NULL output, VARCHAR as an
 argument or return type, an optional `deinit` hook for states owning
@@ -574,11 +575,31 @@ workload:
   `col = constant`, accepts it, and filters rows itself; the
   unrecognized-predicate and no-predicate fallback cases both confirmed
   correct too.
-- **Other v2-only table-function features still never touched**: progress
-  reporting (`table_function_progress_*`) and partitioning/batch-claiming
-  hooks — real v2 capabilities with no v1 equivalent, identified early in
-  this branch's exploration but never built against. Relevant if
-  `tree_scan`/`ps_scan`-style long-running scans ever move to v2.
+- ~~**Progress reporting**~~ — **done.** `comptime_table_v2` gained an
+  optional `progress(self: *const State) f64` hook on `State`, mirroring
+  `pushdown`/`deinit`. Confirmed live, worth remembering: the progress
+  callback runs CONCURRENTLY with the scan's own `next`/`exec` even for
+  this framework's single-threaded scans — a separate query-progress
+  monitoring mechanism, not tied to the scan's own thread count — so
+  whatever `progress` reads that `next` also mutates needs to be safe to
+  read from another thread (`std.atomic.Value`, not a bare field, if
+  precision matters). Verified against a 3-billion-row scan with the CLI's
+  own progress bar enabled, showing real mid-scan percentages (14%, 28%,
+  ...) sourced from the callback.
+- **Partitioning/batch-claiming hooks — deliberately not built**, for two
+  separable reasons, not just "never got to it": (1) `partition_data`/
+  `partitioning` only unlock an optimization (the partitioned-aggregate
+  path) for scans that run on **more than one thread**; this framework's
+  `State` lives entirely in bind data with no `init_global`/local-init
+  callback, forcing single-threaded scans by design (see "No bind-time
+  result-column cardinality hint..." above) — building against a
+  multi-thread-only feature on a framework that can't run multi-threaded
+  would be unverifiable. (2) the batch-claiming callback itself is gated
+  behind `DUCKDB_V2_API_ALLOW_UNSTABLE` in the header and marked
+  "unstable: v2.0.0" — not even part of the stable v2.0.0 contract this
+  branch otherwise targets. Revisit both once/if the framework grows
+  multi-threaded scan support (a bigger, separate undertaking) and the
+  claim-batch API stabilizes.
 - ~~**Other scalar numeric types untested live**~~ — **mostly done.**
   `i8`/`i16`/`i32`/`f32` are now registered and called live
   (`zig_v2_narrow_sum_ct`). `DATE`/`TIME`/`TIMESTAMP`/`INTERVAL` are
