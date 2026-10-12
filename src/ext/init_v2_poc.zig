@@ -166,6 +166,40 @@ const BlobPrefixCt = comptime_scalar_v2.Function("zig_v2_blob_prefix_ct", struct
     }
 }.eval);
 
+/// Proves DECIMAL as a parameter and return type: applies a tax rate
+/// (as a plain double) to a DECIMAL(10,2) price, returning DECIMAL(10,2).
+const Price = db2.Decimal(10, 2);
+const ApplyTaxCt = comptime_scalar_v2.Function("zig_v2_apply_tax_ct", struct {
+    fn eval(price: Price, rate: f64) Price {
+        const scaled: f64 = @as(f64, @floatFromInt(price.raw)) * (1.0 + rate);
+        return .{ .raw = @intFromFloat(@round(scaled)) };
+    }
+}.eval);
+
+/// Proves DECIMAL at the i128 storage tier (width 38).
+const BigDecimal = db2.Decimal(38, 10);
+const BigDecimalDoubleCt = comptime_scalar_v2.Function("zig_v2_big_decimal_double_ct", struct {
+    fn eval(d: BigDecimal) BigDecimal {
+        return .{ .raw = d.raw * 2 };
+    }
+}.eval);
+
+/// Proves ENUM as a parameter and return type, including a NULL row
+/// (skipped via the generic "any NULL argument skips the row" convention,
+/// unaffected by ENUM's own dictionary-ordinal decode) and manually-
+/// numbered variants (decoded via the enum's own declaration order, not
+/// `@enumFromInt(ordinal)` — see comptime_scalar_v2.zig's `decodeEnumArg`).
+const Mood = enum(u8) { sad = 1, neutral = 5, happy = 9 };
+const NextMoodCt = comptime_scalar_v2.Function("zig_v2_next_mood_ct", struct {
+    fn eval(m: Mood) Mood {
+        return switch (m) {
+            .sad => .neutral,
+            .neutral => .happy,
+            .happy => .happy,
+        };
+    }
+}.eval);
+
 /// Proves comptime_table_v2's generalized Row/init/next framework through a
 /// real table-function argument (`n`) and a real VARCHAR output column —
 /// unlike zig_v2_range3 above, bind/exec are fully generated, not
@@ -512,6 +546,9 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     NarrowSum.register(input) catch {};
     TimestampAddCt.register(input) catch {};
     BlobPrefixCt.register(input) catch {};
+    ApplyTaxCt.register(input) catch {};
+    BigDecimalDoubleCt.register(input) catch {};
+    NextMoodCt.register(input) catch {};
     RangeCt.register(input) catch {};
     RepeatCt.register(input) catch {};
     ArgMaxCt.register(input) catch {};

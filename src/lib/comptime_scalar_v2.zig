@@ -82,13 +82,45 @@ fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
     };
 }
 
+fn isDecimalType(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "v2_decimal_width");
+}
+
+fn isEnumType(comptime T: type) bool {
+    // db.Date/db.Time/db.Timestamp are themselves non-exhaustive enums
+    // (a zero-cost way to get a distinct type with the same layout as
+    // their backing int — see duckdb_v2.zig's doc comment on them), not
+    // SQL ENUMs, so they must be excluded here the same way Blob/Decimal
+    // are excluded from isStructType. Found live: without this, building
+    // a db.Timestamp's logical type tried `enumSqlText(db.Timestamp)` —
+    // an empty dictionary, since the enum has no named fields — and
+    // segfaulted DuckDB's own `context_create_type_from_text`.
+    if (T == db.Date or T == db.Time or T == db.Timestamp) return false;
+    return @typeInfo(T) == .@"enum";
+}
+
 fn isStructType(comptime T: type) bool {
-    // db.Blob is a Zig struct (wraps a []const u8) but must never be
-    // treated as a one-field SQL STRUCT — it has its own VARCHAR-like
-    // Value-boxing path instead (see the `return_is_blob`/`T == db.Blob`
-    // branches below).
+    // db.Blob and db.Decimal(w,s) are Zig structs (wrapping a []const u8
+    // and a raw storage int, respectively) but must never be treated as a
+    // one-field SQL STRUCT — each has its own dedicated decode/encode path
+    // instead (see the `return_is_blob`/`return_is_decimal` branches
+    // below).
     if (T == db.Blob) return false;
+    if (comptime isDecimalType(T)) return false;
     return @typeInfo(T) == .@"struct";
+}
+
+/// Build "ENUM('member0','member1',...)" from a Zig enum's own variant
+/// names, for `contextCreateTypeFromText` — mirrors
+/// `comptime_appender_v2.zig`'s `enumSqlText`.
+fn enumSqlText(comptime T: type) []const u8 {
+    const info = @typeInfo(T).@"enum";
+    comptime var text: []const u8 = "ENUM(";
+    inline for (info.field_names, 0..) |name_, i| {
+        if (i > 0) text = text ++ ",";
+        text = text ++ "'" ++ name_ ++ "'";
+    }
+    return text ++ ")";
 }
 
 /// Build the logical type for a plain (non-struct) Zig type T. VARIANT
@@ -97,6 +129,12 @@ fn isStructType(comptime T: type) bool {
 fn createLogicalType(ctx: db.ContextHandle, comptime T: type, out_type: *db.LogicalTypeHandle, err: *db.ErrorInfoHandle) db.ErrorCode {
     if (comptime T == db.ValueHandle) {
         return db.contextCreateTypeFromText(ctx, "VARIANT", out_type, err);
+    }
+    if (comptime isDecimalType(T)) {
+        return db.contextCreateDecimalType(ctx, T.v2_decimal_width, T.v2_decimal_scale, out_type, err);
+    }
+    if (comptime isEnumType(T)) {
+        return db.contextCreateTypeFromText(ctx, comptime enumSqlText(T), out_type, err);
     }
     return db.contextCreateTypeFromId(ctx, duckdbV2TypeId(T), out_type, err);
 }
@@ -128,11 +166,13 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
     const param_types = if (needs_context) raw_param_types[1..] else raw_param_types;
 
     inline for (param_types) |t| {
-        if (comptime !isStructType(t.?)) _ = duckdbV2TypeId(t.?);
+        if (comptime !isStructType(t.?) and !isDecimalType(t.?) and !isEnumType(t.?)) _ = duckdbV2TypeId(t.?);
     }
-    _ = duckdbV2TypeId(ReturnType);
+    if (comptime !isDecimalType(ReturnType) and !isEnumType(ReturnType)) _ = duckdbV2TypeId(ReturnType);
 
     const has_variant_arg = raw_has_variant_arg;
+    const return_is_decimal = isDecimalType(ReturnType);
+    const return_is_enum = isEnumType(ReturnType);
     const has_struct_arg = blk: {
         inline for (param_types) |t| {
             if (comptime isStructType(t.?)) break :blk true;
@@ -241,6 +281,7 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
 
         const return_is_varchar = ReturnType == []const u8;
         const return_is_blob = ReturnType == db.Blob;
+        const WriteType = if (return_is_decimal) ReturnType.Raw else ReturnType;
 
         /// Vectorized exec callback invoked by DuckDB for each batch of rows.
         fn execute(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
@@ -299,16 +340,49 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
                 return;
             }
 
+            // ENUM has no `value_create_enum_*` constructor (confirmed by
+            // grepping the header, same finding `comptime_appender_v2.zig`
+            // made) — box the tag name as VARCHAR, then cast it to the
+            // result vector's own ENUM type, the way `'a'::my_enum` works
+            // in SQL.
+            if (comptime return_is_enum) {
+                var result_type: db.LogicalTypeHandle = undefined;
+                if (db.vectorGetLogicalType(result_vec, &result_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                defer _ = db.logicalTypeDestroy(&result_type);
+
+                var row: db.idx_t = 0;
+                while (row < row_count) : (row += 1) {
+                    if (has_nulls and !rowIsValid(&views, row)) {
+                        if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        continue;
+                    }
+                    const produced = invoke(&views, row);
+                    var text_value: db.ValueHandle = undefined;
+                    if (db.valueCreateVarcharWithContext(context, @tagName(produced), &text_value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    defer _ = db.valueDestroy(&text_value);
+                    var value: db.ValueHandle = undefined;
+                    if (db.valueCastWithContext(context, text_value, result_type, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    defer _ = db.valueDestroy(&value);
+                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                }
+                return;
+            }
+
+            // DECIMAL is a typed leaf array in vector storage, same as any
+            // numeric type, once its width's storage int is picked (see
+            // `db.Decimal`'s doc comment) — written through the flat
+            // buffer below, same as any other non-variable-width return,
+            // just unwrapping `.raw` first via `writeResult`.
             var out_data: ?*anyopaque = null;
             if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
             // SAFETY: types were validated at comptime against the registered signature.
-            const result: [*]ReturnType = @ptrCast(@alignCast(out_data));
+            const result: [*]WriteType = @ptrCast(@alignCast(out_data));
 
             if (has_nulls) {
                 var row: db.idx_t = 0;
                 while (row < row_count) : (row += 1) {
                     if (rowIsValid(&views, row)) {
-                        result[row] = invoke(&views, row);
+                        result[row] = writeResult(&views, row);
                     } else {
                         if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
                     }
@@ -316,9 +390,14 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
             } else {
                 var row: db.idx_t = 0;
                 while (row < row_count) : (row += 1) {
-                    result[row] = invoke(&views, row);
+                    result[row] = writeResult(&views, row);
                 }
             }
+        }
+
+        inline fn writeResult(views: *const [param_types.len]db.VectorView, row: db.idx_t) WriteType {
+            const v = invoke(views, row);
+            return if (comptime return_is_decimal) v.raw else v;
         }
 
         inline fn rowIsValid(views: *const [param_types.len]db.VectorView, row: db.idx_t) bool {
@@ -353,6 +432,13 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
                     // registered as BLOB instead (see duckdbV2TypeId).
                     const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i].data));
                     args[i] = .{ .bytes = db.bytesSlice(&typed[row]) };
+                } else if (comptime isDecimalType(T)) {
+                    // SAFETY: DECIMAL is a typed leaf array over T.Raw, per
+                    // db.Decimal's own doc comment.
+                    const typed: [*]const T.Raw = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = .{ .raw = typed[row] };
+                } else if (comptime isEnumType(T)) {
+                    args[i] = decodeEnumArg(T, views.*[i], row);
                 } else {
                     // SAFETY: views[i].data points to a flattened, type-matched vector buffer.
                     const typed: [*]const T = @ptrCast(@alignCast(views.*[i].data));
@@ -360,6 +446,29 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
                 }
             }
             return @call(.auto, implFn, args);
+        }
+
+        /// Decode an ENUM argument: its vector storage is the dictionary
+        /// ordinal as a uint8/uint16/uint32 (size picked by the dictionary's
+        /// size, per `vector_get_view`'s own doc comment), which maps back
+        /// to a Zig enum value via the enum's own `field_values` in
+        /// declaration order — the same order `enumSqlText` built the SQL
+        /// `ENUM(...)` dictionary in — rather than assuming
+        /// `@enumFromInt(ordinal)`, so a manually-numbered Zig enum still
+        /// decodes correctly.
+        inline fn decodeEnumArg(comptime T: type, view: db.VectorView, row: db.idx_t) T {
+            const info = @typeInfo(T).@"enum";
+            const n = info.field_values.len;
+            const StorageT = if (n <= 255) u8 else if (n <= 65535) u16 else u32;
+            const dict_values = comptime blk: {
+                var vals: [n]std.meta.Tag(T) = undefined;
+                for (info.field_values, 0..) |v, idx| vals[idx] = @intCast(v);
+                break :blk vals;
+            };
+            // SAFETY: views[i].data points to a flattened ENUM vector's
+            // dictionary-ordinal array, width chosen by dictionary size.
+            const typed: [*]const StorageT = @ptrCast(@alignCast(view.data));
+            return @fromBackingInt(@intCast(dict_values[typed[row]]));
         }
 
         /// Dedicated exec path for any VARIANT argument or return type.
@@ -688,5 +797,44 @@ test "Function supports BLOB as a parameter and return type" {
     }.eval);
     _ = &FirstByte.register;
     const exec_cb: db.ScalarFunctionExecCallback = FirstByte.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports DECIMAL as a parameter and return type" {
+    const Price = db.Decimal(10, 2);
+    const DoublePrice = Function("v2_test_decimal_double", struct {
+        fn eval(p: Price) Price {
+            return .{ .raw = p.raw * 2 };
+        }
+    }.eval);
+    _ = &DoublePrice.register;
+    const exec_cb: db.ScalarFunctionExecCallback = DoublePrice.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports DECIMAL at each storage-width tier" {
+    const Narrow = db.Decimal(4, 1); // i16
+    const Medium = db.Decimal(9, 2); // i32
+    const Wide = db.Decimal(18, 4); // i64
+    const Huge = db.Decimal(38, 10); // i128
+    try std.testing.expectEqual(i16, Narrow.Raw);
+    try std.testing.expectEqual(i32, Medium.Raw);
+    try std.testing.expectEqual(i64, Wide.Raw);
+    try std.testing.expectEqual(i128, Huge.Raw);
+}
+
+test "Function supports ENUM as a parameter and return type, including manually-numbered variants" {
+    const Status = enum(u8) { pending = 5, active = 10, done = 20 };
+    const NextStatus = Function("v2_test_enum_next", struct {
+        fn eval(s: Status) Status {
+            return switch (s) {
+                .pending => .active,
+                .active => .done,
+                .done => .done,
+            };
+        }
+    }.eval);
+    _ = &NextStatus.register;
+    const exec_cb: db.ScalarFunctionExecCallback = NextStatus.execute;
     try std.testing.expect(exec_cb != null);
 }

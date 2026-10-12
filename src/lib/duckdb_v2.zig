@@ -1219,6 +1219,85 @@ pub const Interval = c.duckdb_v2_interval_t;
 /// `isStructType`) — it must never be treated as a one-field SQL STRUCT.
 pub const Blob = struct { bytes: []const u8 };
 
+/// The storage int DECIMAL(width, _) uses in vector storage, per
+/// `vector_get_view`'s own doc comment (a documented contract, not an
+/// inference): width <= 4 -> int16, <= 9 -> int32, <= 18 -> int64,
+/// <= 38 -> int128, boundaries inclusive.
+pub fn DecimalStorageInt(comptime width: u8) type {
+    return if (width <= 4) i16 else if (width <= 9) i32 else if (width <= 18) i64 else i128;
+}
+
+/// DECIMAL(width, scale) marker type for `comptime_scalar_v2`: a one-field
+/// wrapper around the storage int the width selects (see
+/// `DecimalStorageInt`), so the vector is read/written as that raw int
+/// directly — DECIMAL is a typed leaf array in vector storage, same as any
+/// numeric type, once the right width is picked, per the same doc comment.
+/// `raw` is the value scaled by 10^scale (e.g. `10.5` as `DECIMAL(8, 3)`
+/// is stored as `10500`), matching `value_create_decimal`'s own
+/// convention. NOTE: this is a Zig `struct`, so framework code
+/// distinguishing "is this a STRUCT argument" from "is this some other
+/// framework-provided marker type" must special-case it explicitly (see
+/// `comptime_scalar_v2.zig`'s `isStructType`), same reasoning as `Blob`.
+pub fn Decimal(comptime width: u8, comptime scale: u8) type {
+    return struct {
+        pub const v2_decimal_width: u8 = width;
+        pub const v2_decimal_scale: u8 = scale;
+        pub const Raw = DecimalStorageInt(width);
+        raw: Raw,
+    };
+}
+
+pub fn valueCreateUtinyintWithContext(
+    ctx: ContextHandle,
+    in_value: u8,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_utinyint_with_context.?(ctx, in_value, out_value, err);
+}
+
+/// Build DECIMAL(width, scale). Width/scale cross as plain UTINYINT
+/// `Value`s (not TYPE-kind values — they aren't child types), per
+/// `context_create_type_from_id`'s own doc comment ("decimal(width,
+/// scale)" resolves through the same parameter path as LIST/STRUCT/etc,
+/// just with UTINYINT values instead of TYPE ones for this particular id).
+pub fn contextCreateDecimalType(
+    ctx: ContextHandle,
+    width: u8,
+    scale: u8,
+    out_type: *LogicalTypeHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    var width_value: ValueHandle = undefined;
+    if (valueCreateUtinyintWithContext(ctx, width, &width_value, err) != c.DUCKDB_V2_ERROR_NONE) {
+        return c.DUCKDB_V2_ERROR_API;
+    }
+    defer _ = valueDestroy(&width_value);
+    var scale_value: ValueHandle = undefined;
+    if (valueCreateUtinyintWithContext(ctx, scale, &scale_value, err) != c.DUCKDB_V2_ERROR_NONE) {
+        return c.DUCKDB_V2_ERROR_API;
+    }
+    defer _ = valueDestroy(&scale_value);
+    var params = [_]ValueHandle{ width_value, scale_value };
+    return getApi().duckdb_v2_context_create_type_from_id.?(
+        ctx,
+        c.DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL,
+        null,
+        &params,
+        2,
+        out_type,
+        err,
+    );
+}
+
+/// Borrow a vector's own logical type — needed to cast a boxed `Value`
+/// to an ENUM column's exact type when writing (there's no
+/// `value_create_enum_*`, see `comptime_appender_v2.zig`'s module doc
+/// comment on ENUM). Caller-owned; destroy via `logicalTypeDestroy`.
+pub fn vectorGetLogicalType(vector: VectorHandle, out_type: *LogicalTypeHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_vector_get_logical_type.?(vector, out_type, err);
+}
+
 pub fn valueCreateTinyintWithContext(
     ctx: ContextHandle,
     in_value: i8,
