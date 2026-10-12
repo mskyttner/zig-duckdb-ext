@@ -575,11 +575,13 @@ around the existing `zig build sqllogictest`/`sqllogictest-v2` steps.
 
 Two things learned doing the port that generalize beyond this one file:
 
-- **Multi-column table-function results need splitting into one
-  single-column query per column** — this runner has no tab-separated-
-  row support (documented gap, not new). `zig_tokenize`/`ct_tokenize`'s
-  `(token_pos, token)` output became two separate `query I`/`query T`
-  blocks selecting one column each, same coverage, no loss.
+- **Multi-column table-function results needed splitting into one
+  single-column query per column at the time** — this runner had no
+  tab-separated-row support yet (closed by the `-jsonlines` switch
+  below, which parses true multi-column rows natively; the split-up
+  `.test` blocks for `zig_tokenize`/`ct_tokenize`'s `(token_pos, token)`
+  output were kept as-is for readability, not reverted, since they're
+  equally correct and arguably clearer as two narrow queries).
 - **A result that's a genuinely multi-line rendered value (embedded
   newlines, like `tp_line`/`tp_snakemap`'s ASCII/ANSI charts) doesn't
   need the runner extended to be portable** — wrapping it in `md5(...)`
@@ -587,17 +589,12 @@ Two things learned doing the port that generalize beyond this one file:
   This is a real exact-match check, not a weaker substitute: any pixel of
   the rendered output changing changes the hash. Confirmed live that the
   runner correctly fails on a deliberately corrupted hash and passes once
-  restored. The alternative — switching the runner to `-json` output mode
-  instead of `-csv`, since DuckDB's JSON writer escapes embedded newlines
-  as literal `\n` rather than emitting real newline bytes (confirmed
-  live: a 6-line `tp_line` chart printed as one JSON-encoded line) — would
-  let these blocks show the literal expected text instead of an opaque
-  hash. That's a readability improvement over `md5(...)`, not a coverage
-  one, and would need `sqllogictest_main.zig`'s parser rewritten from raw
-  CSV-line-splitting to JSON-array parsing (and would likely also sidestep
-  the CSV-quoting finding above, since JSON string encoding has its own,
-  simpler escaping rules). Not attempted — tracked here as a known,
-  worthwhile follow-up, not a gap blocking anything.
+  restored. ~~The alternative — switching the runner to `-json` output
+  mode instead of `-csv`... Not attempted — tracked here as a known,
+  worthwhile follow-up.~~ **Done** (2026-10-12, see "Switched the runner
+  to `-jsonlines`" below) — `md5(...)` stays the right call only for the
+  3 cases with ANSI color codes still in them; everything else now shows
+  literal expected text.
 - One latent bug in the SOURCE SQL itself was caught doing the port, not
   introduced by it: `smoke.sql`'s `tp_line(list(v::DOUBLE) ORDER BY i)`
   bound `ORDER BY` to the `tp_line` macro call instead of the `list(...)`
@@ -606,6 +603,57 @@ Two things learned doing the port that generalize beyond this one file:
   verification never caught this. Fixed to
   `tp_line((SELECT list(v ORDER BY i) FROM ...))`, confirmed correct
   against the real extension.
+
+### Switched the runner from `-csv` to `-jsonlines` — done (2026-10-12)
+
+Tested all four candidate DuckDB CLI output modes live against the actual
+problem cases (a NULL, an empty string, `tp_bar`'s Unicode fill
+characters, `tp_line`'s multi-line chart) before picking one:
+`-markdown` and `-quote` both still emit literal, unescaped newlines for
+a multi-line value (no better than `-csv` for the cases that actually
+matter); `-json` escapes newlines correctly but wraps a multi-row result
+in a pretty-printed array spanning several lines; `-jsonlines` (one
+complete JSON object per output row, always) does the escaping AND
+stays one-line-per-row, so no bracket/array-aware parsing is needed.
+Switched to `-jsonlines`; closes every CSV-era workaround at once:
+
+- **Quoting** is now structural (JSON string syntax), not the
+  content-dependent heuristic CSV used — the literal-quote-character
+  workaround from the CSV-quoting finding above is gone.
+- **Empty strings** are unambiguous (`""`) rather than indistinguishable
+  from "no row" once blank lines are trimmed — but this only fixes the
+  *output*-parsing side of the problem. The `.test` *file format*'s own
+  expected-output block still ends at the first blank line regardless of
+  transport (`parseBlocks` hasn't changed), so an expected empty string
+  still can't be written as a literal blank line in the file. Caught
+  this before shipping a half-fix: adopted DuckDB's own `(empty)`
+  convention for the file side, genuinely closing the gap end-to-end
+  rather than declaring it solved prematurely.
+- **Embedded newlines** become the literal two characters `\`+`n`, never
+  a real line break — `tp_line`'s four cases now show literal expected
+  text instead of an `md5(...)` hash. `tp_snakemap`'s three cases that
+  still carry ANSI color codes (`no_color := false`, the default) keep
+  `md5(...)` on purpose: their JSON-escaped ANSI sequences
+  (`\u001b[38;5;7m`, ...) would be a wall of noise nobody could usefully
+  read in a diff, not a readability win — confirmed live before deciding
+  this, not assumed. The `no_color := true` case has no such problem and
+  switched to literal text.
+- A new `extractJsonRowValues` (in `sqllogictest_main.zig`) is a small,
+  deliberately minimal hand-rolled scanner for one flat JSONL row
+  (scalar fields only) — not `std.json`, consistent with this runner's
+  existing scope-to-what's-actually-needed posture. True multi-column
+  rows are now natively representable (each row's values flattened onto
+  the same got-lines list in column order) — not exercised by reverting
+  the already-split `zig_tokenize`/`ct_tokenize` blocks (kept as-is,
+  equally correct and arguably clearer as narrow single-column queries),
+  but a future `.test` file needing a genuinely wide row can now just
+  write one `query` block instead of several.
+- Marker detection changed from an exact-line match to a substring
+  search: under `-jsonlines` a marker's own `SELECT '@@...@@'` comes back
+  wrapped (`{"'@@...@@'":"@@...@@"}`), not as the bare marker text.
+- `statement error`'s substring match needed no change — confirmed live
+  that an error message stays plain text regardless of `-jsonlines`/
+  `-csv`; only successful query *results* are output-mode-dependent.
 
 ### 2. STRUCT support — both directions done; VARIANT also added
 
