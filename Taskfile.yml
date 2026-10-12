@@ -166,6 +166,54 @@ tasks:
     cmds:
       - zig build -Doptimize=Debug 2>&1 | grep -i "deprecat\|warning" || echo "No warnings found."
 
+  cross:
+    desc: "Cross-compile the real v1 extension for every target in build.zig's cross_targets"
+    cmds:
+      - zig build cross
+
+  verify:cross-arm64:
+    desc: "Load the cross-compiled linux_arm64 extension under QEMU (via Docker/binfmt) and run real SQL against it"
+    deps: [cross]
+    cmds:
+      - |
+        set -e
+        EXT_PATH="$(pwd)/zig-out/lib/linux_arm64/zig_ext.duckdb_extension"
+        if [ ! -f "$EXT_PATH" ]; then
+          echo "missing $EXT_PATH — did 'zig build cross' run?"
+          exit 1
+        fi
+
+        if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+          echo "qemu-aarch64 isn't registered in binfmt_misc. One-time setup (needs real root, not"
+          echo "rootless podman/docker — a plain --privileged container can't write the host's"
+          echo "binfmt_misc from inside a user namespace):"
+          echo ""
+          echo "    sudo docker run --rm --privileged docker.io/tonistiigi/binfmt --install arm64"
+          echo ""
+          exit 1
+        fi
+
+        WORKDIR="$(mktemp -d)"
+        trap 'rm -rf "$WORKDIR"' EXIT
+        cp "$EXT_PATH" "$WORKDIR/zig_ext.duckdb_extension"
+
+        DUCKDB_CLI_VERSION="v1.5.6"
+        if [ ! -f "$HOME/.cache/duckdb-cli-arm64-${DUCKDB_CLI_VERSION}" ]; then
+          mkdir -p "$HOME/.cache"
+          curl -sL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_CLI_VERSION}/duckdb_cli-linux-arm64.gz" \
+            | gunzip > "$HOME/.cache/duckdb-cli-arm64-${DUCKDB_CLI_VERSION}"
+          chmod +x "$HOME/.cache/duckdb-cli-arm64-${DUCKDB_CLI_VERSION}"
+        fi
+        cp "$HOME/.cache/duckdb-cli-arm64-${DUCKDB_CLI_VERSION}" "$WORKDIR/duckdb"
+
+        OUTPUT="$(sudo docker run --rm --platform linux/arm64 -v "$WORKDIR:/work" docker.io/library/ubuntu:24.04 \
+          bash -c "/work/duckdb -unsigned -csv -c \"LOAD '/work/zig_ext.duckdb_extension'; SELECT zig_add_numbers(2,3); SELECT tp_bar(0.5, \\\"on\\\" := 'X', \\\"off\\\" := '.', width := 10);\"")"
+
+        echo "$OUTPUT"
+        echo "$OUTPUT" | grep -qx "5" || { echo "FAILED: zig_add_numbers(2,3) did not return 5"; exit 1; }
+        echo "$OUTPUT" | grep -qx "XXXXX....." || { echo "FAILED: tp_bar(...) did not return the expected bar"; exit 1; }
+        echo "verify:cross-arm64 PASSED — linux_arm64 cross build loads and runs correctly under QEMU"
+
   clean:
     desc: "Remove build artifacts"
     cmds:
