@@ -968,18 +968,48 @@ Emscripten-compatible `SIDE_MODULE` (historically requires going through
 here). No prior art found of a Rust/Zig/non-Emscripten-toolchain
 extension loaded by duckdb-wasm this way.
 
-**A real alternative worth a future look, not a port of this
-extension**: [tegmentum/ducklink-extension](https://github.com/tegmentum/ducklink-extension)
-loads sandboxed `wasm32-wasip2` components via a SQL table function and
-a `wasmtime`-based runtime, entirely sidestepping Emscripten's ABI — a
-genuinely different extension mechanism (a component loaded at query
-time, not a loadable `.duckdb_extension`), but one Zig's existing
-`wasm32-wasi`-family target support could actually reach. **Future
-investigation**: a Zig-native variant of this approach — not a drop-in
-compile of this project's current functions, since WASI-preview2
-components have a different function-registration surface than the C
-extension API this project is built around. Not started; no code
-written; revisit if browser-based DuckDB support becomes a real goal.
+**A real alternative, now actually inspected (cloned
+`../ducklink-extension` locally, 2026-10-12) — not a port of this
+extension, a different mechanism**:
+[tegmentum/ducklink-extension](https://github.com/tegmentum/ducklink-extension)
+is itself a conventional per-platform **native** `.duckdb_extension`
+(Rust, `duckdb-rs`'s `loadable-extension` feature, built once per
+platform like this project) that embeds `wasmtime` with the
+component-model feature. It does *not* run inside `duckdb-wasm` and
+doesn't touch the Emscripten problem above at all — it's a different
+axis entirely: a native extension that *hosts* portable sandboxed guest
+components, built once as `wasm32-wasip2` and run unmodified on every
+platform the native host supports. A `FROM ducklink_load('<name>')`
+table-function call loads a component by catalog name, runs its `load()`
+export to discover the functions/tables/aggregates it registers, and
+bridges each one into DuckDB's real catalog — after which `SELECT
+some_registered_fn(...)` is an ordinary call, not a per-query
+component invocation.
+
+The guest contract (`runtime/wit-canonical/duckdb-extension/`, package
+`duckdb:extension@5.0.0`) is large — dozens of WIT interface files
+covering scalar/table/aggregate/cast dispatch (both a row-major cold
+path and a columnar hot path, one `colvec` per argument column, close
+in spirit to this project's own DataChunk-at-a-time convention), plus
+storage, catalog, secrets, parser, optimizer, Arrow, and compression
+extension points. Every guest component found in its corpus is written
+in Rust via `wit-bindgen`; no non-Rust guest exists there to crib from.
+**Future investigation (user request, 2026-10-12)**: a Zig-native
+variant — not of this project's existing scalar/table/aggregate
+functions, but of the *hosting* side (a Zig program embedding a WASM
+component-model runtime, exposing an equivalent WIT-shaped surface) or
+of the *guest* side (Zig compiled to `wasm32-wasi` and turned into a
+`wasm32-wasip2` component via `wit-component`/an adapter, implementing
+`duckdb:extension`'s exports). Either direction is novel, non-trivial
+work — Zig has no `wit-bindgen` target, so a guest would mean hand-
+generating bindings against the WIT-defined canonical ABI, the same
+kind of hand-rolled-C-boundary work this project's `comptime_scalar_v2`
+already does for DuckDB's C API, just one layer further out (component
+ABI instead of a flat C ABI). Not started; no code written; revisit if
+sandboxed/portable (not merely cross-compiled) extension distribution
+becomes a real goal — this is a genuinely different problem from "run
+in a browser" and doesn't require solving the Emscripten `SIDE_MODULE`
+issue above at all.
 
 ### 7. DECIMAL and ENUM support — done
 
