@@ -55,21 +55,18 @@ Read the real scripts, not just the README, to avoid assuming:
   key is supplied, it defaults to 256 zero bytes — unsigned, exactly
   what this project already produces.
 - **Verification is symmetric** (`verify-extension-signing.sh`): same
-  hash, `openssl pkeyutl -verify -pubin` against a public key file.
-  DuckDB's own loader does the equivalent check at `LOAD` time against
-  **its own compiled-in set of trusted public keys** — there is no
-  documented mechanism, in the distribution docs or in these scripts, for
-  a user's DuckDB install to trust an arbitrary third party's public key
-  at runtime. **Signing this extension with our own key would prove
-  integrity (the binary wasn't tampered with in transit) but would NOT
-  make a stock DuckDB load it without `-unsigned`/
-  `allow_unsigned_extensions=true`** — that only happens today via the
-  official [community-extensions](https://github.com/duckdb/community-extensions)
-  program, where DuckDB's own CI rebuilds the extension from source and
-  re-signs it with DuckDB's own key after a review/merge. This is worth
-  stating plainly since it's easy to assume self-signing solves the
-  `-unsigned` requirement — it doesn't, independent of how simple or
-  elaborate the signing setup is.
+  hash, `openssl pkeyutl -verify -pubin` against a public key file. ~~DuckDB's
+  own loader does the equivalent check at `LOAD` time against its own
+  compiled-in set of trusted public keys — there is no documented
+  mechanism for a user's DuckDB install to trust an arbitrary third
+  party's public key at runtime.~~ **This was true for v1, and is
+  wrong as a blanket statement — v2.0 adds exactly this mechanism.
+  See "A real, confirmed exception: v2's `CREATE EXTENSION REPOSITORY`"
+  below, found and verified live after this ADR's first draft.** For
+  v1, the only way to get a custom key trusted without `-unsigned` is
+  still the official [community-extensions](https://github.com/duckdb/community-extensions)
+  program (DuckDB's CI rebuilds from source and re-signs with DuckDB's
+  own key after review) — that part stands.
 - **The build tooling assumes CMake or a Makefile wrapping a C/C++
   toolchain.** The `C API` usage example
   ([odbc-scanner](https://github.com/duckdb/odbc-scanner)) still wires in
@@ -88,6 +85,68 @@ Read the real scripts, not just the README, to avoid assuming:
   **S3 bucket** (via `rclone`, AWS credentials required) — appropriate
   for DuckDB's own officially-hosted extensions, unnecessary machinery
   for a project that just needs a public HTTPS URL.
+
+### A real, confirmed exception: v2's `CREATE EXTENSION REPOSITORY`
+
+Prompted by [duckdb-wasm#2262](https://github.com/duckdb/duckdb-wasm/issues/2262),
+which mentions in passing that "DuckDB v2.0 external extension
+repositories let an organisation host and sign its own extensions."
+Verified this is real, not aspirational, by reading DuckDB core's actual
+source (`extension_repository_manager.{hpp,cpp}`,
+`test/sql/extensions/extension_repositories.test`) and then testing it
+live against both runtimes this branch has on hand:
+
+- **`v1.5.6`: the feature does not exist.** `CREATE EXTENSION REPOSITORY`
+  is a parser error; `allow_extension_repositories` isn't a recognized
+  setting.
+- **`v2.0.0-alpha46057`: the feature is real and already present**,
+  confirmed live:
+  ```sql
+  SET allow_extension_repositories='allowed';   -- opt-in; a one-way ratchet at runtime
+  CREATE EXTENSION REPOSITORY myrepo WITH PREFIX 'https://example.com/repo';
+  -- with no USING PUBLIC KEY(S) clause, DuckDB fetches and pins the key(s)
+  -- itself from <prefix>/.well-known/duckdb-extension-repo.json, a JSON
+  -- file of the form {"signature_keys": ["-----BEGIN PUBLIC KEY-----..."]}
+  -- (one or more PEM keys, enabling rotation). The pinned repo + keys are
+  -- stored locally (~/.duckdb/extension_repositories/myrepo.duckdb_extension.repo.json)
+  -- and SELECT * FROM duckdb_extension_repositories() lists the fingerprints.
+  ```
+  Reproduced the whole flow end to end: generated an RSA keypair
+  (`openssl genrsa`/`openssl rsa -pubout`), published a `.well-known/
+  duckdb-extension-repo.json` alongside a local repo directory, opted in
+  and created the repository — DuckDB correctly fetched and pinned the
+  key, with the fingerprint it reported matching an independent
+  `openssl dgst -sha256` of the key file.
+
+  **What did NOT work**: signing the actual extension binary using the
+  v1-documented algorithm from `extension-upload-single.sh`/
+  `compute-extension-hash.sh` (strip the 256-byte signature placeholder,
+  SHA256 each 1MB chunk, SHA256 the concatenation of those digests,
+  RSA-sign that composite hash) and loading it from the trusted
+  repository. DuckDB rejected it: `"its signature is either missing or
+  invalid"`. Isolated the cause before giving up on it: verified the
+  *exact same* signature independently with `openssl pkeyutl -verify`
+  against the public key, and it checks out — **the signature this
+  branch produced is cryptographically valid by the documented v1
+  algorithm; v2's loader is checking something different, or computing
+  the hash differently, and that difference isn't documented anywhere
+  this review found.** Given how actively C-API-V2 is changing right now
+  (see `docs/v2-migration-plan.md`'s "Anticipated upcoming refactoring"
+  section — three PRs touching adjacent machinery merged the day before
+  this review), this reads as a genuine in-flux rough edge in the alpha
+  build, not a mistake in this branch's signing math — left as an
+  **open question, not a blocker**, to revisit once 2.0 ships with (one
+  hopes) a documented v2 signing procedure or a working example to copy.
+
+**What this changes for the actual decision below**: nothing for *today*
+— the real, currently-releasable v1 extension still can't use this
+mechanism at all (confirmed: parser error), so the unsigned/GitHub-Pages
+path remains the right choice for distributing it now. But it changes
+the **future** story materially: once DuckDB 2.0 ships and this
+extension's v2 port is the one being distributed, self-hosted signing
+with a project-owned key — no community-extensions submission, no
+compiled-in DuckDB keys — looks like a real, intended, documented path,
+not a dead end. Worth a deliberate revisit at that point, not before.
 
 ## Decision
 
@@ -142,10 +201,15 @@ build doesn't need. Instead:
 - Anyone can `INSTALL zig_ext FROM 'https://.../'` with `-unsigned` set,
   today, once the workflow + Pages are set up — no AWS account, no
   DuckDB-team review, no CMake.
-- The `-unsigned` requirement is a permanent fact of this distribution
-  path unless/until this extension goes through community-extensions —
-  stated here so it isn't rediscovered as a surprise or mistaken for a
-  bug in the signing setup.
+- The `-unsigned` requirement is a permanent fact of *this v1 distribution
+  path specifically* unless/until this extension goes through
+  community-extensions — stated here so it isn't rediscovered as a
+  surprise or mistaken for a bug in the signing setup. It is NOT a
+  permanent fact of distributing this extension in general: v2's
+  `CREATE EXTENSION REPOSITORY` mechanism (see above) is a real, already-
+  confirmed path to self-signed, `-unsigned`-free distribution once this
+  extension is built against a shipped 2.0 and the v2 signing procedure
+  is worked out.
 - This is scoped to the real v1 extension (the one `zig build cross`
   already targets) — the parallel v2 extension stays an unreleased,
   unpublished prototype until DuckDB 2.0 actually ships, consistent with

@@ -1,0 +1,82 @@
+name: Release extension
+
+# Builds the real v1 extension for every target in build.zig's
+# cross_targets (zig build cross) and publishes the result as a custom
+# DuckDB extension repository via GitHub Pages, per
+# docs/rationale/0004_extension-distribution-and-signing.md.
+#
+# `INSTALL zig_ext FROM 'https://<owner>.github.io/<repo>/';` then works
+# against the published tree (after `SET allow_unsigned_extensions=true;`
+# — see that ADR for why this isn't signed).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; let an in-flight one finish rather
+# than cancelling it mid-publish.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  ZIG_VERSION: "0.17.0"
+  DUCKDB_VERSION: "v1.2.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cross-compile the extension for every target
+        run: zig build cross
+
+      - name: Arrange and compress into the custom-repository layout
+        run: |
+          set -euo pipefail
+          dist_dir="dist/${DUCKDB_VERSION}"
+          mkdir -p "$dist_dir"
+          found=0
+          for platform_dir in zig-out/lib/*/; do
+            platform="$(basename "$platform_dir")"
+            ext_file="${platform_dir}zig_ext.duckdb_extension"
+            if [ -f "$ext_file" ]; then
+              mkdir -p "$dist_dir/$platform"
+              gzip -c "$ext_file" > "$dist_dir/$platform/zig_ext.duckdb_extension.gz"
+              found=$((found + 1))
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "no cross-built extension artifacts found under zig-out/lib/*/"
+            exit 1
+          fi
+          echo "published $found platform artifact(s):"
+          find dist -type f
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
