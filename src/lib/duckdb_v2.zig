@@ -47,6 +47,8 @@ pub const ColumnDataCollectionAppendStateHandle = c.duckdb_v2_column_data_collec
 pub const ExpressionHandle = c.duckdb_v2_expression_handle;
 pub const TableFunctionFilterPushdownInfoHandle = c.duckdb_v2_table_function_filter_pushdown_info_handle;
 pub const TableFunctionProgressInfoHandle = c.duckdb_v2_table_function_progress_info_handle;
+pub const CastFunctionHandle = c.duckdb_v2_cast_function_handle;
+pub const CastFunctionExecInfoHandle = c.duckdb_v2_cast_function_exec_info_handle;
 
 // ─── Re-export enums / structs ────────────────────────────────────────────────
 
@@ -61,6 +63,7 @@ pub const TableFunctionFilterPushdownCallback = c.duckdb_v2_table_function_filte
 pub const TableFunctionProgressCallback = c.duckdb_v2_table_function_progress_callback_fn;
 pub const ExpressionType = c.DUCKDB_V2_EXPRESSION_TYPE;
 pub const CastMode = c.DUCKDB_V2_CAST_MODE;
+pub const CastFunctionExecCallback = c.duckdb_v2_cast_function_exec_callback_fn;
 pub const idx_t = c.idx_t;
 
 // ─── Extension API singleton ─────────────────────────────────────────────────
@@ -433,6 +436,89 @@ pub fn expressionFunctionGetName(
 /// Fails unless `expression` is `EXPRESSION_TYPE_OPERATOR_CAST`.
 pub fn expressionCastGetMode(expression: ExpressionHandle, out_mode: *CastMode, err: *ErrorInfoHandle) ErrorCode {
     return getApi().duckdb_v2_expression_cast_get_mode.?(expression, out_mode, err);
+}
+
+// --- Cast Function ---
+//
+// A user-defined CAST between two logical types, not to be confused with
+// `expressionCastGetMode` above (read-only introspection of an *existing*
+// bound CAST expression) or `valueCastWithContext` (casting a single
+// already-boxed Value) — this registers a new, vectorized conversion
+// DuckDB's binder can choose between two SQL types, the v2 equivalent of
+// v1's `duckdb_create_cast_function`/`duckdb_register_cast_function`.
+
+pub fn castFunctionCreateWithExtension(
+    extension: ExtensionHandle,
+    out_function: *CastFunctionHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_cast_function_create_with_extension.?(extension, out_function, err);
+}
+
+pub fn castFunctionDestroy(function: *CastFunctionHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_destroy.?(function);
+}
+
+pub fn castFunctionSetSourceType(function: CastFunctionHandle, source_type: LogicalTypeHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_set_source_type.?(function, source_type, err);
+}
+
+pub fn castFunctionSetTargetType(function: CastFunctionHandle, target_type: LogicalTypeHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_set_target_type.?(function, target_type, err);
+}
+
+/// Lower is preferred when DuckDB must pick an *implicit* cast among
+/// several candidates (e.g. for overload resolution); has no effect on
+/// an explicit `CAST`/`::`, which always goes through the registered
+/// function for that exact (source, target) pair regardless of cost.
+pub fn castFunctionSetImplicitCastCost(function: CastFunctionHandle, cost: i64, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_set_implicit_cast_cost.?(function, cost, err);
+}
+
+pub fn castFunctionSetExecCallback(function: CastFunctionHandle, callback: CastFunctionExecCallback, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_set_exec_callback.?(function, callback, err);
+}
+
+pub fn castFunctionRegister(function: CastFunctionHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_register.?(function, err);
+}
+
+/// The source type's values for the current batch — flatten before
+/// reading, same as any other vector (see `vectorFlatten`'s doc comment).
+pub fn castFunctionExecGetInput(info: CastFunctionExecInfoHandle, out_vector: *VectorHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_exec_get_input.?(info, out_vector, err);
+}
+
+/// The vector to write converted values into — one entry per input row.
+pub fn castFunctionExecGetOutput(info: CastFunctionExecInfoHandle, out_vector: *VectorHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_exec_get_output.?(info, out_vector, err);
+}
+
+pub fn castFunctionExecGetRowCount(info: CastFunctionExecInfoHandle, out_count: *idx_t, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_exec_get_row_count.?(info, out_count, err);
+}
+
+/// `NORMAL`: a conversion failure must abort the query — populate `err`
+/// via `errorInfoSetCode`/`errorInfoSetText` and return without finishing
+/// the batch. `TRY`: a conversion failure is not an error — write NULL
+/// for that row (`vectorSetNull`) and keep going. See `CastMode`'s own
+/// doc comment (shared with `expressionCastGetMode`) for the full
+/// NORMAL-vs-TRY contract.
+pub fn castFunctionExecGetMode(info: CastFunctionExecInfoHandle, out_mode: *CastMode, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_cast_function_exec_get_mode.?(info, out_mode, err);
+}
+
+/// Populate an already-live error slot to abort the query from inside a
+/// `NORMAL`-mode cast's exec callback (see `castFunctionExecGetMode`).
+/// Mirrors `ExtensionInput.err`'s documented contract: the slot is never
+/// NULL, never already populated, and owned by DuckDB — only ever written
+/// to, never created or destroyed here.
+pub fn errorInfoSetCode(info: ErrorInfoHandle, code: ErrorCode) ErrorCode {
+    return getApi().duckdb_v2_error_info_set_code.?(info, code);
+}
+
+pub fn errorInfoSetText(info: ErrorInfoHandle, text: *const Str) ErrorCode {
+    return getApi().duckdb_v2_error_info_set_text.?(info, text);
 }
 
 // --- Table Function bind/init/exec info ---

@@ -20,6 +20,7 @@ const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const comptime_table_v2 = @import("comptime_table_v2");
 const comptime_aggregate_v2 = @import("comptime_aggregate_v2");
 const comptime_appender_v2 = @import("comptime_appender_v2");
+const comptime_cast_v2 = @import("comptime_cast_v2");
 
 export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callconv(.c) void {
     if (!db2.initApi(input, "v2.0.0")) return;
@@ -105,6 +106,42 @@ const PersonGreet = comptime_scalar_v2.Function("zig_v2_person_greet_ct", struct
     const Person = struct { name: []const u8, age: i64 };
     fn eval(p: Person, excited: bool) i64 {
         return @as(i64, @intCast(p.name.len)) + p.age + @as(i64, if (excited) 1 else 0);
+    }
+}.eval);
+
+/// Live test for `comptime_cast_v2.zig`: a custom VARCHAR -> BIGINT cast
+/// that recognizes a small set of English number words ("one".."five") in
+/// addition to plain digit strings, falling through to `std.fmt.parseInt`
+/// otherwise. Deliberately a type pair DuckDB already has a built-in cast
+/// for, to confirm live what registering a competing one actually does
+/// (shadow it, error at registration, or something else) rather than
+/// picking an exotic pair that sidesteps the question.
+const WordOrDigitsToBigint = comptime_cast_v2.Function([]const u8, i64, struct {
+    fn cast(s: []const u8) ?i64 {
+        const words = [_][]const u8{ "one", "two", "three", "four", "five" };
+        for (words, 1..) |w, i| {
+            if (std.mem.eql(u8, s, w)) return @intCast(i);
+        }
+        return std.fmt.parseInt(i64, s, 10) catch null;
+    }
+}.cast);
+
+/// Proves comptime_scalar_v2's STRUCT *return* support: constructs a fresh
+/// `STRUCT(x BIGINT, y BIGINT)` point from a single scalar.
+const PointMake = comptime_scalar_v2.Function("zig_v2_point_make_ct", struct {
+    const Point = struct { x: i64, y: i64 };
+    fn eval(n: i64) Point {
+        return .{ .x = n, .y = n * 2 };
+    }
+}.eval);
+
+/// Proves STRUCT argument and STRUCT return together, including a VARCHAR
+/// field on the return side: takes a `STRUCT(name VARCHAR, age BIGINT)`
+/// and returns a new one with `age` incremented and `name` unchanged.
+const PersonBirthday = comptime_scalar_v2.Function("zig_v2_person_birthday_ct", struct {
+    const Person = struct { name: []const u8, age: i64 };
+    fn eval(p: Person) Person {
+        return .{ .name = p.name, .age = p.age + 1 };
     }
 }.eval);
 
@@ -568,6 +605,9 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     FirstChar.register(input) catch {};
     PointDist2.register(input) catch {};
     PersonGreet.register(input) catch {};
+    PointMake.register(input) catch {};
+    PersonBirthday.register(input) catch {};
+    WordOrDigitsToBigint.register(input) catch {};
     VariantDefault.register(input) catch {};
     NarrowSum.register(input) catch {};
     TimestampAddCt.register(input) catch {};

@@ -32,8 +32,20 @@
 ///!   a numeric/bool/`[]const u8` type, not another struct) maps to SQL
 ///!   STRUCT, with the struct's own field names used as the real STRUCT
 ///!   field names (available at comptime, unlike a function parameter's
-///!   name). Read-only: a STRUCT-typed *return* isn't supported yet (the
-///!   natural next step once this is needed — see `docs/v2-migration-plan.md`).
+///!   name). Also supported as a *return* type (one level deep, same
+///!   restriction as arguments): each field is written into its own child
+///!   vector via `vectorGetChild(result_vec, field_index, ...)` — numeric/
+///!   bool fields through a cached flat buffer, `[]const u8` fields boxed
+///!   through `valueCreateVarcharWithContext`/`vectorSetValue` on that
+///!   field's own child vector — mirroring the plain (non-struct) return
+///!   path's two writing conventions, just addressed at the child vector
+///!   instead of `result_vec` itself. A STRUCT return is never itself NULL
+///!   (no `?T` return convention for structs here) — `vectorSetNull` only
+///!   fires for an invalid argument, and the v2 header confirms this
+///!   already cascades NULL to every nested child automatically
+///!   (`vector_set_null`'s own doc comment: "broadcasts the NULL
+///!   recursively to every descendant element under that row"), so no
+///!   extra per-field NULL-ing is needed there either.
 ///! - `db.ValueHandle` as a parameter or return type maps to SQL VARIANT:
 ///!   `implFn` receives/returns a boxed `Value` directly rather than a
 ///!   decoded Zig value, since VARIANT's dynamic, runtime-chosen content
@@ -136,6 +148,27 @@ fn createLogicalType(ctx: db.ContextHandle, comptime T: type, out_type: *db.Logi
     if (comptime isEnumType(T)) {
         return db.contextCreateTypeFromText(ctx, comptime enumSqlText(T), out_type, err);
     }
+    if (comptime isStructType(T)) {
+        const fields = @typeInfo(T).@"struct";
+        const n = fields.field_types.len;
+        var field_logical_types: [n]db.LogicalTypeHandle = undefined;
+        inline for (0..n) |f| {
+            if (createLogicalType(ctx, fields.field_types[f], &field_logical_types[f], err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                return db.c.DUCKDB_V2_ERROR_API;
+            }
+        }
+        defer inline for (0..n) |f| {
+            _ = db.logicalTypeDestroy(&field_logical_types[f]);
+        };
+        var field_names: [n]db.IdentifierT = undefined;
+        inline for (0..n) |f| field_names[f] = db.str(fields.field_names[f]);
+        var field_type_values: [n]db.ValueHandle = undefined;
+        const rc = db.contextCreateStructType(ctx, &field_names, &field_logical_types, &field_type_values, out_type, err);
+        defer inline for (0..n) |f| {
+            _ = db.valueDestroy(&field_type_values[f]);
+        };
+        return rc;
+    }
     return db.contextCreateTypeFromId(ctx, duckdbV2TypeId(T), out_type, err);
 }
 
@@ -168,11 +201,12 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
     inline for (param_types) |t| {
         if (comptime !isStructType(t.?) and !isDecimalType(t.?) and !isEnumType(t.?)) _ = duckdbV2TypeId(t.?);
     }
-    if (comptime !isDecimalType(ReturnType) and !isEnumType(ReturnType)) _ = duckdbV2TypeId(ReturnType);
+    if (comptime !isStructType(ReturnType) and !isDecimalType(ReturnType) and !isEnumType(ReturnType)) _ = duckdbV2TypeId(ReturnType);
 
     const has_variant_arg = raw_has_variant_arg;
     const return_is_decimal = isDecimalType(ReturnType);
     const return_is_enum = isEnumType(ReturnType);
+    const return_is_struct = isStructType(ReturnType);
     const has_struct_arg = blk: {
         inline for (param_types) |t| {
             if (comptime isStructType(t.?)) break :blk true;
@@ -208,33 +242,8 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
             inline for (param_types, 0..) |t, i| {
                 const T = t.?;
                 var param_type: db.LogicalTypeHandle = undefined;
-                if (comptime isStructType(T)) {
-                    const fields = @typeInfo(T).@"struct";
-                    const n = fields.field_types.len;
-                    var field_logical_types: [n]db.LogicalTypeHandle = undefined;
-                    inline for (0..n) |f| {
-                        if (createLogicalType(input.context, fields.field_types[f], &field_logical_types[f], &err) != db.c.DUCKDB_V2_ERROR_NONE) {
-                            return error.FailedToCreateParamType;
-                        }
-                    }
-                    defer inline for (0..n) |f| {
-                        _ = db.logicalTypeDestroy(&field_logical_types[f]);
-                    };
-                    var field_names: [n]db.IdentifierT = undefined;
-                    inline for (0..n) |f| {
-                        field_names[f] = db.str(fields.field_names[f]);
-                    }
-                    var field_type_values: [n]db.ValueHandle = undefined;
-                    if (db.contextCreateStructType(input.context, &field_names, &field_logical_types, &field_type_values, &param_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
-                        return error.FailedToCreateParamType;
-                    }
-                    defer inline for (0..n) |f| {
-                        _ = db.valueDestroy(&field_type_values[f]);
-                    };
-                } else {
-                    if (createLogicalType(input.context, T, &param_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
-                        return error.FailedToCreateParamType;
-                    }
+                if (createLogicalType(input.context, T, &param_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                    return error.FailedToCreateParamType;
                 }
                 defer _ = db.logicalTypeDestroy(&param_type);
 
@@ -295,7 +304,7 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
             if (comptime has_variant_arg or return_is_variant) {
                 return executeDynamic(info, context, result_vec, row_count, err);
             }
-            if (comptime has_struct_arg) {
+            if (comptime has_struct_arg or return_is_struct) {
                 return executeStruct(info, context, result_vec, row_count, err);
             }
 
@@ -578,6 +587,52 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
         }
         const ViewsTuple = MakeViewsTuple();
 
+        /// A field's write handle: a cached flat-buffer pointer for a
+        /// numeric/bool field, or the field's own child `VectorHandle` for
+        /// `[]const u8` (boxed through `vectorSetValue` per row instead,
+        /// same as the plain return path does at the top level).
+        fn StructFieldWriteHandle(comptime FT: type) type {
+            return if (FT == []const u8) db.VectorHandle else [*]FT;
+        }
+        fn MakeReturnChildPtrsTuple() type {
+            if (comptime !return_is_struct) return void;
+            const fields = @typeInfo(ReturnType).@"struct";
+            var types: [fields.field_types.len]type = undefined;
+            for (fields.field_types, 0..) |ft, i| types[i] = StructFieldWriteHandle(ft);
+            return @Tuple(&types);
+        }
+        const ReturnChildPtrsTuple = MakeReturnChildPtrsTuple();
+
+        /// Writes each field of a STRUCT return value into `result_vec`'s
+        /// own child vectors at `row` — the return-side mirror of
+        /// `buildStructArgs`'s decode. Returns `false` (having already
+        /// populated `err`) on the first failed write, same convention as
+        /// every other `... != DUCKDB_V2_ERROR_NONE) return;` call site in
+        /// this file, just surfaced as a boolean since this runs inside a
+        /// `comptime inline for`, not the exec callback itself.
+        inline fn writeStructResult(
+            context: db.ContextHandle,
+            ptrs: *const ReturnChildPtrsTuple,
+            row: db.idx_t,
+            value: ReturnType,
+            err: [*c]db.ErrorInfoHandle,
+        ) bool {
+            const fields = @typeInfo(ReturnType).@"struct";
+            inline for (0..fields.field_types.len) |f| {
+                const FT = fields.field_types[f];
+                const field_value = @field(value, fields.field_names[f]);
+                if (comptime FT == []const u8) {
+                    var v: db.ValueHandle = undefined;
+                    if (db.valueCreateVarcharWithContext(context, field_value, &v, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                    defer _ = db.valueDestroy(&v);
+                    if (db.vectorSetValue(ptrs.*[f], row, v, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                } else {
+                    ptrs.*[f][row] = field_value;
+                }
+            }
+            return true;
+        }
+
         /// Dedicated exec path for a STRUCT-typed argument: each field's
         /// child vector is addressed directly via `vectorGetChild`/index
         /// (no `ListEntry`-style offset/length indirection, unlike LIST —
@@ -606,8 +661,27 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
                 }
             }
 
+            // Output side: a flat buffer (numeric/bool return), one boxed
+            // Value per row (VARCHAR return), or one write handle per field
+            // cached up front (STRUCT return) — the same three-way split
+            // `writeStructResult`'s doc comment describes, just set up here.
             var out: [*]ReturnType = undefined;
-            if (comptime !return_is_varchar) {
+            var return_child_ptrs: ReturnChildPtrsTuple = undefined;
+            if (comptime return_is_struct) {
+                const fields = @typeInfo(ReturnType).@"struct";
+                inline for (0..fields.field_types.len) |f| {
+                    const FT = fields.field_types[f];
+                    var child_vec: db.VectorHandle = undefined;
+                    if (db.vectorGetChild(result_vec, f, &child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (comptime FT == []const u8) {
+                        return_child_ptrs[f] = child_vec;
+                    } else {
+                        var out_data: ?*anyopaque = null;
+                        if (db.vectorGetDataMutable(child_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        return_child_ptrs[f] = @ptrCast(@alignCast(out_data));
+                    }
+                }
+            } else if (comptime !return_is_varchar) {
                 var out_data: ?*anyopaque = null;
                 if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
@@ -621,7 +695,9 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
                 }
                 const args = buildStructArgs(&views, row);
                 const result = @call(.auto, implFn, args);
-                if (comptime return_is_varchar) {
+                if (comptime return_is_struct) {
+                    if (!writeStructResult(context, &return_child_ptrs, row, result, err)) return;
+                } else if (comptime return_is_varchar) {
                     var value: db.ValueHandle = undefined;
                     if (db.valueCreateVarcharWithContext(context, result, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
                     defer _ = db.valueDestroy(&value);
@@ -747,6 +823,30 @@ test "Function supports a STRUCT argument with a VARCHAR field, mixed with a pla
     }.eval);
     _ = &Describe.register;
     const exec_cb: db.ScalarFunctionExecCallback = Describe.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports a one-level STRUCT return type" {
+    const Point = struct { x: i64, y: i64 };
+    const Scale = Function("v2_test_struct_return", struct {
+        fn eval(factor: i64) Point {
+            return .{ .x = factor, .y = factor * 2 };
+        }
+    }.eval);
+    _ = &Scale.register;
+    const exec_cb: db.ScalarFunctionExecCallback = Scale.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports STRUCT argument and STRUCT return together, including a VARCHAR field" {
+    const Person = struct { name: []const u8, age: i64 };
+    const Birthday = Function("v2_test_struct_arg_and_return", struct {
+        fn eval(p: Person) Person {
+            return .{ .name = p.name, .age = p.age + 1 };
+        }
+    }.eval);
+    _ = &Birthday.register;
+    const exec_cb: db.ScalarFunctionExecCallback = Birthday.execute;
     try std.testing.expect(exec_cb != null);
 }
 
