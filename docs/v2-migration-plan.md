@@ -845,24 +845,27 @@ workload:
   `comptime_cast_v2`-style wrapper would reuse the same vectorized
   flat-buffer read/write path `comptime_scalar_v2` already has, so this
   is scoping/wiring work, not a new execution model. Not attempted.
-- **Table-function projection pushdown — not started, no wrapper exists**
-  (found 2026-10-12, same pass as the cast-function gap above). The v1
-  extension already uses this (`duckdb.zig`'s
-  `tableFunctionSupportsProjectionPushdown`, wrapping
-  `duckdb_table_function_supports_projection_pushdown`). The v2 header
-  has the equivalent surface —
-  `duckdb_v2_table_function_set_projection_pushdown`,
-  `duckdb_v2_table_function_bind_add_result_column` (bind declares which
-  columns exist at all), and `duckdb_v2_table_function_exec_get_column_count`/
-  `_exec_get_column_index` (exec learns which of those columns the query
-  actually asked for, so a scan can skip materializing the rest) — but
-  none of it is wrapped in `duckdb_v2.zig`, and `comptime_table_v2.zig`
-  has no equivalent of its `pushdown` hook for projections. Unlike filter
-  pushdown (item above, done and live-verified), this gap is untouched,
-  not deliberately deferred. A `State` with no projection-pushdown
-  support today always emits every declared result column regardless of
-  what the query actually selects — correct, just not optimized; the
-  same posture `comptime_table_v2` already has for cardinality pushdown
+- ~~**Table-function projection pushdown — not started, no wrapper
+  exists**~~ — **`duckdb_v2.zig` wrapper done (2026-10-12);
+  `comptime_table_v2.zig` integration and live verification still open.**
+  Found while comparing against `ducklink-extension`, same pass as the
+  cast-function gap above. The v1 extension already uses this
+  (`duckdb.zig`'s `tableFunctionSupportsProjectionPushdown`, wrapping
+  `duckdb_table_function_supports_projection_pushdown`). Added v2
+  equivalents: `tableFunctionSetProjectionPushdown` (set on the function
+  object before `tableFunctionRegister`, same timing as
+  `tableFunctionSetBindCallback`/`SetExecCallback` — not a bind-time
+  call, unlike `tableFunctionBindAddResultColumn` which was already
+  wrapped) and `tableFunctionExecGetColumnCount`/
+  `tableFunctionExecGetColumnIndex` (exec learns, per call, which of the
+  bind-declared columns the query actually selected, resolved to their
+  declaration order — mirrors `tableFunctionFilterPushdownGetColumnIndex`'s
+  role for filter pushdown). `task check:all` passes. **Not yet done**:
+  no `comptime_table_v2.zig` hook consumes this (unlike filter pushdown's
+  `pushdown` hook), and no live POC exists exercising it end-to-end —
+  until then a `State` still always emits every declared result column
+  regardless of what the query actually selects, correct but not
+  optimized, the same posture already noted for cardinality pushdown
   (see "No bind-time result-column cardinality hint" elsewhere in this
   doc).
 

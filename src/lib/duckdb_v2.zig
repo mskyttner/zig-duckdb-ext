@@ -163,7 +163,8 @@ pub fn scalarFunctionRegister(function: ScalarFunctionHandle, err: *ErrorInfoHan
 //
 // Minimal slice: create/name/register plus the bind → init_global → exec
 // callback trio, enough for a fixed-arity, non-parallel table function.
-// No parameter/filter-pushdown/partitioning/local-state wrappers yet.
+// Filter pushdown and projection pushdown are wrapped below; no
+// partitioning/local-state wrappers yet.
 
 pub fn tableFunctionCreateWithExtension(
     extension: ExtensionHandle,
@@ -249,6 +250,23 @@ pub fn tableFunctionSetProgressCallback(
     err: *ErrorInfoHandle,
 ) ErrorCode {
     return getApi().duckdb_v2_table_function_set_progress_callback.?(function, callback, err);
+}
+
+/// Opt into projection pushdown for this function, same timing as
+/// `tableFunctionSetBindCallback`/`SetExecCallback` (on the function
+/// object itself, before `tableFunctionRegister`). Once enabled,
+/// `tableFunctionExecGetColumnCount`/`tableFunctionExecGetColumnIndex`
+/// report, at exec time, which of the columns declared via
+/// `tableFunctionBindAddResultColumn` the query actually selected — a scan
+/// can skip materializing the rest. Without this, DuckDB never enables
+/// projection pushdown for the function and exec always sees every
+/// declared column.
+pub fn tableFunctionSetProjectionPushdown(
+    function: TableFunctionHandle,
+    enable: bool,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_set_projection_pushdown.?(function, enable, err);
 }
 
 pub fn tableFunctionProgressGetBindData(
@@ -495,6 +513,31 @@ pub fn tableFunctionExecGetOutputChunk(
     err: *ErrorInfoHandle,
 ) ErrorCode {
     return getApi().duckdb_v2_table_function_exec_get_output_chunk.?(info, out_chunk, err);
+}
+
+/// Number of columns the query actually selected from this scan — only
+/// meaningful once `tableFunctionSetProjectionPushdown` has been enabled;
+/// otherwise every declared column is always selected. Valid indices for
+/// `tableFunctionExecGetColumnIndex` are `0..count`.
+pub fn tableFunctionExecGetColumnCount(
+    info: TableFunctionExecInfoHandle,
+    out_count: *idx_t,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_exec_get_column_count.?(info, out_count, err);
+}
+
+/// Resolve the selected column at `index` to its position among the
+/// columns declared via `tableFunctionBindAddResultColumn`, in declaration
+/// order — mirrors `tableFunctionFilterPushdownGetColumnIndex`'s role for
+/// filter pushdown.
+pub fn tableFunctionExecGetColumnIndex(
+    info: TableFunctionExecInfoHandle,
+    index: idx_t,
+    out_column_index: *idx_t,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_exec_get_column_index.?(info, index, out_column_index, err);
 }
 
 // --- Data Chunk ---
