@@ -43,11 +43,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # mlugg/setup-zig's canonical home is Codeberg, not GitHub — the
-      # github.com/mlugg/setup-zig mirror's @v1 tag couldn't resolve Zig
-      # 0.17.0 (confirmed live), but the real @v2, referenced directly by
-      # URL, can.
-      - uses: https://codeberg.org/mlugg/setup-zig@v2
+      # mlugg/setup-zig's canonical home is Codeberg, but its own README
+      # says GitHub Actions can't use a non-GitHub-hosted action directly
+      # (confirmed live: `uses: https://codeberg.org/...` fails to
+      # resolve) — the github.com/mlugg/setup-zig mirror is the right
+      # reference here. The mistake wasn't the mirror, it was @v1: that
+      # tag couldn't resolve Zig 0.17.0 ("Unable to locate executable
+      # file: zig"); @v2 can.
+      - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
 
