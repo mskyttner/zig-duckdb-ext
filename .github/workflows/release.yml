@@ -36,9 +36,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: ${{ env.ZIG_VERSION }}
+      # Zig 0.17.0 isn't mirrored to GitHub Releases yet (confirmed: only
+      # up to 0.15.1 there), which third-party setup actions resolve
+      # against — so this downloads the official ziglang.org tarball
+      # directly instead, the same binary `zvm`/a manual install would
+      # give you, with no dependency on a third party's version index.
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p /tmp/zig
+          tar -xf /tmp/zig.tar.xz -C /tmp/zig --strip-components=1
+          echo "/tmp/zig" >> "$GITHUB_PATH"
 
       - name: Cross-compile the extension for every target
         run: zig build cross
