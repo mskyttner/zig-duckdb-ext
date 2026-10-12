@@ -19,15 +19,21 @@ modified except for one pure, verified-behavior-preserving refactor (see
 "Known risk" below).
 
 Binding layer: `src/lib/duckdb_v2.zig` (vtable singleton + wrapped
-functions) plus three comptime frameworks — `comptime_scalar_v2.zig`
+functions) plus four comptime frameworks — `comptime_scalar_v2.zig`
 (full per-row-function → vectorized-callback generation, including
-VARCHAR, a one-level STRUCT argument, and VARIANT as an argument or return
-type), `comptime_table_v2.zig` (full bind/exec generation from a
-`Row`/`init`/`next` `State` type, including VARCHAR arguments/columns),
-`comptime_aggregate_v2.zig` (full init/update/combine/finalize generation
-from a `State` type, including an optional-return convention for NULL
-output, VARCHAR as an argument or return type, and an optional `deinit`
-hook for states owning growable/heap-allocated resources).
+VARCHAR, a one-level STRUCT argument, VARIANT as an argument or return
+type, and the smaller integer/float types, DATE/TIME/TIMESTAMP/INTERVAL,
+and BLOB), `comptime_table_v2.zig` (full bind/exec generation from a
+`Row`/`init`/`next` `State` type, including VARCHAR arguments/columns and
+an optional `pushdown` hook for filter pushdown), `comptime_aggregate_v2.zig`
+(full init/update/combine/finalize generation from a `State` type,
+including an optional-return convention for NULL output, VARCHAR as an
+argument or return type, an optional `deinit` hook for states owning
+growable/heap-allocated resources, and an optional `updateBatch` SIMD fast
+path for ungrouped aggregation), and `comptime_appender_v2.zig` (the same
+Row-struct-driven pattern for v2's bulk-append-only Appender API, which
+has no row-based Appender at all — primitives, VARCHAR, LIST, one-level
+STRUCT, ARRAY, and ENUM).
 
 Proven against a live `v2.0.0-alpha46057` runtime (installed via
 `DUCKDB_VERSION=alpha bash <(curl https://install.duckdb.org)`, not
@@ -557,20 +563,93 @@ workload:
 
 ### 5. Smaller, scoped gaps (not blocking anything above)
 
-- **Other v2-only table-function features never touched**: filter
-  pushdown (`table_function_filter_pushdown_*`), progress reporting
-  (`table_function_progress_*`), and partitioning/batch-claiming hooks —
-  all real v2 capabilities with no v1 equivalent, identified early in this
-  branch's exploration but never built against. Relevant if `tree_scan`/
-  `ps_scan`-style long-running scans ever move to v2.
-- **Other scalar numeric types untested live**: `i8`/`i16`/`i32`/`f32`
-  are mapped in `duckdbV2TypeId` but only `i64`/`f64`/`bool`/`[]const u8`
-  have actually been registered and called against the real runtime.
-  DECIMAL, ENUM, BLOB, DATE/TIME/TIMESTAMP/INTERVAL are entirely
-  unmapped.
+- ~~**Table-function filter pushdown**~~ — **done.** `comptime_table_v2`
+  gained an optional `pushdown` hook on `State` (mirroring the existing
+  optional `deinit`), plus the `Expression` introspection surface
+  (`expressionGetType`/`GetReturnType`/`GetChild`/`expressionConstantGetValue`/
+  `expressionColumnRefGetIndex`/`expressionFunctionGetName`/
+  `expressionCastGetMode`) and `table_function_filter_pushdown_*` bindings
+  in `duckdb_v2.zig`. Live-verified: a test table function recognizes
+  `col = constant`, accepts it, and filters rows itself; the
+  unrecognized-predicate and no-predicate fallback cases both confirmed
+  correct too.
+- **Other v2-only table-function features still never touched**: progress
+  reporting (`table_function_progress_*`) and partitioning/batch-claiming
+  hooks — real v2 capabilities with no v1 equivalent, identified early in
+  this branch's exploration but never built against. Relevant if
+  `tree_scan`/`ps_scan`-style long-running scans ever move to v2.
+- ~~**Other scalar numeric types untested live**~~ — **mostly done.**
+  `i8`/`i16`/`i32`/`f32` are now registered and called live
+  (`zig_v2_narrow_sum_ct`). `DATE`/`TIME`/`TIMESTAMP`/`INTERVAL` are
+  mapped via new `db.Date`/`db.Time`/`db.Timestamp`/`db.Interval` marker
+  types in `duckdb_v2.zig` — these are plain fixed-width vector storage
+  (confirmed: the C API has no `duckdb_v2_date_t`/etc. struct; DATE is a
+  raw `int32_t`, TIME/TIMESTAMP a raw `int64_t`, same physical layout as
+  INTEGER/BIGINT), so the comptime framework's existing direct-buffer
+  read/write path needed no new exec-path code, just a distinct Zig type
+  per logical type so `duckdbV2TypeId` can tell them apart from plain
+  `i32`/`i64` (a non-exhaustive enum wrapping the same backing int is a
+  zero-cost way to get that). `BLOB` is mapped via a new `db.Blob` marker
+  (reuses VARCHAR's `BytesValue`/boxed-`Value` machinery as-is, just
+  tagged BLOB at registration) — live-verified
+  (`zig_v2_timestamp_add_ct`, `zig_v2_blob_prefix_ct`). **Still open:
+  DECIMAL and ENUM** — both are parameterized (width/scale; a dictionary),
+  unlike everything above, so deliberately scoped out of this pass; see
+  item 8 below, in progress.
 - ~~**Aggregate `destroy` callback** — never wired up~~ — **done**, see
   item 4's growable-state-aggregate entry
   (`aggregateFunctionSetDestroyCallback`, exercised by `zig_v2_string_agg_ct`).
+
+### 5a. Appender (`comptime_appender_v2.zig`) — new, not originally scoped
+
+v2 has no row-based Appender at all (v1's `duckdb_appender_*` API is gone
+entirely — confirmed by grepping the header), only bulk
+`column_data_collection_append` against a caller-built `DataChunk`.
+Generalizes that into the same Row-struct-driven pattern
+`comptime_table_v2` uses: primitives (direct-buffer write), VARCHAR, LIST,
+one-level STRUCT, ARRAY (`[N]E` → `E[N]`), and ENUM (a plain Zig `enum` →
+`ENUM('member0', ...)`, member names from the Zig enum's own variant
+names). Live-verified for every supported shape, including a 2500-row
+multi-flush stress test.
+
+Two findings worth carrying into any other v2 work that touches
+ARRAY/ENUM/parameterized types:
+
+- **No `duckdb_v2_value_create_enum_*` function exists at all** (confirmed
+  by grepping the header) — an ENUM `Value` is built the way SQL does it:
+  box the member name as VARCHAR, then `valueCastWithContext` it to the
+  column's own ENUM type. Casting needs that type at write-time, so
+  (unlike every other field shape) `Appender` retains its built
+  `LogicalTypeHandle`s for its whole lifetime, not just long enough to
+  create the `DataChunk`.
+- **ARRAY's and ENUM's logical types are built via
+  `contextCreateTypeFromText`, not `contextCreateTypeFromId`**: the header
+  confirms `array(T, size)`/`enum(entries)` are reachable the `_from_id`
+  way too (as positional `Value` parameters), but the exact `Value` shape
+  `size` needs isn't documented, while the SQL-text forms (`"BIGINT[3]"`,
+  `"ENUM('a','b')"`) are both given as worked examples on
+  `context_create_type_from_text`'s own doc comment.
+
+VARIANT is NOT supported by the Appender (no `Value` constructor exists
+for it either, and no SQL-text form for an unparameterized dynamic type
+makes sense the way ARRAY/ENUM's text forms do).
+
+### 5b. SIMD batch fast path for ungrouped aggregates — new, not originally scoped
+
+`comptime_aggregate_v2.zig` gained an optional `State.updateBatch` hook,
+tried before the per-row `update` loop whenever every state pointer in a
+chunk is identical (the ungrouped case — `GROUP BY` always falls back to
+the existing scalar per-row path, since SIMD doesn't help a scatter-add
+across many different states). States without `updateBatch` are
+unaffected. Proved with `zig_v2_weighted_avg_simd_ct`, a `@Vector`-
+accelerated twin of `zig_v2_weighted_avg_ct`, folding a whole chunk's
+NULL-masked Σ(x·w)/Σw into one SIMD pass via `@splat`/`@select`/`@reduce`
+(lane-count remainder handled by a masked final vector pass, not a scalar
+tail loop). Live-verified identical to the scalar version across
+ungrouped, grouped, NULLs in either argument landing in and out of the
+tail, all-NULL weight, and row counts both above and below one lane
+width. ~25% faster over 10M rows in `ReleaseSafe` (0.048s vs 0.064s, 3
+runs each).
 
 ### 6. Static linking (speculative, not started)
 
@@ -644,7 +723,44 @@ application, or distributing a single self-contained `duckdb` binary
 without the `LOAD`/`-unsigned`/signing friction a loadable extension
 carries.
 
-### 7. The real cutover decision
+### 7. DECIMAL and ENUM support — in progress
+
+The two parameterized types deliberately left out of item 5's otherwise-
+done scalar-types pass. Both need something no other supported type does:
+a type-level parameter only known at registration time (DECIMAL's
+width/scale; ENUM's member dictionary), which a plain Zig type can't
+carry on its own the way `i32`/`db.Date`/etc. do.
+
+Findings from the C API, confirmed against the header (not assumed — see
+[the C API vector docs](https://duckdb.org/docs/preview/clients/c/vector)
+for the v1-era version of the same contract):
+
+- **DECIMAL's vector storage is a typed leaf array, contract-documented
+  directly on `vector_get_view`'s own doc comment**: width ≤4 → `int16`,
+  ≤9 → `int32`, ≤18 → `int64`, ≤38 → `int128`, boundaries inclusive — the
+  same direct-buffer path every numeric type already uses, once the right
+  storage width is picked. Width and scale come back from
+  `logical_type_get_param` (index 0/1, as UTINYINT values) given a type
+  handle, but a comptime framework already knows both at registration
+  time (the caller states them), so no runtime introspection is needed
+  for the type this project builds — only for interpreting a type handle
+  handed to it from elsewhere (not a case this framework hits).
+- **ENUM's vector storage is also a typed leaf array**, same doc comment:
+  dictionary size ≤255 → `uint8`, ≤65535 → `uint16`, beyond → `uint32`
+  (boundaries inclusive, empty dictionary → `uint8`). `comptime_appender_v2.zig`
+  already established (see item 5a) that there's no `value_create_enum_*`
+  constructor at all — writing an ENUM goes through a VARCHAR-box +
+  `valueCastWithContext` to the column's own ENUM type instead.
+
+Design: `db.Decimal(width, scale)` (a comptime type generator, like a
+tiny single-field wrapper around whichever storage int the width
+selects) for DECIMAL; a plain Zig `enum` (same convention
+`comptime_appender_v2.zig` already uses) for ENUM, decoded via the
+enum's own `field_values` in declaration order (matching the dictionary
+order the `ENUM(...)` type was built with) rather than assuming default
+auto-numbering, so a manually-numbered Zig enum still decodes correctly.
+
+### 8. The real cutover decision
 
 Once the gaps above (or whichever subset is judged sufficient) are closed,
 the actual decision point is replacing `zig build`'s real `lib`/`ext`
