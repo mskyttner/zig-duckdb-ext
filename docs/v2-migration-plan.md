@@ -7,6 +7,126 @@ done so far and scopes what's left before the real `zig_ext` extension
 could actually cut over from v1 to v2. Nothing here is scheduled — it's a
 map for whoever (or whichever future session) picks this back up.
 
+## Anticipated upcoming refactoring (as of 2026-10-12, release expected within ~2 weeks)
+
+Reviewed DuckDB's own
+[`[C-API-V2]` closed-PR activity](https://github.com/duckdb/duckdb/pulls?q=is%3Apr+state%3Aclosed+%5BC-API-V2%5D)
+to see what's about to land before the real 2.0 release. First, grounded
+the review in fact rather than PR-title guessing: grepped our currently
+vendored `duckdb_capi/duckdb_v2.h` for symbols each PR introduces, to find
+exactly which of these are already baked into what we've built against
+and which are genuinely still ahead of us.
+
+**Already landed in our vendored header** (confirmed by grep, not
+assumed — no surprise expected here on the next re-vendor):
+[#26230](https://github.com/duckdb/duckdb/pull/26230) (`table_function_bind_set_order_preservation`,
+struct-by-value removal — see item 5/7 below for why this project was
+never exposed to the by-value form anyway),
+[#26264](https://github.com/duckdb/duckdb/pull/26264) (unified
+`function_bind_get_user_data`-style getters shared across scalar/
+aggregate/table, `FUNCTION_PARAMETER_KIND` — matches this project's
+existing `functionSignatureAddParameter`/`DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD`
+usage already),
+[#25910](https://github.com/duckdb/duckdb/pull/25910) (`duckdb_v2_database_handle`
+renamed to `duckdb_v2_instance` — not a handle this project creates, but
+worth knowing if a symbol by the old name is ever searched for), and
+[#25805](https://github.com/duckdb/duckdb/pull/25805) (table function
+partition callbacks — confirms the exact mechanism item 5's "deliberately
+not built" partitioning/batch-claiming note describes is itself stable,
+already-landed API, not a moving target).
+
+**NOT yet in our vendored header — all three merged within the same day,
+2026-10-11, the single biggest batch of change to land right before this
+review**:
+
+1. **[#26820](https://github.com/duckdb/duckdb/pull/26820) "Break-out
+   common functionality"** — almost certainly the largest source of
+   rename/restructure work this branch's `duckdb_v2.zig` will face on the
+   next re-vendor. Introduces `duckdb_v2_factory`, a unified handle for
+   constructing values/types/datachunks (obtainable from a connection,
+   instance, OR context), explicitly to stop duplicating the same
+   constructors across handle types. Virtually every `*WithContext`
+   wrapper this project has written —
+   `contextCreateTypeFromId`/`contextCreateListType`/`contextCreateStructType`/
+   `contextCreateDecimalType`/`contextCreateTypeFromText`/every
+   `valueCreate*WithContext` — may get consolidated onto this `Factory`
+   handle instead of `Context` directly. Also introduces `duckdb_v2_config`
+   (a unified settings handle, also reachable from instance/connection/
+   context) and reworks `duckdb_v2_instance` to start eagerly with a new
+   `duckdb_v2_instance_create_with_options` for startup-only config — not
+   directly relevant to this project (an extension never creates an
+   instance), but part of the same PR's surface area.
+2. **[#26863](https://github.com/duckdb/duckdb/pull/26863) "PRAGMA/MACRO/
+   SET custom_option"** — potentially resolves a gap ADR-0003 and this
+   plan both documented as a confirmed (tested, not assumed) finding: "v2
+   has no way to run SQL at init time at all" and therefore "can't
+   self-register a `COMMENT ON FUNCTION` the way a v1 extension's
+   macro-wrapper step could." This PR adds **native MACRO function
+   registration for extensions** ("Scalar/table `MACRO` functions for
+   extensions, defined with a `FunctionSignature`") alongside custom
+   `PRAGMA` functions and custom config options. If this produces a real
+   catalog macro object (not just SQL-text execution under the hood), it
+   may let v2 attach a `COMMENT` the same way v1's macro-wrapper trick
+   does — directly affecting the one point this plan found in v2's favor
+   being traded for one in v1's favor (native named params vs.
+   comment-ability). **Re-test this explicitly once it's in the vendored
+   header — don't assume either way**, consistent with how every other
+   finding in this document was established.
+3. **[#26872](https://github.com/duckdb/duckdb/pull/26872) "Log-sink
+   support"** — brings v1's log storage to v2 (renamed "log sink"). A new
+   capability, not used by anything built on this branch; no action
+   needed unless a future function wants structured logging.
+
+**Proposed but NOT merged — a discussion-stage direction, not a decided
+future**, kept here as a heads-up, not a plan:
+
+- **[#26347](https://github.com/duckdb/duckdb/pull/26347) "Remove extra
+  error codes"** (closed, unmerged) — proposes collapsing `DUCKDB_V2_ERROR`'s
+  many specific codes down to one `DUCKDB_V2_ERROR_GENERIC`, stating
+  outright that "any non-zero error code should be considered an error,
+  and the exact code and messages may change in the future." **Narrow,
+  concrete exposure already identified**: `duckdb_v2.zig`'s own
+  `contextCreateListType`/`contextCreateStructType`/`contextCreateDecimalType`
+  helpers return the specific constant `c.DUCKDB_V2_ERROR_API` as a
+  synthesized "an intermediate step failed" sentinel (4 call sites,
+  confirmed by grep) — if a PR along these lines lands, that exact
+  constant could disappear. Everywhere else already follows the safe
+  convention this PR's own guidance describes (`!= DUCKDB_V2_ERROR_NONE`,
+  never branching on a specific non-NONE code), so the actual blast
+  radius is those 4 lines, not a design problem. Fix once the real header
+  lands and only if the constant is actually gone — not before, since
+  this PR is closed, unmerged, direction under discussion.
+- [#25865](https://github.com/duckdb/duckdb/pull/25865) "Rework
+  QueryResult API" (closed, draft, unmerged) — streaming/materialized/
+  blocking query-result consumption for C++ embedders; not relevant to
+  this project's extension-authoring bindings (nothing here consumes a
+  `QueryResult`), but would matter if this project ever embeds DuckDB
+  directly rather than driving the CLI — see the native sqllogictest
+  runner's own choice of CLI-subprocess over libduckdb-linking, made for
+  unrelated reasons but touching the same API surface.
+- [#26652](https://github.com/duckdb/duckdb/pull/26652) "passthrough
+  catalog types, CONNECT targets" (closed, draft, unmerged) — unrelated to
+  anything built on this branch.
+
+**What to do when 2.0 actually ships** (not before — re-vendoring against
+another moving alpha snapshot mid-flight isn't worth repeating this
+exercise for):
+
+1. Re-vendor `duckdb_capi/duckdb_v2.h`/`duckdb_extension_v2.h` from the
+   real release, not another alpha snapshot, then diff it against what's
+   currently committed to see the exact delta directly, rather than
+   reconstructing it from PR descriptions after the fact.
+2. Expect `duckdb_v2_factory`/`duckdb_v2_config` renames (PR #26820
+   above) to be the dominant source of compile errors in `duckdb_v2.zig`.
+3. Re-test the MACRO/comment finding from ADR-0003 explicitly (PR #26863
+   above) — it may no longer be accurate.
+4. Grep for `DUCKDB_V2_ERROR_API` (PR #26347 above); fix the 4 call sites
+   if it's gone.
+5. Re-run every `zig build v2-check`/`sqllogictest-v2`/live POC check this
+   branch already has — they're the regression net for exactly this kind
+   of churn, and already proved themselves catching real bugs throughout
+   this branch, not just type-level drift.
+
 ## Where things stand
 
 All 9 functions in the real v1 extension (`add_numbers`, `ct_add_numbers`,
