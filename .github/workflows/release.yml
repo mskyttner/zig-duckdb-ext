@@ -28,7 +28,14 @@ concurrency:
 
 env:
   ZIG_VERSION: "0.17.0"
-  DUCKDB_VERSION: "v1.2.0"
+  # The repository's version directory must match a DuckDB CLIENT's own
+  # exact running version (confirmed live, and in DuckDB's own source:
+  # ExtensionHelper::GetVersionDirectoryName() uses DuckDB::LibraryVersion()
+  # for a release build) — NOT the minimum-ABI-compatibility version the
+  # extension's own metadata footer declares (target_duckdb_version in
+  # build.zig, "v1.2.0": a separate concern). This is the latest stable
+  # release this project has actually tested against this session.
+  DUCKDB_VERSION: "v1.5.6"
 
 jobs:
   build:
