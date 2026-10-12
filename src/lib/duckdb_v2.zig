@@ -46,6 +46,7 @@ pub const ColumnDataCollectionHandle = c.duckdb_v2_column_data_collection_handle
 pub const ColumnDataCollectionAppendStateHandle = c.duckdb_v2_column_data_collection_append_state_handle;
 pub const ExpressionHandle = c.duckdb_v2_expression_handle;
 pub const TableFunctionFilterPushdownInfoHandle = c.duckdb_v2_table_function_filter_pushdown_info_handle;
+pub const TableFunctionProgressInfoHandle = c.duckdb_v2_table_function_progress_info_handle;
 
 // ─── Re-export enums / structs ────────────────────────────────────────────────
 
@@ -57,6 +58,7 @@ pub const VectorView = c.duckdb_v2_vector_view;
 pub const ListEntry = c.duckdb_v2_list_entry;
 pub const ScalarFunctionExecCallback = c.duckdb_v2_scalar_function_exec_callback_fn;
 pub const TableFunctionFilterPushdownCallback = c.duckdb_v2_table_function_filter_pushdown_callback_fn;
+pub const TableFunctionProgressCallback = c.duckdb_v2_table_function_progress_callback_fn;
 pub const ExpressionType = c.DUCKDB_V2_EXPRESSION_TYPE;
 pub const CastMode = c.DUCKDB_V2_CAST_MODE;
 pub const idx_t = c.idx_t;
@@ -230,6 +232,41 @@ pub fn tableFunctionSetFilterPushdownCallback(
     err: *ErrorInfoHandle,
 ) ErrorCode {
     return getApi().duckdb_v2_table_function_set_filter_pushdown_callback.?(function, callback, err);
+}
+
+/// Invoked on demand during execution to report how far a scan has
+/// advanced, which the engine surfaces as the query's progress.
+/// Confirmed live and worth repeating here: the callback runs
+/// CONCURRENTLY with the scan's own exec callback (even for a
+/// single-threaded scan — this is a separate query-progress monitoring
+/// mechanism, not tied to the scan's own thread count), so whatever state
+/// it reads must be safe to read from another thread while `exec`
+/// concurrently mutates it — a plain counter needs `std.atomic.Value`,
+/// not a bare field, if precision matters.
+pub fn tableFunctionSetProgressCallback(
+    function: TableFunctionHandle,
+    callback: TableFunctionProgressCallback,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_set_progress_callback.?(function, callback, err);
+}
+
+pub fn tableFunctionProgressGetBindData(
+    info: TableFunctionProgressInfoHandle,
+    out_data: *?*anyopaque,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_progress_get_bind_data.?(info, out_data, err);
+}
+
+/// `progress` is a fraction in [0.0, 1.0] (clamped outside that range); a
+/// callback that returns without calling this reports no progress.
+pub fn tableFunctionProgressSetProgress(
+    info: TableFunctionProgressInfoHandle,
+    progress: f64,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_table_function_progress_set_progress.?(info, progress, err);
 }
 
 // --- Table Function Filter Pushdown ---

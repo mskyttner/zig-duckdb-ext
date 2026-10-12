@@ -218,6 +218,31 @@ const RangeCt = comptime_table_v2.Function("zig_v2_range_ct", struct {
     }
 });
 
+/// Proves comptime_table_v2's optional `progress` hook. `i` is atomic, not
+/// a bare field, since `progress` runs concurrently with `next` even for
+/// this single-threaded scan (confirmed live — see comptime_table_v2.zig's
+/// module doc comment on `progress`).
+const RangeProgressCt = comptime_table_v2.Function("zig_v2_range_progress_ct", struct {
+    n: i64,
+    i: std.atomic.Value(i64),
+    pub const Row = struct { value: i64 };
+    pub fn init(n: i64) @This() {
+        return .{ .n = n, .i = std.atomic.Value(i64).init(0) };
+    }
+    pub fn next(self: *@This()) ?Row {
+        const v = self.i.load(.monotonic);
+        if (v >= self.n) return null;
+        self.i.store(v + 1, .monotonic);
+        return .{ .value = v };
+    }
+    pub fn progress(self: *const @This()) f64 {
+        if (self.n == 0) return 1.0;
+        const i_val: f64 = @floatFromInt(self.i.load(.monotonic));
+        const n_val: f64 = @floatFromInt(self.n);
+        return i_val / n_val;
+    }
+});
+
 /// Proves VARCHAR as both a table-function constructor argument and a Row
 /// output column through the generalized framework — the two cases
 /// `comptime_table_v2.zig`'s module doc comment calls out as needing the
@@ -550,6 +575,7 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     BigDecimalDoubleCt.register(input) catch {};
     NextMoodCt.register(input) catch {};
     RangeCt.register(input) catch {};
+    RangeProgressCt.register(input) catch {};
     RepeatCt.register(input) catch {};
     ArgMaxCt.register(input) catch {};
     AggSumCt.register(input) catch {};

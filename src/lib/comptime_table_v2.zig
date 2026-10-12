@@ -44,6 +44,16 @@
 ///!     to enforce itself. A `State` with no `pushdown` decl gets no
 ///!     filter-pushdown callback at all — every predicate is then applied
 ///!     by the engine as usual, same as today.
+///!   - `pub fn progress(self: *const State) f64` — optional. Called on
+///!     demand to report how far the scan has advanced, in `[0.0, 1.0]`.
+///!     CAUTION, confirmed live: this runs CONCURRENTLY with `next`/`exec`
+///!     even for this framework's single-threaded scans — it's a separate
+///!     query-progress monitoring mechanism, not tied to scan thread
+///!     count — so any field `progress` reads that `next` also mutates
+///!     needs to be safe to read from another thread (e.g.
+///!     `std.atomic.Value`, not a bare field, if precision matters). A
+///!     `State` with no `progress` decl gets no progress callback at all;
+///!     the query simply reports no progress for it, same as today.
 ///!
 ///! No bind-time result-column cardinality hint is set (the row count isn't
 ///! knowable ahead of a pull iterator) and no `init_global`/local-init
@@ -102,6 +112,7 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
     const arg_types = init_info.param_types;
     const has_deinit = @hasDecl(State, "deinit");
     const has_pushdown = @hasDecl(State, "pushdown");
+    const has_progress = @hasDecl(State, "progress");
 
     inline for (row_field_types) |t| _ = duckdbV2TypeId(t);
     inline for (arg_types) |t| _ = duckdbV2TypeId(t.?);
@@ -159,6 +170,11 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
                     return error.FailedToSetFilterPushdownCallback;
                 }
             }
+            if (has_progress) {
+                if (db.tableFunctionSetProgressCallback(function, progressCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                    return error.FailedToSetProgressCallback;
+                }
+            }
 
             if (db.tableFunctionRegister(function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
                 return error.FailedToRegisterFunction;
@@ -177,6 +193,14 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             if (db.tableFunctionFilterPushdownGetBindData(info, &bind_data_ptr, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
             const state: *State = @ptrCast(@alignCast(bind_data_ptr.?));
             State.pushdown(state, info, err);
+        }
+
+        fn progressCallback(info: db.TableFunctionProgressInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
+            _ = context;
+            var bind_data_ptr: ?*anyopaque = null;
+            if (db.tableFunctionProgressGetBindData(info, &bind_data_ptr, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            const state: *const State = @ptrCast(@alignCast(bind_data_ptr.?));
+            _ = db.tableFunctionProgressSetProgress(info, State.progress(state), err);
         }
 
         fn MakeArgsTuple() type {
@@ -406,4 +430,34 @@ test "Function supports an optional pushdown hook" {
     });
     // Referencing .register forces analysis of the pushdown-callback body too.
     _ = &RangeFiltered.register;
+}
+
+test "Function supports an optional progress hook" {
+    const RangeWithProgress = Function("v2_test_table_range_progress", struct {
+        n: i64,
+        // Atomic, not a bare field: progress() runs concurrently with
+        // next() even for this single-threaded scan (see this file's
+        // module doc comment on `progress`'s thread-safety requirement).
+        i: std.atomic.Value(i64),
+        pub const Row = struct { value: i64 };
+        pub fn init(n: i64) @This() {
+            return .{ .n = n, .i = std.atomic.Value(i64).init(0) };
+        }
+        pub fn next(self: *@This()) ?Row {
+            const v = self.i.load(.monotonic);
+            if (v >= self.n) return null;
+            self.i.store(v + 1, .monotonic);
+            return .{ .value = v };
+        }
+        pub fn progress(self: *const @This()) f64 {
+            if (self.n == 0) return 1.0;
+            const i_val: f64 = @floatFromInt(self.i.load(.monotonic));
+            const n_val: f64 = @floatFromInt(self.n);
+            return i_val / n_val;
+        }
+    });
+    // Referencing .register forces analysis of the progress-callback body too.
+    _ = &RangeWithProgress.register;
+    const progress_cb: db.c.duckdb_v2_table_function_progress_callback_fn = RangeWithProgress.progressCallback;
+    try std.testing.expect(progress_cb != null);
 }
