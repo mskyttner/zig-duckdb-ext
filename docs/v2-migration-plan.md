@@ -933,6 +933,31 @@ tail, all-NULL weight, and row counts both above and below one lane
 width. ~25% faster over 10M rows in `ReleaseSafe` (0.048s vs 0.064s, 3
 runs each).
 
+- **Tracked gap, not started (found 2026-10-12, while checking whether
+  validity-mask bulk-write wrappers would help this path — they don't,
+  see below): the validity-mask DECODE inside `updateBatch` isn't
+  actually vectorized.** `zig_v2_weighted_avg_simd_ct`'s arithmetic
+  (`xv * wv`, the `@reduce(.Add, ...)` sums) genuinely runs through
+  `@Vector`/`@select`, but the NULL mask feeding that `@select` is built
+  bit-by-bit: `simdIsValid` is called once per lane inside a
+  comptime-unrolled `inline for (0..lanes)`, each call doing its own
+  shift-and-mask on a single bit of the `VectorView.validity` word. So
+  every lane pays a scalar branch to decide whether it's masked, even
+  though the actual blend/add is a single vector op. A genuinely
+  vectorized version would extract a lane-width run of bits from the
+  `u64` validity word in one step (e.g. shift+mask a contiguous `lanes`-
+  bit slice into a `@Vector(lanes, bool)` directly, or a lookup table
+  keyed by an 8-bit chunk of the word when `lanes <= 8`) instead of
+  looping per lane. Separate from, and not solved by, the
+  `vectorFlatGetValidityMutable`/`vectorConstantSetValid` gap noted
+  earlier in this doc — those are for bulk-*writing* an output vector's
+  validity, not reading an input argument's faster; the read side
+  already has direct bitmask access via `VectorView.validity`, wrapper
+  or not. Worth measuring before investing effort: the per-lane branch
+  may already predict well in practice (real-world null rates are
+  typically low and clustered), so the ~25%-over-scalar number above may
+  not move much — profile first.
+
 ### 6. Static linking (speculative, not started)
 
 Everything built so far targets a **loadable** extension (`dlopen`ed
