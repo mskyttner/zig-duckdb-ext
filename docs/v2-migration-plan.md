@@ -949,6 +949,38 @@ application, or distributing a single self-contained `duckdb` binary
 without the `LOAD`/`-unsigned`/signing friction a loadable extension
 carries.
 
+### 6a. WASM support (speculative, not started — not currently feasible as a straight port)
+
+Investigated whether this extension could target `duckdb-wasm` (browser
+DuckDB). Third-party/custom extension repositories ARE supported there
+(same version/platform path layout as native, served over CORS) — the
+*distribution* mechanism isn't the blocker. The real blocker: official
+wasm extensions are built with **Emscripten specifically** (three ABI
+flavors — `mvp`/`eh`/`coi`), loaded via **Emscripten's own `dlopen()`**
+as a `SIDE_MODULE` into an already-running Emscripten main module — a
+proprietary dynamic-linking ABI on top of raw wasm (its own relocation
+format, shared table/memory conventions), not satisfied by emitting
+valid `wasm32` bytecode alone. Zig's wasm support targets
+`wasm32-freestanding`/`wasm32-wasi`, architecturally distinct from
+`wasm32-emscripten` — no evidence found that Zig's linker can emit an
+Emscripten-compatible `SIDE_MODULE` (historically requires going through
+`emcc` directly, which would defeat most of the point of using Zig
+here). No prior art found of a Rust/Zig/non-Emscripten-toolchain
+extension loaded by duckdb-wasm this way.
+
+**A real alternative worth a future look, not a port of this
+extension**: [tegmentum/ducklink-extension](https://github.com/tegmentum/ducklink-extension)
+loads sandboxed `wasm32-wasip2` components via a SQL table function and
+a `wasmtime`-based runtime, entirely sidestepping Emscripten's ABI — a
+genuinely different extension mechanism (a component loaded at query
+time, not a loadable `.duckdb_extension`), but one Zig's existing
+`wasm32-wasi`-family target support could actually reach. **Future
+investigation**: a Zig-native variant of this approach — not a drop-in
+compile of this project's current functions, since WASI-preview2
+components have a different function-registration surface than the C
+extension API this project is built around. Not started; no code
+written; revisit if browser-based DuckDB support becomes a real goal.
+
 ### 7. DECIMAL and ENUM support — done
 
 The two parameterized types deliberately left out of item 5's otherwise-
