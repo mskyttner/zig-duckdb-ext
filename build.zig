@@ -385,40 +385,47 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
 
-    // ── SQL logic tests against the real v1 extension ─────────────────────
-    // Pattern borrowed from quack-zig: DuckDB's own native .test format
-    // (require/statement/query blocks), run via duckdb-sqllogictest-python
-    // against a matching `duckdb` Python package, instead of the manual
-    // `duckdb -c "..." | diff` comparisons this whole branch did by hand.
+    // ── SQL logic tests against the real v1 AND v2 extensions ─────────────
+    // DuckDB's own native .test format (require/statement/query blocks),
+    // run via a small native Zig runner (src/sqllogictest_main.zig) that
+    // drives the `duckdb` CLI directly — instead of the manual
+    // `duckdb -c "..." | diff` comparisons this whole branch did by hand
+    // at first, and instead of the `uv run --with duckdb-sqllogictest-python
+    // ...` dependency this step used before that.
     //
-    // allow_extensions_metadata_mismatch is required: this project's
-    // append_metadata_main.zig emits a plain "linux_amd64" platform tag,
-    // while the pip-distributed duckdb package expects the stricter
-    // "linux_amd64_gcc4" variant — an orthogonal axis from code-signing,
-    // confirmed by testing (a mismatch here has nothing to do with
-    // -unsigned/signature checks, which still apply separately).
-    //
-    // v2 has no equivalent step yet: there is no v2-capable `duckdb`
-    // PyPI package to pass to `--with duckdb==X` (v2.0 is a staged alpha,
-    // not released), and the v1-era Python package that does exist looks
-    // for the old `<name>_init_c_api` symbol, not `_init_c_api_v2` —
-    // confirmed by testing directly, not assumed. See
-    // test/sql/zig_ext_v2.test (kept, unused) and
-    // docs/v2-migration-plan.md for the full finding.
+    // The Python-based approach had a real, permanent limitation this one
+    // doesn't: there is no v2-capable `duckdb` PyPI package to pass to
+    // `--with duckdb==X` (v2.0 is a staged alpha, not released), and the
+    // v1-era Python package that does exist looks for the old
+    // `<name>_init_c_api` symbol, not `_init_c_api_v2` — confirmed by
+    // testing directly. Driving the CLI directly doesn't care what Python
+    // package versions exist, so `sqllogictest-v2` below works today,
+    // closing a gap `docs/v2-migration-plan.md` had recorded as blocked.
+    const sqllogictest_tool = b.addExecutable(.{
+        .name = "sqllogictest_main",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sqllogictest_main.zig"),
+            .target = b.graph.host,
+        }),
+    });
     {
-        const sqllogictest_cmd = b.addSystemCommand(&.{
-            "uv",                    "run",
-            "--with",                "duckdb-sqllogictest @ https://github.com/duckdb/duckdb-sqllogictest-python/archive/be27216.zip",
-            "--with",                "duckdb==" ++ target_duckdb_version[1..],
-            "python3",               "-m",
-            "duckdb_sqllogictest",   "--test-dir",
-            "test",                  "--file-path",
-            "test/sql/zig_ext.test", "--external-extension",
-        });
-        sqllogictest_cmd.addFileArg(ext_output);
-        sqllogictest_cmd.step.dependOn(&install_ext.step);
+        const run = b.addRunArtifact(sqllogictest_tool);
+        run.addArg("duckdb");
+        run.addFileArg(ext_output);
+        run.addFileArg(b.path("test/sql/zig_ext.test"));
+        run.step.dependOn(&install_ext.step);
 
         const sqllogictest_step = b.step("sqllogictest", "Run SQL logic tests against the real v1 extension");
-        sqllogictest_step.dependOn(&sqllogictest_cmd.step);
+        sqllogictest_step.dependOn(&run.step);
+    }
+    {
+        const run = b.addRunArtifact(sqllogictest_tool);
+        run.addArg("duckdb");
+        run.addFileArg(ext_v2_output);
+        run.addFileArg(b.path("test/sql/zig_ext_v2.test"));
+        run.step.dependOn(&install_ext_v2.step);
+
+        const sqllogictest_v2_step = b.step("sqllogictest-v2", "Run SQL logic tests against the real v2 extension");
+        sqllogictest_v2_step.dependOn(&run.step);
     }
 }

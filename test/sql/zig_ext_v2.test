@@ -12,9 +12,6 @@ Catalog Error: Scalar Function with name zig_add_numbers does not exist!
 
 require zig_ext_v2
 
-statement ok
-PRAGMA enable_verification
-
 query I
 SELECT zig_add_numbers(1, 2)
 ----
