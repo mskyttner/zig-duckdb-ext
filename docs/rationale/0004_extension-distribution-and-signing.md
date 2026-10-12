@@ -214,13 +214,15 @@ build doesn't need. Instead:
   by rebuilding/republishing per DuckDB release) — not done here, kept as
   a single pinned version for simplicity, matching the "simple and
   straightforward" goal this ADR set out with.
-- **`mlugg/setup-zig@v1` (and presumably similar third-party setup
-  actions) can't resolve Zig 0.17.0** — confirmed it isn't mirrored to
-  GitHub Releases yet (only up to 0.15.1 there as of this writing), which
-  is what that action's version resolution uses. Worked around by
-  downloading the official `ziglang.org/download/<version>/...tar.xz`
-  tarball directly in the workflow — no third-party dependency on a
-  version index, same binary a local install would give you.
+- **`mlugg/setup-zig@v1` can't resolve Zig 0.17.0; `@v2` can.** Not a
+  Codeberg-vs-GitHub-mirror issue — [the action's own
+  README](https://codeberg.org/mlugg/setup-zig#readme) says GitHub
+  Actions can't use a non-GitHub-hosted action by direct URL at all
+  (confirmed live: `uses: https://codeberg.org/mlugg/setup-zig@v2` fails
+  with `"Unable to resolve action ..., repository not found"`), so the
+  plain `github.com/mlugg/setup-zig` mirror reference is correct either
+  way. The actual fix was simpler than first assumed: just the tag,
+  `@v2` not `@v1`.
 - **A freshly-enabled `github-pages` deployment environment has an empty
   branch/tag allowlist by default** (`custom_branch_policies: true`, no
   policies yet) — the first deploy fails with "not allowed to deploy...
