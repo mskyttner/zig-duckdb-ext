@@ -551,7 +551,7 @@ Two real findings along the way, both confirmed live, not assumed:
   DuckDB consistency-check knob, not part of the sqllogictest format
   itself.
 
-### 2. STRUCT support — argument direction done; VARIANT also added
+### 2. STRUCT support — both directions done; VARIANT also added
 
 `comptime_scalar_v2.Function` now accepts a one-level Zig `struct`
 parameter type, mapped to SQL STRUCT. Each increment from this section's
@@ -568,11 +568,30 @@ original scope landed as expected:
   like a plain argument. DuckDB's nested-NULL invariant (a NULL STRUCT row
   implies NULL field rows) means per-field validity checks are sufficient
   on their own — no separate STRUCT-level validity check needed.
-- **Writing**: confirmed `value_create_struct_with_context` exists, but
-  **not implemented** — STRUCT-typed *return* values stay out of scope, as
-  originally planned ("a reasonable first target: argument only").
-- A new, dedicated exec path (`executeStruct`) handles STRUCT arguments —
-  the existing numeric/VARCHAR path is untouched, kept simple by not
+- **Writing (done, 2026-10-12)**: a STRUCT return writes each field into
+  `result_vec`'s own child vectors (`vectorGetChild(result_vec,
+  field_index, ...)`), not via `value_create_struct_with_context` as
+  originally guessed — that constructs a boxed `Value`, the wrong shape
+  for a vectorized per-column write. Numeric/bool fields go through a
+  cached flat-buffer pointer per field; `[]const u8` fields box through
+  `valueCreateVarcharWithContext`/`vectorSetValue` on that field's own
+  child vector. No separate NULL handling was needed for an
+  argument-invalid row: `vectorSetNull(result_vec, row, ...)` already
+  cascades NULL to every nested child automatically, confirmed via the
+  v2 header's own doc comment on `vector_set_null`. A STRUCT return is
+  never itself optionally-NULL in this framework (no `?T` convention for
+  structs) — only an invalid argument produces a NULL row. Verified live:
+  a plain STRUCT constructor from a scalar, and a STRUCT-argument-to-
+  STRUCT-return function with a VARCHAR field (name unchanged, age
+  incremented), including a NULL struct argument correctly propagating
+  to a NULL struct result and field access on the result (`(fn(...)).age`).
+- `createLogicalType` now builds STRUCT itself (factored out of the
+  former param-registration-only inline branch), so `register()` uses
+  one code path for both parameter and return-type construction instead
+  of two near-duplicates.
+- A new, dedicated exec path (`executeStruct`) handles any function with
+  a STRUCT argument, a STRUCT return, or both — the existing numeric/
+  VARCHAR path (no struct anywhere) is untouched, kept simple by not
   trying to unify the two.
 
 Verified live against `v2.0.0-alpha46057`: `zig_v2_point_dist2_ct`
@@ -825,26 +844,44 @@ workload:
 - ~~**Aggregate `destroy` callback** — never wired up~~ — **done**, see
   item 4's growable-state-aggregate entry
   (`aggregateFunctionSetDestroyCallback`, exercised by `zig_v2_string_agg_ct`).
-- **Custom CAST function registration — not started, no wrapper exists**
-  (found 2026-10-12 while comparing against `ducklink-extension`'s
-  `call-cast`/`call-cast-col`, see item 6a). The vendored v2 header
-  (`duckdb_capi/duckdb_extension_v2.h:864-894`) has a full
-  `duckdb_v2_cast_function_*` family — `create_with_connection`/
-  `_with_extension`, `_set_source_type`, `_set_target_type`,
-  `_set_implicit_cast_cost`, `_set_exec_callback`, `_set_user_data`,
-  `_register`, `_destroy`, plus `_exec_get_input`/`_get_output`/
-  `_get_mode`/`_get_row_count`/`_get_user_data` for the exec callback
-  itself — the v2 equivalent of v1's `duckdb_create_cast_function`/
-  `duckdb_register_cast_function`. `duckdb_v2.zig` wraps none of it.
-  (It does wrap `expressionCastGetMode`, but that's unrelated — parser/
-  binder introspection of an *existing* `CAST` expression, not
-  registering a new implicit/explicit cast between two types; and it
-  uses `valueCastWithContext`, a value-level cast of a single already-
-  boxed `Value`, not a vectorized column-to-column cast function either.)
-  Since `_exec_get_input`/`_get_output` hand over `VectorHandle`s, a
-  `comptime_cast_v2`-style wrapper would reuse the same vectorized
-  flat-buffer read/write path `comptime_scalar_v2` already has, so this
-  is scoping/wiring work, not a new execution model. Not attempted.
+- ~~**Custom CAST function registration — not started, no wrapper
+  exists**~~ — **mostly done; TRY_CAST unverified, confirmed not
+  reachable on this build.** Found 2026-10-12 while comparing against
+  `ducklink-extension`'s `call-cast`/`call-cast-col` (item 6a). Added
+  `duckdb_v2.zig` wrappers for the `duckdb_v2_cast_function_*` family
+  (create/set-source/target-type/exec-callback/register, plus
+  `exec_get_input`/`_output`/`_row_count`/`_mode`) and
+  `errorInfoSetCode`/`errorInfoSetText` (new ground — nothing in this
+  codebase had populated an error slot by hand before; every other
+  framework only ever relays an error already produced by a *failed*
+  sub-call). New `comptime_cast_v2.Function(Source, Target, castFn)`
+  generates a cast from a plain `fn(Source) ?Target`, over the same leaf
+  types `comptime_scalar_v2`'s plain path supports (numeric/bool/
+  VARCHAR) — STRUCT/VARIANT/DECIMAL/ENUM not attempted.
+  **Live-verified for NORMAL mode (explicit `CAST`/`::`) only**:
+  registering a custom cast for a pair DuckDB already has a built-in
+  cast for (VARCHAR→BIGINT) is allowed and **shadows the built-in** —
+  confirmed by a cast that recognizes English number words
+  ("three" → 3) the built-in couldn't; digit fallback and multi-row
+  correctness also verified; a failed conversion correctly aborts the
+  query with the error text set via `errorInfoSetCode`/`SetText`.
+  **TRY_CAST could not be verified and is confirmed NOT to reach the
+  registered exec callback on `v2.0.0-alpha46057`**: debug
+  instrumentation that unconditionally errors out before ever calling
+  `castFn` never fired for `TRY_CAST`, on a literal constant or a table
+  column — the same instrumentation fires reliably for plain `CAST`. An
+  earlier, uninstrumented smoke test had appeared to show
+  `TRY_CAST('three' AS BIGINT)` working; that was a false positive from
+  DuckDB reusing the same output-vector memory across queries in one
+  session — an *earlier* `CAST` query in the same multi-statement run
+  had written that exact value into the buffer `TRY_CAST` then read back
+  unmodified, never having written anything itself. Fresh, isolated
+  invocations consistently show `TRY_CAST` through a custom cast
+  returning leftover/uninitialized memory — not NULL, not an error.
+  Not investigated further whether this is an alpha-only gap expected to
+  close before 2.0 ships, or a real restriction; the TRY-mode branch in
+  `comptime_cast_v2.zig`'s `execute` is implemented per the header's
+  documented contract but is unexercised and unverified on this build.
 - **No SQL-execution pipeline wrapped at all — not started** (found
   2026-10-12, systematically checking this project's v2 coverage against
   every section of https://duckdb.org/docs/preview/clients/c/api, not
@@ -894,10 +931,9 @@ workload:
 - **LIST/ARRAY/MAP/UNION as `comptime_scalar_v2` argument or return
   types — not started, not even scoped before now.** Found 2026-10-12
   while cataloguing remaining gaps. Item 2 above only ever targeted
-  STRUCT (argument direction) and VARIANT (both directions) — LIST,
-  ARRAY, MAP, and UNION were never on the list, and STRUCT as a *return*
-  type is also still explicitly out of scope (see item 2's "argument
-  only" note). The low-level plumbing already exists and has been
+  STRUCT (now both directions — argument and return, done) and VARIANT
+  (both directions) — LIST, ARRAY, MAP, and UNION were never on the list
+  at all. The low-level plumbing already exists and has been
   exercised by hand, just never generalized into the comptime framework's
   type-mapping (`duckdbV2TypeId`/`isStructType`/etc.): `contextCreateListType`/
   `contextCreateArrayType`/`contextCreateMapType`/`contextCreateUnionType`
