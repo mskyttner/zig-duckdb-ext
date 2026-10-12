@@ -1,8 +1,14 @@
 ///! Standalone tool that appends DuckDB extension metadata to a shared library.
 ///!
-///! Usage: append_metadata <input_lib> <ext_name> <duckdb_version> <ext_version> <abi_type> <output_file>
+///! Usage: append_metadata <input_lib> <ext_name> <duckdb_version> <ext_version> <abi_type> <platform> <output_file>
 ///!
-///! This is invoked as a build step by build.zig.
+///! This is invoked as a build step by build.zig. `platform` is passed in
+///! explicitly by the caller rather than self-detected from this tool's
+///! own compile target: this tool always runs on the build host (it has
+///! to — the build needs its output immediately), but the library it's
+///! stamping may be cross-compiled for a different target entirely, so
+///! the host's own platform would be wrong for anything but a native
+///! build.
 const std = @import("std");
 const Io = std.Io;
 const Dir = Io.Dir;
@@ -20,10 +26,8 @@ pub fn main(init: std.process.Init) !void {
     const duckdb_version = args.next() orelse return error.MissingArgument;
     const ext_version = args.next() orelse return error.MissingArgument;
     const abi_type = args.next() orelse return error.MissingArgument;
+    const platform = args.next() orelse return error.MissingArgument;
     const output_path = args.next() orelse return error.MissingArgument;
-
-    // Detect platform
-    const platform = detectPlatform();
 
     // Copy input to output
     const cwd = Dir.cwd();
@@ -89,24 +93,4 @@ fn writePaddedField(writer: *File.Writer, value: []const u8) !void {
     const len = @min(value.len, 32);
     @memcpy(field[0..len], value[0..len]);
     try writer.interface.writeAll(&field);
-}
-
-/// Detect the current platform for the DuckDB extension metadata.
-fn detectPlatform() []const u8 {
-    const builtin = @import("builtin");
-    const os = builtin.target.os.tag;
-    const arch = builtin.target.cpu.arch;
-
-    if (os == .macos) {
-        if (arch == .aarch64) return "osx_arm64";
-        if (arch == .x86_64) return "osx_amd64";
-    }
-    if (os == .linux) {
-        if (arch == .aarch64) return "linux_arm64";
-        if (arch == .x86_64) return "linux_amd64";
-    }
-    if (os == .windows) {
-        if (arch == .x86_64) return "windows_amd64";
-    }
-    return "unknown";
 }

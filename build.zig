@@ -6,6 +6,30 @@ const target_duckdb_version = "v1.2.0";
 const extension_version = "v0.1.0";
 const abi_type = "C_STRUCT";
 
+/// Map a resolved target to the platform string DuckDB's extension
+/// metadata expects (`linux_amd64`, `osx_arm64`, ...). Used both for the
+/// default/host build and for each target in the `cross` step, since the
+/// metadata-appender tool always runs on the build host (it has to produce
+/// its output immediately) and so can't self-detect this for a
+/// cross-compiled library the way it used to.
+fn duckdbPlatformString(resolved_target: std.Build.ResolvedTarget) []const u8 {
+    const os = resolved_target.result.os.tag;
+    const arch = resolved_target.result.cpu.arch;
+    if (os == .macos) {
+        if (arch == .aarch64) return "osx_arm64";
+        if (arch == .x86_64) return "osx_amd64";
+    }
+    if (os == .linux) {
+        if (arch == .aarch64) return "linux_arm64";
+        if (arch == .x86_64) return "linux_amd64";
+    }
+    if (os == .windows) {
+        if (arch == .x86_64) return "windows_amd64";
+        if (arch == .aarch64) return "windows_arm64";
+    }
+    return "unknown";
+}
+
 /// Append DuckDB extension metadata to an already-configured shared
 /// library, producing a `.duckdb_extension` file. Factors out the
 /// metadata-tool-executable + run-command + four-args + output-arg
@@ -21,6 +45,7 @@ fn addDuckdbExtensionMetadata(
     duckdb_version: []const u8,
     ext_version: []const u8,
     abi: []const u8,
+    platform: []const u8,
 ) std.Build.LazyPath {
     const metadata_tool = b.addExecutable(.{
         .name = b.fmt("append_metadata_{s}", .{name}),
@@ -36,7 +61,69 @@ fn addDuckdbExtensionMetadata(
     append_cmd.addArg(duckdb_version);
     append_cmd.addArg(ext_version);
     append_cmd.addArg(abi);
+    append_cmd.addArg(platform);
     return append_cmd.addOutputFileArg(b.fmt("{s}.duckdb_extension", .{name}));
+}
+
+/// Cross-compile targets for the `cross` step, beyond whatever
+/// `-Dtarget=`/the host default already covers via the regular `ext`
+/// step. Scoped per `docs/v2-migration-plan.md`'s "Version × platform
+/// build matrix" notes: get these building before trying anything
+/// bigger (a DuckDB-version matrix, ARM Windows, etc).
+const cross_targets = [_]std.Target.Query{
+    .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
+    .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu },
+    .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu },
+    .{ .cpu_arch = .x86_64, .os_tag = .macos },
+    .{ .cpu_arch = .aarch64, .os_tag = .macos },
+};
+
+/// Cross-compile the real v1 extension for one target, fully
+/// self-contained (its own header translation, its own library, its own
+/// metadata step) rather than threading a target parameter through the
+/// host-build code above — the host build's `duckdb_c`/`lib` are also used
+/// for the docs/v2-check/etc steps, which only make sense for the host
+/// target, so keeping this separate avoids forcing all of that to become
+/// target-parameterized too for a single cross-build use.
+fn addCrossBuild(
+    b: *std.Build,
+    translate_c_dep: *std.Build.Dependency,
+    optimize: std.builtin.OptimizeMode,
+    query: std.Target.Query,
+) std.Build.LazyPath {
+    const resolved_target = b.resolveTargetQuery(query);
+    const platform = duckdbPlatformString(resolved_target);
+
+    const duckdb_c: Translator = .init(translate_c_dep, .{
+        .name = b.fmt("duckdb_c_{s}", .{platform}),
+        .c_source_file = b.path("duckdb_capi/duckdb_extension.h"),
+        .target = resolved_target,
+        .optimize = optimize,
+        .extra_args = &.{"-DDUCKDB_API_EXCLUDE_FUNCTIONS=1"},
+    });
+    duckdb_c.addIncludePath(b.path("duckdb_capi"));
+
+    const lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = b.fmt("{s}_{s}", .{ extension_name, platform }),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = resolved_target,
+            .optimize = optimize,
+        }),
+    });
+    lib.root_module.addImport("duckdb_c", duckdb_c.mod);
+    lib.root_module.link_libc = true;
+
+    // Note: `name` here (unlike the other 3 args) is used only to name
+    // build artifacts — the metadata-appender tool's own executable and
+    // the output file — never written into the extension's metadata
+    // itself (confirmed: append_metadata_main.zig reads but never uses
+    // its `ext_name` argument), so varying it per platform here is purely
+    // to keep each cross target's build artifacts distinct and legible,
+    // not a change to what DuckDB sees when it loads the extension.
+    const unique_name = b.fmt("{s}_{s}", .{ extension_name, platform });
+    return addDuckdbExtensionMetadata(b, lib, unique_name, target_duckdb_version, extension_version, abi_type, platform);
 }
 
 pub fn build(b: *std.Build) void {
@@ -159,7 +246,7 @@ pub fn build(b: *std.Build) void {
     v2_poc_lib.root_module.addImport("comptime_appender_v2", comptime_appender_v2_mod);
     v2_poc_lib.root_module.link_libc = true;
 
-    const v2_poc_output = addDuckdbExtensionMetadata(b, v2_poc_lib, "zig_ext_v2_poc", "v2.0.0", "v0.0.0-poc", "C_STRUCT");
+    const v2_poc_output = addDuckdbExtensionMetadata(b, v2_poc_lib, "zig_ext_v2_poc", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
 
     // ── Real, parallel v2 extension (zig_ext_v2) — migrated-off-v1
     // functions only (see src/ext/init_v2.zig); v1's real `zig_ext` target
@@ -178,7 +265,7 @@ pub fn build(b: *std.Build) void {
     ext_v2_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
     ext_v2_lib.root_module.link_libc = true;
 
-    const ext_v2_output = addDuckdbExtensionMetadata(b, ext_v2_lib, "zig_ext_v2", "v2.0.0", "v0.1.0", "C_STRUCT");
+    const ext_v2_output = addDuckdbExtensionMetadata(b, ext_v2_lib, "zig_ext_v2", "v2.0.0", "v0.1.0", "C_STRUCT", duckdbPlatformString(target));
     const install_ext_v2 = b.addInstallFile(ext_v2_output, "lib/zig_ext_v2.duckdb_extension");
 
     const ext_v2_step = b.step("ext-v2", "Build the real, parallel v2 .duckdb_extension file");
@@ -225,7 +312,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(lib);
 
     // ── Post-build step: append metadata to produce .duckdb_extension ────
-    const ext_output = addDuckdbExtensionMetadata(b, lib, extension_name, target_duckdb_version, extension_version, abi_type);
+    const ext_output = addDuckdbExtensionMetadata(b, lib, extension_name, target_duckdb_version, extension_version, abi_type, duckdbPlatformString(target));
 
     // Install the .duckdb_extension file into zig-out/lib/
     const install_ext = b.addInstallFile(ext_output, "lib/" ++ extension_name ++ ".duckdb_extension");
@@ -234,6 +321,17 @@ pub fn build(b: *std.Build) void {
     // ── "ext" step: just build the .duckdb_extension ─────────────────────
     const ext_step = b.step("ext", "Build the .duckdb_extension file with metadata");
     ext_step.dependOn(&install_ext.step);
+
+    // ── "cross" step: build the real v1 extension for every target in
+    // `cross_targets`, each installed under zig-out/lib/<platform>/ ──────
+    const cross_step = b.step("cross", "Cross-compile the real v1 extension for every target in cross_targets");
+    for (cross_targets) |query| {
+        const resolved = b.resolveTargetQuery(query);
+        const platform = duckdbPlatformString(resolved);
+        const output = addCrossBuild(b, translate_c_dep, optimize, query);
+        const install_cross = b.addInstallFile(output, b.fmt("lib/{s}/" ++ extension_name ++ ".duckdb_extension", .{platform}));
+        cross_step.dependOn(&install_cross.step);
+    }
 
     // ── Interactive session with the real v1 extension pre-loaded ────────
     // See the v2 step above for why this uses -cmd + addFileArg2's
