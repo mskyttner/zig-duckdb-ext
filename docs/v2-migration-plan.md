@@ -845,6 +845,52 @@ workload:
   `comptime_cast_v2`-style wrapper would reuse the same vectorized
   flat-buffer read/write path `comptime_scalar_v2` already has, so this
   is scoping/wiring work, not a new execution model. Not attempted.
+- **No SQL-execution pipeline wrapped at all — not started** (found
+  2026-10-12, systematically checking this project's v2 coverage against
+  every section of https://duckdb.org/docs/preview/clients/c/api, not
+  just the gaps found incidentally so far). The v2 header has a genuine,
+  if more involved, replacement for v1's one-shot `duckdb_query`:
+  `duckdb_v2_parse_sql` → `duckdb_v2_statement_iterator_next` (per
+  statement) → `duckdb_v2_statement_bind` → `duckdb_v2_statement_execute`
+  → a `duckdb_v2_result_*` family (`fetch_chunk`/`drain`/`step`/`wait`/
+  `get_schema`/`get_result_type`) to consume what comes back. None of it
+  is wrapped in `duckdb_v2.zig`. **Would this close the ADR-0003
+  "can't self-register `COMMENT ON FUNCTION`" gap?** Investigated and
+  confirmed: no — see `docs/rationale/0003_duckdb-v2-c-api-differences.md`'s
+  2026-10-12 addendum. Every one of those functions is gated on a
+  `duckdb_v2_connection_handle`, and nothing reachable from an
+  extension's own init callback can produce one (`ExtensionInput` has no
+  `instance` field, and there is no `context_get_connection`/
+  `context_get_instance` accessor in the header). So this pipeline is
+  real, unwired, and — as far as this alpha's exposed surface goes —
+  unreachable from inside an extension anyway. Worth wrapping someday for
+  its own sake (any future capability needing to run ad-hoc SQL from a
+  context that genuinely does have a connection, if one ever surfaces),
+  but it would not unblock named-parameter comment self-registration.
+- **Arrow Interface — not started, no wrapper, no current use case**
+  (found in the same systematic pass). The v2 header has a full Arrow
+  C Data Interface surface: `arrow_exporter_*`/`arrow_importer_*`
+  (create/destroy/get_schema/append/next_array/next_chunk) and
+  `arrow_result_*` (the Arrow-shaped counterpart to the plain
+  `result_*` family above, plus `statement_execute_arrow`/
+  `prepared_statement_execute_arrow`). Zero wrappers, zero usage —
+  unlike the gaps above, nothing in this codebase currently needs Arrow
+  interop, so this is purely speculative. Notable: `ducklink-extension`
+  (see item 6a) depends on the `arrow` crate specifically for this kind
+  of row→Arrow FFI encoding, so if this project ever needs zero-copy
+  interop with Arrow-consuming tools, the v2 surface for it already
+  exists, unexercised.
+- **Replacement Scans and Table Description — present in both v1 and
+  v2, unused in either, not a v2-specific gap.** v1's `duckdb.zig` only
+  type-aliases `ReplacementScanInfo`/`TableDescription` (`c.duckdb_replacement_scan_info`/
+  `c.duckdb_table_description`) with no functions ever wrapped around
+  them; v2's header has the equivalent surface
+  (`replacement_scan_create_with_extension`/`set_callback`/
+  `add_argument`/`register`/`set_alias`/`set_subquery`, and
+  `table_description_get_column`/`_count`/`_qname`/`is_readonly`) with
+  the same zero wrapping. Lower priority than the items above since
+  there's no parity regression to close — this project has simply never
+  used either capability on either API version.
 - ~~**Table-function projection pushdown — not started, no wrapper
   exists**~~ — **done.** Found while comparing against
   `ducklink-extension`, same pass as the cast-function gap above. The v1

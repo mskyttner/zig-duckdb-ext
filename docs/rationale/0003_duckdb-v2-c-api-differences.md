@@ -137,6 +137,32 @@ Named parameters are free in v2; comments are not. See
 `docs/v2-migration-plan.md`'s "Function parameter naming & catalog
 discoverability" section for the full investigation.
 
+**Addendum (2026-10-12), confirmed by grepping the full header rather than
+re-asserting the claim above**: v2 is not entirely without a SQL-execution
+API — `duckdb_v2_parse_sql`/`duckdb_v2_statement_bind`/
+`duckdb_v2_statement_execute` (plus `statement_iterator_*`,
+`sql_statement_*`, and a `result_*` family to consume what comes back)
+form a genuine, if more involved, replacement for v1's one-shot
+`duckdb_query`. But every one of those takes a `duckdb_v2_connection_handle`,
+and nothing reachable from an extension's own init callback can produce
+one: `ExtensionInput` (the struct `zig_ext_v2_init_c_api_v2` receives) has
+exactly four fields — `get_api`, `extension`, `context`, `err` — no
+`instance`, and there is no `context_get_connection`/`context_get_instance`
+accessor anywhere in the header to derive one from the `context` it does
+hand over. The `connection_create`/`instance_create` functions that DO
+exist appear to belong to a separate, embedding-application half of the
+v2 API (the moral equivalent of v1's `duckdb_open`/`duckdb_connect`), not
+anything an extension being *loaded* can call on itself. Worth flagging
+precisely: the header's own doc comment on `ExtensionInput.context` calls
+it "a borrowed context to read and run queries through" — which reads as
+if this should be possible — but no function taking a `ContextHandle`
+(as opposed to a `ConnectionHandle`) to run a query exists anywhere in
+this build's vtable. Either the comment describes an intended-but-not-yet-
+wired capability, or the connecting accessor simply hasn't landed yet in
+this alpha. Conclusion unchanged — a v2 extension still can't self-
+register a comment at init time in this build — but now backed by an
+exhaustive header search rather than an absence-of-evidence inference.
+
 ### 7. Aggregate functions are batched at every stage, not one-row-at-a-time
 
 v1 aggregates process one row into one state per `update` call. v2's
