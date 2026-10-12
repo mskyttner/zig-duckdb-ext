@@ -238,13 +238,15 @@ DuckDB publishes an actual v2.0 release artifact.
 ### sqllogictest adoption
 
 Covered in detail in the prior findings (`require <ext>` / `statement ok`
-/ `query I` + `----` + expected output, run via `uv run --with
-sqllogictest --with duckdb==X python3 -m duckdb_sqllogictest`). This is
-the concrete mechanism to close the "No automated v1-vs-v2 parity test"
-gap below — replace the planned `test/sql/v2_parity.sql` ad-hoc script
-with real `.test` files, one set run against `zig_ext.duckdb_extension`
-and the same set run against `zig_ext_v2.duckdb_extension`, asserting
-identical output DuckDB-natively rather than via a hand-rolled diff.
+/ `query I` + `----` + expected output). This is the concrete mechanism to
+close the "No automated v1-vs-v2 parity test" gap below — replace the
+planned `test/sql/v2_parity.sql` ad-hoc script with real `.test` files,
+one set run against `zig_ext.duckdb_extension` and the same set run
+against `zig_ext_v2.duckdb_extension`, asserting identical output
+DuckDB-natively rather than via a hand-rolled diff. Originally run via
+`uv run --with duckdb-sqllogictest-python ... python3 -m
+duckdb_sqllogictest`; now run via a native Zig runner instead — see
+"Native sqllogictest runner" below for why and what changed.
 
 ### Metadata appender checkup — done, no drift found
 
@@ -328,12 +330,17 @@ comments.
   `list_entry` mechanism (shared with STRUCT/MAP/UNION), native named
   parameters/defaults (and the comment-ability tradeoff that comes with
   dropping macros), aggregate batching, and static linking.
-- **Automated sqllogictest adoption for v1 — done; v2 confirmed blocked,
-  not a bug.** `zig build sqllogictest` runs DuckDB's native `.test`
-  format (`test/sql/zig_ext.test`) via `uv run --with
-  duckdb-sqllogictest@<github-zip> --with duckdb==1.2.0 python3 -m
-  duckdb_sqllogictest`, the same mechanism `quack-zig` uses. Two real
-  findings along the way, both confirmed by testing rather than assumed:
+- **Automated sqllogictest adoption for v1 — done; v2 also now done,
+  the python-based blocker didn't survive the switch to a native
+  runner.** `zig build sqllogictest` runs DuckDB's native `.test` format
+  (`test/sql/zig_ext.test`) through `src/sqllogictest_main.zig` (see
+  "Native sqllogictest runner" below), originally via `uv run --with
+  duckdb-sqllogictest-python ... python3 -m duckdb_sqllogictest`, the
+  same mechanism `quack-zig` uses. Two real findings from the
+  Python-based version, both confirmed by testing rather than assumed —
+  kept here since the platform-tag one is still relevant (the native
+  runner shells out to the CLI directly, sidestepping it, but it's a real
+  DuckDB behavior worth remembering):
   - The pip-distributed `duckdb` package enforces a stricter platform tag
     (`linux_amd64_gcc4`) than this project's `append_metadata_main.zig`
     emits (plain `linux_amd64`) — an axis entirely orthogonal to
@@ -344,16 +351,63 @@ comments.
     string (which is accurate; the gcc4 tag is about glibc-compat
     maximalism this project's Zig/clang-built `.so` doesn't need to
     claim).
-  - **v2 cannot be sqllogictest'd via this mechanism at all right now**:
-    there is no v2-capable `duckdb` PyPI package (v2.0 is a staged alpha,
+  - ~~**v2 cannot be sqllogictest'd via this mechanism at all right
+    now**~~ — **this was a limitation of the Python-based mechanism
+    specifically, not of sqllogictest-ing v2 in general.** There was (and
+    still is) no v2-capable `duckdb` PyPI package (v2.0 is a staged alpha,
     not released), and the v1-era package that does exist looks for the
     old `<name>_init_c_api` symbol, not `_init_c_api_v2` — confirmed
     directly: `duckdb.duckdb.IOException: ... did not contain function
-    "zig_ext_v2_init_c_api"`. `test/sql/zig_ext_v2.test` is written and
-    kept (same cases as the v1 file) for the moment a v2-capable package
-    exists, but has no working `zig build` step yet. Until then, v2
-    verification stays the live-runtime-CLI comparisons this branch
-    already relies on.
+    "zig_ext_v2_init_c_api"`. The native runner doesn't go through any
+    Python package at all — it drives the `duckdb` CLI directly — so this
+    limitation doesn't apply to it. `zig build sqllogictest-v2` now runs
+    `test/sql/zig_ext_v2.test` against the real v2.0.0-alpha46057 runtime,
+    verified passing.
+
+### Native sqllogictest runner
+
+`src/sqllogictest_main.zig` replaced the `uv run --with
+duckdb-sqllogictest-python ...` dependency with a small Zig program that
+drives the `duckdb` CLI directly — running these tests now needs nothing
+beyond the CLI this project already requires for everything else. It
+supports exactly the directive subset both `.test` files use (`require`,
+`statement ok`/`error` + `----` + expected error substring, `query
+<types>` + `----` + one-value-per-line expected result) — not the full
+sqllogictest grammar (no `skipif`/`onlyif`/hash-threshold/regex/labels/
+sort modes; see https://duckdb.org/docs/current/dev/sqllogictest/result_verification
+for the fuller spec), documented in the file's own doc comment as known
+gaps to extend later if a test ever needs them, rather than silently
+unsupported.
+
+Mechanism: compiles the whole `.test` file into one SQL script (each
+block's SQL followed by a `SELECT '@@SQLLOGICTEST_MARK_<i>@@';`
+sentinel), runs it as a single non-interactive `duckdb` invocation with
+stdout and stderr merged via a `sh -c '... 2>&1'` wrapper — the simplest
+way to get OS-level stream merging without hand-rolling non-blocking,
+interleaved pipe reads across two separate fds — then splits the combined
+output on the marker lines in one pass to recover each block's actual
+output in order. Merging the streams is what keeps an error message and
+the markers around it in true temporal order, since DuckDB executes
+statements strictly one at a time in this mode.
+
+Two real findings along the way, both confirmed live, not assumed:
+
+- **The duckdb CLI exits non-zero whenever ANY statement in a piped-in
+  script errored**, even an expected `statement error` the rest of the
+  script recovers from fine — so exit code can't be used as the
+  pass/fail signal the way a more naive runner might assume. Finding all
+  the expected marker lines in the combined output is the real evidence
+  the script ran to completion; only a genuine crash/hang comes up short
+  there.
+- **`PRAGMA enable_verification`** (present in both `.test` files, left
+  over from early in this branch) **is now deprecated and prints a
+  warning** instead of doing nothing silently, which broke the
+  `statement ok` block it lived in once the runner actually checked that
+  block's output was empty. Removed from both files — the official
+  sqllogictest result-verification docs linked above don't mention this
+  pragma at all, confirming it's an unrelated, now-defunct internal
+  DuckDB consistency-check knob, not part of the sqllogictest format
+  itself.
 
 ### 2. STRUCT support — argument direction done; VARIANT also added
 
