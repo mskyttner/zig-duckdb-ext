@@ -10,17 +10,48 @@
 ///! expected error text, matched as a SUBSTRING of the actual error per
 ///! DuckDB's own doc on this — https://duckdb.org/docs/current/dev/sqllogictest/result_verification —
 ///! not a full match), and `query <types>` (+ `----` + expected result,
-///! one value per line). `NULL` is written as the literal text `NULL`
-///! (DuckDB's own convention, reproduced here via the CLI's `-nullvalue
-///! NULL` flag).
+///! one VALUE per line, row-major across all columns — the true
+///! sqllogictest convention, not "one row per line": a 3-row, 2-column
+///! result is 6 expected lines). `NULL` is written as the literal text
+///! `NULL` (DuckDB's own convention).
+///!
+///! Queries run through the CLI's `-jsonlines` output mode (one JSON
+///! object per output row, e.g. `{"a":1,"b":"x"}`), not `-csv` — this
+///! sidesteps three real problems a CSV-based runner otherwise has to work
+///! around by hand (each confirmed live while this runner used `-csv`,
+///! see docs/v2-migration-plan.md's "Ported test:e2e/smoke.sql" entry for
+///! the history): DuckDB's CSV writer quotes some non-ASCII content with
+///! no comma or newline present (so a CSV-based expected value sometimes
+///! needs literal quote characters nobody asked for, and sometimes
+///! doesn't, for reasons not obvious from the SQL alone); an empty-string
+///! result is indistinguishable from "no row" once blank lines are
+///! trimmed; and a value containing an embedded newline (e.g. an ASCII-art
+///! chart) can't be represented as a single expected line at all. JSON
+///! string escaping has none of these problems: quoting is structural, not
+///! content-dependent; `""` is unambiguous; and a newline inside a string
+///! is the two characters `\`+`n`, never a real line break, so a whole
+///! multi-line chart's `md5(...)`-hashed value from the CSV era can go
+///! back to being the literal expected text (still just the two
+///! characters `\n` where the real output has a line break — see
+///! `extractJsonRowValues`'s doc comment on what is and isn't unescaped).
+///!
+///! `(empty)` IS now supported, and required, not optional — a `.test`
+///! file's expected-output block still ends at the first blank line (see
+///! `parseBlocks`), independent of the `-jsonlines` switch, so a literal
+///! blank line still can't represent an expected empty string; write
+///! `(empty)` instead, DuckDB's own convention, reproduced verbatim by
+///! `extractJsonRowValues`.
 ///!
 ///! NOT supported (no current `.test` file needs them — add if one ever
-///! does): tab-separated multi-column result ROWS (only one-value-per-line
-///! is handled); the `(empty)` convention for an empty-string result;
-///! `<REGEX>:`/`<!REGEX>:`/`<FILE>:` result forms; hash-based results
-///! (`N values hashing to ...`); shared query labels; `nosort`/`rowsort`/
-///! `valuesort`; `skipif`/`onlyif`/`halt`/`hash-threshold`. The format's
-///! full grammar traces back to SQLite's own sqllogictest
+///! does): nested JSON values (a result column that's a LIST/STRUCT/MAP
+///! would need actual JSON parsing, not `extractJsonRowValues`'s flat
+///! scalar-only scan); `<REGEX>:`/`<!REGEX>:`/`<FILE>:` result forms;
+///! hash-based results (`N values
+///! hashing to ...` — also unnecessary now, see the `md5(...)` note
+///! above, which gets the same effect as an ordinary SQL expression
+///! instead of dedicated format support); shared query labels; `nosort`/
+///! `rowsort`/`valuesort`; `skipif`/`onlyif`/`halt`/`hash-threshold`. The
+///! format's full grammar traces back to SQLite's own sqllogictest
 ///! (https://sqlite.org/sqllogictest/doc/trunk/about.wiki); DuckDB
 ///! extends it with `require`/named extension loading. See
 ///! https://github.com/Mytherin/vscode-sqllogictest for a fuller
@@ -41,7 +72,13 @@
 ///! stdout AND stderr are both already fully written before it, with
 ///! nothing from any other block possibly intermixed. The combined output
 ///! is then split on the marker lines in one pass, in order, assigning
-///! each chunk back to the block that produced it.
+///! each chunk back to the block that produced it. Confirmed live: an
+///! error message is plain text regardless of `-jsonlines`/`-csv` (only
+///! successful query RESULTS are mode-dependent), so `statement error`'s
+///! substring match needs no special handling; a marker's own `SELECT
+///! '@@...@@'` still contains that exact literal substring once wrapped
+///! in a JSON object (`{"'@@...@@'":"@@...@@"}`), so marker detection
+///! still works unchanged as a substring search, not an exact-line match.
 const std = @import("std");
 
 const Block = union(enum) {
@@ -97,7 +134,7 @@ pub fn main(init: std.process.Init) !void {
 
     const shell_cmd = try std.fmt.allocPrint(
         arena,
-        "'{s}' -unsigned -csv -noheader -nullvalue NULL -init /dev/null < '{s}' 2>&1",
+        "'{s}' -unsigned -jsonlines -init /dev/null < '{s}' 2>&1",
         .{ duckdb_cli, script_path },
     );
 
@@ -145,11 +182,18 @@ pub fn main(init: std.process.Init) !void {
                 }
             },
             .query => |q| {
+                // One JSONL line per output ROW; each row's values are
+                // flattened in column order onto the same got_lines list
+                // `matchesExpected` compares against — the true
+                // sqllogictest convention (one value per expected line,
+                // not one row per line; see this file's module doc
+                // comment).
                 var got_lines: std.ArrayList([]const u8) = .empty;
                 var it = std.mem.splitScalar(u8, trimmed, '\n');
                 while (it.next()) |line| {
-                    const t = std.mem.trim(u8, line, " \t\r");
-                    if (t.len != 0) try got_lines.append(arena, t);
+                    const row = std.mem.trim(u8, line, " \t\r");
+                    if (row.len == 0) continue;
+                    try extractJsonRowValues(arena, row, &got_lines);
                 }
                 if (!matchesExpected(got_lines.items, q.expected)) {
                     failures += 1;
@@ -171,6 +215,82 @@ pub fn main(init: std.process.Init) !void {
 fn usageError() !void {
     std.debug.print("usage: sqllogictest_main <duckdb_cli_path> <extension_path> <test_file_path>\n", .{});
     return error.InvalidArgs;
+}
+
+/// Parses one `-jsonlines` output row — a flat JSON object with scalar
+/// (string/number/bool/null) field values, e.g. `{"a":1,"b":"x\ny"}` — and
+/// appends each field's VALUE (not its key; a key is just the column's
+/// derived SQL expression text, not meaningful here) to `out`, in the
+/// row's own column order.
+///
+/// A string value's content between the quotes is kept EXACTLY as JSON
+/// wrote it — backslash escape sequences (`\n`, `\"`, `\\`, ...) are left
+/// alone, not decoded into real bytes. This is deliberate, not a
+/// shortcut: decoding `\n` into a real line break would reintroduce the
+/// exact "a value can't fit on one expected line" problem switching to
+/// `-jsonlines` was meant to solve. A `.test` file's expected text for
+/// such a value is therefore also the literal two characters `\`+`n`
+/// (visibly, not an actual line break) wherever the real output has an
+/// embedded newline — see a `.test` file using this for a worked example.
+/// A bare `null` token becomes the literal text `NULL`, DuckDB's own
+/// sqllogictest convention; every other token (a number, `true`, `false`)
+/// is kept as its raw JSON text, which already matches what a `.test`
+/// file's expected line looks like.
+///
+/// Assumes every value is a scalar — a LIST/STRUCT/MAP column would
+/// contain `[`/`{` characters this scan doesn't recognize as nesting and
+/// would mis-parse. No current `.test` file returns a nested type; add
+/// real recursion here first if one ever does.
+fn extractJsonRowValues(arena: std.mem.Allocator, row: []const u8, out: *std.ArrayList([]const u8)) !void {
+    var i: usize = 0;
+    if (i >= row.len or row[i] != '{') return error.MalformedJsonLine;
+    i += 1;
+    while (true) {
+        while (i < row.len and row[i] != '"') : (i += 1) {}
+        if (i >= row.len) return error.MalformedJsonLine;
+        i += 1; // opening quote of the key
+        while (i < row.len and row[i] != '"') : (i += 1) {
+            if (row[i] == '\\') i += 1; // skip the escaped character too
+        }
+        if (i >= row.len) return error.MalformedJsonLine;
+        i += 1; // closing quote of the key
+
+        while (i < row.len and row[i] != ':') : (i += 1) {}
+        if (i >= row.len) return error.MalformedJsonLine;
+        i += 1; // the ':'
+        while (i < row.len and row[i] == ' ') : (i += 1) {}
+
+        if (i < row.len and row[i] == '"') {
+            const value_start = i + 1;
+            i += 1;
+            while (i < row.len and row[i] != '"') : (i += 1) {
+                if (row[i] == '\\') i += 1;
+            }
+            if (i >= row.len) return error.MalformedJsonLine;
+            // A blank line in a `.test` file's expected-output block would
+            // be read as the END of that block (see `parseBlocks`), not as
+            // an expected empty string — so an empty string still can't be
+            // written as a literal blank line, independent of whatever the
+            // output transport does. DuckDB's own sqllogictest convention
+            // for this is the literal token `(empty)`; adopted verbatim
+            // here rather than inventing a different one.
+            const value = row[value_start..i];
+            try out.append(arena, if (value.len == 0) "(empty)" else value);
+            i += 1; // closing quote
+        } else {
+            const value_start = i;
+            while (i < row.len and row[i] != ',' and row[i] != '}') : (i += 1) {}
+            const token = row[value_start..i];
+            try out.append(arena, if (std.mem.eql(u8, token, "null")) "NULL" else token);
+        }
+
+        while (i < row.len and row[i] == ' ') : (i += 1) {}
+        if (i < row.len and row[i] == ',') {
+            i += 1;
+            continue;
+        }
+        break; // '}' or end of input
+    }
 }
 
 fn matchesExpected(got: []const []const u8, expected: []const []const u8) bool {
@@ -196,7 +316,13 @@ fn splitByMarkers(arena: std.mem.Allocator, output: []const u8, blocks_len: usiz
         pos += line.len + 1; // +1 for the '\n' this split consumed
         const trimmed = std.mem.trim(u8, line, " \t\r");
         const marker = try std.fmt.allocPrint(arena, "@@SQLLOGICTEST_MARK_{d}@@", .{expected_marker});
-        if (std.mem.eql(u8, trimmed, marker)) {
+        // A substring search, not an exact-line match: under `-jsonlines`
+        // the marker query's own output is `{"'@@...@@'":"@@...@@"}`, not
+        // the bare marker text (confirmed live — see this file's module
+        // doc comment). Each marker's text is unique (it embeds its own
+        // index), so a substring match can't collide with a different
+        // marker.
+        if (std.mem.indexOf(u8, trimmed, marker) != null) {
             try chunks.append(arena, output[chunk_start..line_start]);
             chunk_start = pos;
             expected_marker += 1;

@@ -31,24 +31,24 @@ XXXXX.....
 # That task only checked exit code (did the query error?), never the actual
 # output — these blocks are a strictly stronger replacement, verifying exact
 # values via the native sqllogictest runner. Multi-column table-function
-# results are split into one single-column query per column: this runner
-# supports one value per line, not tab-separated rows (see
-# src/sqllogictest_main.zig's own doc comment on what it doesn't support).
-# An expected empty-string result is wrapped in brackets (`'[' || x || ']'`)
-# for the same reason — a literal empty line can't be told apart from "no
-# row" by this runner's line-based matching.
+# results are split into one single-column query per column for
+# readability (the runner itself supports true multi-column rows, flattened
+# value-by-value in column order). An expected empty string is written as
+# the literal token `(empty)`, DuckDB's own sqllogictest convention — a
+# blank line would be read as the end of the expected-output block instead
+# (see src/sqllogictest_main.zig's doc comment).
 
 # ── zig_hello ────────────────────────────────────────────────────────────
 
 query T
 SELECT zig_hello('Zig')
 ----
-"Hello, Zig!"
+Hello, Zig!
 
 query T
 SELECT zig_hello('')
 ----
-"Hello, !"
+Hello, !
 
 query T
 SELECT zig_hello(NULL)
@@ -100,25 +100,25 @@ two
 three
 
 query T
-SELECT '[' || token || ']' FROM zig_tokenize('a,b,', ',')
+SELECT token FROM zig_tokenize('a,b,', ',')
 ----
-[a]
-[b]
-[]
+a
+b
+(empty)
 
 query T
-SELECT '[' || token || ']' FROM zig_tokenize(',a,b', ',')
+SELECT token FROM zig_tokenize(',a,b', ',')
 ----
-[]
-[a]
-[b]
+(empty)
+a
+b
 
 query T
-SELECT '[' || token || ']' FROM zig_tokenize('a,,b', ',')
+SELECT token FROM zig_tokenize('a,,b', ',')
 ----
-[a]
-[]
-[b]
+a
+(empty)
+b
 
 query T
 SELECT token FROM zig_tokenize('hello world', ',')
@@ -126,9 +126,9 @@ SELECT token FROM zig_tokenize('hello world', ',')
 hello world
 
 query T
-SELECT '[' || token || ']' FROM zig_tokenize('', ',')
+SELECT token FROM zig_tokenize('', ',')
 ----
-[]
+(empty)
 
 query T
 SELECT token FROM zig_tokenize('hello', '')
@@ -212,11 +212,11 @@ two
 three
 
 query T
-SELECT '[' || token || ']' FROM ct_tokenize('a,b,', ',')
+SELECT token FROM ct_tokenize('a,b,', ',')
 ----
-[a]
-[b]
-[]
+a
+b
+(empty)
 
 query T
 SELECT token FROM ct_tokenize('hello world', ',')
@@ -233,7 +233,7 @@ true
 query T
 SELECT tp_bar_impl(0.7, '█', '░', 15)
 ----
-"███████████░░░░"
+███████████░░░░
 
 query T
 SELECT tp_bar(0.0, "on" := 'X', "off" := '.', width := 5)
@@ -248,7 +248,7 @@ XXXXX
 query T
 SELECT tp_bar(0.5)
 ----
-"████████░░░░░░░"
+████████░░░░░░░
 
 query T
 SELECT tp_bar(NULL, "on" := 'X', "off" := '.', width := 5)
@@ -292,34 +292,41 @@ SELECT tp_line(NULL)
 NULL
 
 query T
-SELECT '[' || tp_line([]::DOUBLE[]) || ']'
+SELECT tp_line([]::DOUBLE[])
 ----
-[]
+(empty)
 
 query T
-SELECT md5(tp_line([1.0, 2.0, 4.0, 3.0, 5.0, 2.0, 3.0]))
+SELECT tp_line([1.0, 2.0, 4.0, 3.0, 5.0, 2.0, 3.0])
 ----
-5fc727f7b189609027f3a30dfd0450f6
+ 5.00 ┤   ╭╮  \n 4.50 ┤   ││  \n 4.00 ┤ ╭╮││  \n 3.50 ┤ ││││  \n 3.00 ┤ │╰╯│╭ \n 2.50 ┤ │  ││ \n 2.00 ┤╭╯  ╰╯ \n 1.50 ┤│      \n 1.00 ┼╯      \n 0.50 ┤       \n 0.00 ┤       \n\n
 
 query T
-SELECT md5(tp_line([0.0, 1.0, 0.0, -1.0, 0.0]))
+SELECT tp_line([0.0, 1.0, 0.0, -1.0, 0.0])
 ----
-0242dc02d4db81949882c35e0d75a20c
+  1.00 ┤╭╮   \n  0.80 ┤││   \n  0.60 ┤││   \n  0.40 ┤││   \n  0.20 ┤││   \n  0.00 ┼╯╰╮╭ \n -0.20 ┤  ││ \n -0.40 ┤  ││ \n -0.60 ┤  ││ \n -0.80 ┤  ││ \n -1.00 ┤  ╰╯ \n\n
 
 query T
-SELECT md5(tp_line([1.0, 3.0, 2.0, 4.0, 1.0], height := 5.0))
+SELECT tp_line([1.0, 3.0, 2.0, 4.0, 1.0], height := 5.0)
 ----
-f74d3ecdb5ad1ef048c65a77d054fa58
+ 4.00 ┤  ╭╮ \n 3.20 ┤╭╮││ \n 2.40 ┤│╰╯│ \n 1.60 ┤│  │ \n 0.80 ┼╯  ╰ \n 0.00 ┤     \n\n
 
 query T
-SELECT md5(tp_line((SELECT list(v::DOUBLE ORDER BY i) FROM (VALUES (1, 1.0), (2, 3.0), (3, 2.0), (4, 4.0), (5, 1.0)) t(i, v))))
+SELECT tp_line((SELECT list(v::DOUBLE ORDER BY i) FROM (VALUES (1, 1.0), (2, 3.0), (3, 2.0), (4, 4.0), (5, 1.0)) t(i, v)))
 ----
-8104892cb9da835f391694aded5a8522
+ 4.00 ┤  ╭╮ \n 3.60 ┤  ││ \n 3.20 ┤╭╮││ \n 2.80 ┤││││ \n 2.40 ┤││││ \n 2.00 ┤│╰╯│ \n 1.60 ┤│  │ \n 1.20 ┼╯  ╰ \n 0.80 ┤     \n 0.40 ┤     \n 0.00 ┤     \n\n
 
 query T
 SELECT tp_snakemap(NULL, ['a'], ['g'], width := 40, height := 20)
 ----
 NULL
+
+# These three still carry ANSI color escapes (tp_snakemap's default
+# no_color := false) — as literal JSON escapes (`\u001b[38;5;7m`, ...) that
+# would be a wall of noise nobody could usefully read in a diff, not a
+# readability win. md5(...) stays the right call for exactly these three;
+# the no_color case right after this needs no such treatment, since
+# without ANSI codes its literal text is perfectly readable.
 
 query T
 SELECT md5(tp_snakemap([10.0, 20.0, 30.0, 5.0, 15.0, 25.0], ['a', 'b', 'c', 'x', 'y', 'z'], ['G1', 'G1', 'G1', 'G2', 'G2', 'G2'], width := 40, height := 20))
@@ -332,9 +339,9 @@ SELECT md5(tp_snakemap([1.0, 2.0, 3.0, 4.0], ['p', 'q', 'r', 's'], ['Alpha', 'Al
 fd86c25ba66e6f555690f5ee0722767e
 
 query T
-SELECT md5(tp_snakemap([10.0, 20.0, 30.0, 5.0, 15.0, 25.0], ['a', 'b', 'c', 'x', 'y', 'z'], ['G1', 'G1', 'G1', 'G2', 'G2', 'G2'], width := 40, height := 20, no_color := true))
+SELECT tp_snakemap([10.0, 20.0, 30.0, 5.0, 15.0, 25.0], ['a', 'b', 'c', 'x', 'y', 'z'], ['G1', 'G1', 'G1', 'G2', 'G2', 'G2'], width := 40, height := 20, no_color := true)
 ----
-7b19dc23dc3e8c300b4c24c5e3d9ab9b
+╔══════════════════════════════════════╗\n║┏━G1━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓║\n║┃░░░░░░░░░░░░░░░░░a░░░░░░░░░░░░░░░░░░┃║\n║┃┌──────────────────────╴░░░░░░░░░░░░┃║\n║┃│b▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒╶──────────┐┃║\n║┃└──────────────────────────────────┘┃║\n║┃┌c─────────────────────────────────┐┃║\n║┃│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│┃║\n║┃│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│┃║\n║┃└──────────────────────────────────┘┃║\n║┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛║\n║░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒║\n║┏━G2━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓║\n║┃░░░░░░░░░x░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒┃║\n║┃▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒y▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒┃║\n║┃▒▒▒▒▒▒▒▒╶──────────────────────────┐┃║\n║┃┌z─────╴▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│┃║\n║┃└──────────────────────────────────┘┃║\n║┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛║\n╚══════════════════════════════════════╝\n
 
 query T
 SELECT md5(tp_snakemap([5.0, 10.0, 15.0], ['small', 'medium', 'large'], ['only'], width := 40, height := 12))
