@@ -825,6 +825,46 @@ workload:
 - ~~**Aggregate `destroy` callback** — never wired up~~ — **done**, see
   item 4's growable-state-aggregate entry
   (`aggregateFunctionSetDestroyCallback`, exercised by `zig_v2_string_agg_ct`).
+- **Custom CAST function registration — not started, no wrapper exists**
+  (found 2026-10-12 while comparing against `ducklink-extension`'s
+  `call-cast`/`call-cast-col`, see item 6a). The vendored v2 header
+  (`duckdb_capi/duckdb_extension_v2.h:864-894`) has a full
+  `duckdb_v2_cast_function_*` family — `create_with_connection`/
+  `_with_extension`, `_set_source_type`, `_set_target_type`,
+  `_set_implicit_cast_cost`, `_set_exec_callback`, `_set_user_data`,
+  `_register`, `_destroy`, plus `_exec_get_input`/`_get_output`/
+  `_get_mode`/`_get_row_count`/`_get_user_data` for the exec callback
+  itself — the v2 equivalent of v1's `duckdb_create_cast_function`/
+  `duckdb_register_cast_function`. `duckdb_v2.zig` wraps none of it.
+  (It does wrap `expressionCastGetMode`, but that's unrelated — parser/
+  binder introspection of an *existing* `CAST` expression, not
+  registering a new implicit/explicit cast between two types; and it
+  uses `valueCastWithContext`, a value-level cast of a single already-
+  boxed `Value`, not a vectorized column-to-column cast function either.)
+  Since `_exec_get_input`/`_get_output` hand over `VectorHandle`s, a
+  `comptime_cast_v2`-style wrapper would reuse the same vectorized
+  flat-buffer read/write path `comptime_scalar_v2` already has, so this
+  is scoping/wiring work, not a new execution model. Not attempted.
+- **Table-function projection pushdown — not started, no wrapper exists**
+  (found 2026-10-12, same pass as the cast-function gap above). The v1
+  extension already uses this (`duckdb.zig`'s
+  `tableFunctionSupportsProjectionPushdown`, wrapping
+  `duckdb_table_function_supports_projection_pushdown`). The v2 header
+  has the equivalent surface —
+  `duckdb_v2_table_function_set_projection_pushdown`,
+  `duckdb_v2_table_function_bind_add_result_column` (bind declares which
+  columns exist at all), and `duckdb_v2_table_function_exec_get_column_count`/
+  `_exec_get_column_index` (exec learns which of those columns the query
+  actually asked for, so a scan can skip materializing the rest) — but
+  none of it is wrapped in `duckdb_v2.zig`, and `comptime_table_v2.zig`
+  has no equivalent of its `pushdown` hook for projections. Unlike filter
+  pushdown (item above, done and live-verified), this gap is untouched,
+  not deliberately deferred. A `State` with no projection-pushdown
+  support today always emits every declared result column regardless of
+  what the query actually selects — correct, just not optimized; the
+  same posture `comptime_table_v2` already has for cardinality pushdown
+  (see "No bind-time result-column cardinality hint" elsewhere in this
+  doc).
 
 ### 5a. Appender (`comptime_appender_v2.zig`) — new, not originally scoped
 
