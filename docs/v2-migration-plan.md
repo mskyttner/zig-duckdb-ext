@@ -846,28 +846,41 @@ workload:
   flat-buffer read/write path `comptime_scalar_v2` already has, so this
   is scoping/wiring work, not a new execution model. Not attempted.
 - ~~**Table-function projection pushdown — not started, no wrapper
-  exists**~~ — **`duckdb_v2.zig` wrapper done (2026-10-12);
-  `comptime_table_v2.zig` integration and live verification still open.**
-  Found while comparing against `ducklink-extension`, same pass as the
-  cast-function gap above. The v1 extension already uses this
-  (`duckdb.zig`'s `tableFunctionSupportsProjectionPushdown`, wrapping
-  `duckdb_table_function_supports_projection_pushdown`). Added v2
-  equivalents: `tableFunctionSetProjectionPushdown` (set on the function
-  object before `tableFunctionRegister`, same timing as
+  exists**~~ — **done.** Found while comparing against
+  `ducklink-extension`, same pass as the cast-function gap above. The v1
+  extension already uses this (`duckdb.zig`'s
+  `tableFunctionSupportsProjectionPushdown`). Added v2 equivalents:
+  `tableFunctionSetProjectionPushdown` (set on the function object before
+  `tableFunctionRegister`, same timing as
   `tableFunctionSetBindCallback`/`SetExecCallback` — not a bind-time
   call, unlike `tableFunctionBindAddResultColumn` which was already
   wrapped) and `tableFunctionExecGetColumnCount`/
   `tableFunctionExecGetColumnIndex` (exec learns, per call, which of the
   bind-declared columns the query actually selected, resolved to their
   declaration order — mirrors `tableFunctionFilterPushdownGetColumnIndex`'s
-  role for filter pushdown). `task check:all` passes. **Not yet done**:
-  no `comptime_table_v2.zig` hook consumes this (unlike filter pushdown's
-  `pushdown` hook), and no live POC exists exercising it end-to-end —
-  until then a `State` still always emits every declared result column
-  regardless of what the query actually selects, correct but not
-  optimized, the same posture already noted for cardinality pushdown
-  (see "No bind-time result-column cardinality hint" elsewhere in this
-  doc).
+  role for filter pushdown). `comptime_table_v2.Function` gained two new
+  optional `State` decls: `pub const supports_projection_pushdown = true;`
+  (opts in) and `pub fn onProjection(self: *State, selected_fields: []const usize) void`
+  (told, once per `exec` call, which `Row` field indices the query
+  selected — lets `State` skip expensive per-field work in `next` for
+  unwanted columns, though `next` itself still always runs; only the
+  write side is actually skipped generically by the framework). Without
+  `supports_projection_pushdown`, a `State` behaves exactly as before —
+  verified no regression on existing pushdown-less functions
+  (`zig_v2_range_ct`) and on the existing filter-pushdown function
+  (`zig_v2_range_pushdown_ct`, including its own hit-count side channel).
+  Live-verified with a new `zig_v2_project_ct(n)` POC (two columns, `a`
+  and `b`) plus a `zig_v2_project_last_mask()` side channel recording
+  which `Row` fields `onProjection` was actually told were selected (bit
+  0 = `a`, bit 1 = `b`): `SELECT a FROM ...` → mask 1, `SELECT b FROM
+  ...` → mask 2, `SELECT a, b FROM ...` / `SELECT * FROM ...` → mask 3,
+  values correct in every case (the real risk here was an off-by-one in
+  the column-index remapping, not just "does the callback fire").
+  `SELECT count(*) FROM zig_v2_project_ct(1000)` also confirmed correct
+  (1000) — the degenerate zero-selected-column case some projection
+  implementations mishandle doesn't actually arise here, since DuckDB
+  still reports at least one selected column for a bare `COUNT(*)`.
+  `task check:all` passes.
 
 ### 5a. Appender (`comptime_appender_v2.zig`) — new, not originally scoped
 

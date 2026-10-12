@@ -44,6 +44,23 @@
 ///!     to enforce itself. A `State` with no `pushdown` decl gets no
 ///!     filter-pushdown callback at all — every predicate is then applied
 ///!     by the engine as usual, same as today.
+///!   - `pub const supports_projection_pushdown = true;` — optional. Opts
+///!     into projection pushdown (`tableFunctionSetProjectionPushdown`):
+///!     `exec` then only creates/writes the `Row` columns the query
+///!     actually selected (per `tableFunctionExecGetColumnCount`/
+///!     `GetColumnIndex`), leaving the rest untouched in the output chunk
+///!     DuckDB hands back. `next` still computes a full `Row` every call —
+///!     this only skips the write side, not per-field compute in `next`
+///!     itself (see the optional `onProjection` hook below for that). A
+///!     `State` without this decl gets no projection-pushdown callback at
+///!     all, and `exec` always writes every declared column, same as today.
+///!   - `pub fn onProjection(self: *State, selected_fields: []const usize) void`
+///!     — optional, only consulted when `supports_projection_pushdown` is
+///!     also set. Called once per `exec` call with the `Row` field indices
+///!     (declaration order) the query actually selected, before `next` is
+///!     called for that batch — lets `State` skip expensive per-field work
+///!     in `next` for columns nobody asked for. Not calling it (no decl)
+///!     costs nothing: `next` just keeps computing every field regardless.
 ///!   - `pub fn progress(self: *const State) f64` — optional. Called on
 ///!     demand to report how far the scan has advanced, in `[0.0, 1.0]`.
 ///!     CAUTION, confirmed live: this runs CONCURRENTLY with `next`/`exec`
@@ -113,6 +130,8 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
     const has_deinit = @hasDecl(State, "deinit");
     const has_pushdown = @hasDecl(State, "pushdown");
     const has_progress = @hasDecl(State, "progress");
+    const has_projection_pushdown = @hasDecl(State, "supports_projection_pushdown");
+    const has_on_projection = @hasDecl(State, "onProjection");
 
     inline for (row_field_types) |t| _ = duckdbV2TypeId(t);
     inline for (arg_types) |t| _ = duckdbV2TypeId(t.?);
@@ -173,6 +192,11 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             if (has_progress) {
                 if (db.tableFunctionSetProgressCallback(function, progressCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
                     return error.FailedToSetProgressCallback;
+                }
+            }
+            if (has_projection_pushdown) {
+                if (db.tableFunctionSetProjectionPushdown(function, true, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                    return error.FailedToSetProjectionPushdown;
                 }
             }
 
@@ -287,9 +311,41 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             var chunk: db.DataChunkHandle = undefined;
             if (db.tableFunctionExecGetOutputChunk(info, &chunk, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
 
+            // `position_for_field[i]` is the output chunk's vector index for
+            // `Row` field `i`, or `null` if the query didn't select it (only
+            // possible when `supports_projection_pushdown` is set — without
+            // it every field maps to itself, same as before this existed).
+            var position_for_field: [num_row_fields]?db.idx_t = undefined;
+            if (has_projection_pushdown) {
+                for (&position_for_field) |*p| p.* = null;
+                var selected_count: db.idx_t = 0;
+                if (db.tableFunctionExecGetColumnCount(info, &selected_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var pos: db.idx_t = 0;
+                while (pos < selected_count) : (pos += 1) {
+                    var field_idx: db.idx_t = undefined;
+                    if (db.tableFunctionExecGetColumnIndex(info, pos, &field_idx, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (field_idx < num_row_fields) position_for_field[field_idx] = pos;
+                }
+                if (has_on_projection) {
+                    var selected_fields: [num_row_fields]usize = undefined;
+                    var selected_len: usize = 0;
+                    inline for (0..num_row_fields) |i| {
+                        if (position_for_field[i] != null) {
+                            selected_fields[selected_len] = i;
+                            selected_len += 1;
+                        }
+                    }
+                    State.onProjection(state, selected_fields[0..selected_len]);
+                }
+            } else {
+                inline for (0..num_row_fields) |i| position_for_field[i] = i;
+            }
+
             var vecs: [num_row_fields]db.VectorHandle = undefined;
             inline for (0..num_row_fields) |i| {
-                if (db.dataChunkGetVector(chunk, i, &vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (position_for_field[i]) |pos| {
+                    if (db.dataChunkGetVector(chunk, pos, &vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                }
             }
 
             // Pull the whole batch before writing anything: each output
@@ -309,13 +365,15 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             }
 
             inline for (0..num_row_fields) |i| {
-                if (db.vectorSetSize(vecs[i], row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (position_for_field[i] != null) {
+                    if (db.vectorSetSize(vecs[i], row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                }
             }
 
             var ptrs: ColumnPtrsTuple = undefined;
             inline for (0..num_row_fields) |i| {
                 const T = row_field_types[i];
-                if (T != []const u8) {
+                if (T != []const u8 and position_for_field[i] != null) {
                     var out_data: ?*anyopaque = null;
                     if (db.vectorGetDataMutable(vecs[i], &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
                     // SAFETY: column `i` was declared with this exact type in bindCallback.
@@ -326,15 +384,17 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
             var row: db.idx_t = 0;
             while (row < row_count) : (row += 1) {
                 inline for (0..num_row_fields) |i| {
-                    const T = row_field_types[i];
-                    const field_value = @field(rows[row], row_field_names[i]);
-                    if (T == []const u8) {
-                        var value: db.ValueHandle = undefined;
-                        if (db.valueCreateVarcharWithContext(context, field_value, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                        defer _ = db.valueDestroy(&value);
-                        if (db.vectorSetValue(vecs[i], row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    } else {
-                        ptrs[i][row] = field_value;
+                    if (position_for_field[i] != null) {
+                        const T = row_field_types[i];
+                        const field_value = @field(rows[row], row_field_names[i]);
+                        if (T == []const u8) {
+                            var value: db.ValueHandle = undefined;
+                            if (db.valueCreateVarcharWithContext(context, field_value, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                            defer _ = db.valueDestroy(&value);
+                            if (db.vectorSetValue(vecs[i], row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        } else {
+                            ptrs[i][row] = field_value;
+                        }
                     }
                 }
             }
@@ -460,4 +520,45 @@ test "Function supports an optional progress hook" {
     _ = &RangeWithProgress.register;
     const progress_cb: db.c.duckdb_v2_table_function_progress_callback_fn = RangeWithProgress.progressCallback;
     try std.testing.expect(progress_cb != null);
+}
+
+test "Function supports optional projection-pushdown opt-in and onProjection hook" {
+    const Pairs = Function("v2_test_table_projection", struct {
+        n: i64,
+        i: i64,
+        pub const supports_projection_pushdown = true;
+        pub const Row = struct { a: i64, b: i64 };
+        pub fn init(n: i64) @This() {
+            return .{ .n = n, .i = 0 };
+        }
+        pub fn next(self: *@This()) ?Row {
+            if (self.i >= self.n) return null;
+            defer self.i += 1;
+            return .{ .a = self.i, .b = self.i * 2 };
+        }
+        pub fn onProjection(self: *@This(), selected_fields: []const usize) void {
+            _ = self;
+            _ = selected_fields;
+        }
+    });
+    // Referencing .register forces analysis of the exec-callback body's
+    // projection-pushdown branch (has_projection_pushdown == true) too.
+    _ = &Pairs.register;
+}
+
+test "Function omitting supports_projection_pushdown keeps writing every column" {
+    const Pairs = Function("v2_test_table_no_projection", struct {
+        n: i64,
+        i: i64,
+        pub const Row = struct { a: i64, b: i64 };
+        pub fn init(n: i64) @This() {
+            return .{ .n = n, .i = 0 };
+        }
+        pub fn next(self: *@This()) ?Row {
+            if (self.i >= self.n) return null;
+            defer self.i += 1;
+            return .{ .a = self.i, .b = self.i * 2 };
+        }
+    });
+    _ = &Pairs.register;
 }

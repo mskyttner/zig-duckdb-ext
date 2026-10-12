@@ -34,6 +34,7 @@ export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callcon
     registerAppenderNestedTest(input, &err);
     registerAppenderArrayEnumTest(input, &err);
     registerFilterPushdownTest(input);
+    registerProjectionPushdownTest(input);
     registerComptimeExamples(input);
 }
 
@@ -1321,6 +1322,86 @@ fn pushdownHitCountResetExec(info: db2.ScalarFunctionExecInfoHandle, context: db
     const ptr: [*]i64 = @ptrCast(@alignCast(out_data));
     var row: db2.idx_t = 0;
     while (row < row_count) : (row += 1) ptr[row] = 0;
+}
+
+/// Live test for `comptime_table_v2.zig`'s optional
+/// `supports_projection_pushdown`/`onProjection` hooks:
+/// `zig_v2_project_ct(n)` produces two columns, `a` (0..n) and
+/// `b` (0..2n step 2), same values regardless of which columns a query
+/// selects — correctness of the column-index remapping is the real risk
+/// here, not just whether the callback fires. `onProjection` records a
+/// bitmask of which `Row` fields the last `exec` call was actually asked
+/// for (bit 0 = `a`, bit 1 = `b`) into `projection_last_mask`, a side
+/// channel to observe from SQL that pushdown is really reporting the
+/// query's own column selection, not just "everything" regardless of what
+/// was asked for. `zig_v2_project_last_mask()` reads it.
+var projection_last_mask: i64 = 0;
+
+const ProjectionTestState = struct {
+    n: i64,
+    i: i64,
+
+    pub const supports_projection_pushdown = true;
+    pub const Row = struct { a: i64, b: i64 };
+
+    pub fn init(n: i64) @This() {
+        return .{ .n = n, .i = 0 };
+    }
+
+    pub fn next(self: *@This()) ?Row {
+        if (self.i >= self.n) return null;
+        defer self.i += 1;
+        return .{ .a = self.i, .b = self.i * 2 };
+    }
+
+    /// `selected_fields` holds `Row` field indices in declaration order
+    /// (0 = `a`, 1 = `b`) — build the observable bitmask from exactly that,
+    /// not from any assumption about what the query "should" have asked for.
+    pub fn onProjection(self: *@This(), selected_fields: []const usize) void {
+        _ = self;
+        var mask: i64 = 0;
+        for (selected_fields) |field_idx| mask |= @as(i64, 1) << @intCast(field_idx);
+        projection_last_mask = mask;
+    }
+};
+
+const ProjectionTestTable = comptime_table_v2.Function("zig_v2_project_ct", ProjectionTestState);
+
+fn registerProjectionPushdownTest(input: *const db2.ExtensionInput) void {
+    ProjectionTestTable.register(input) catch {};
+
+    var err: db2.ErrorInfoHandle = undefined;
+
+    var mask_fn: db2.ScalarFunctionHandle = undefined;
+    if (db2.scalarFunctionCreateWithExtension(input.extension, &mask_fn, &err) == db2.c.DUCKDB_V2_ERROR_NONE) {
+        defer _ = db2.scalarFunctionDestroy(&mask_fn);
+        const mask_name = db2.str("zig_v2_project_last_mask");
+        _ = db2.scalarFunctionSetName(mask_fn, &mask_name, &err);
+        var bigint_type: db2.LogicalTypeHandle = undefined;
+        if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, &bigint_type, &err) == db2.c.DUCKDB_V2_ERROR_NONE) {
+            defer _ = db2.logicalTypeDestroy(&bigint_type);
+            var sig: db2.FunctionSignatureHandle = undefined;
+            if (db2.scalarFunctionGetSignature(mask_fn, &sig, &err) == db2.c.DUCKDB_V2_ERROR_NONE) {
+                _ = db2.functionSignatureSetReturnType(sig, bigint_type, &err);
+                _ = db2.scalarFunctionSetExecCallback(mask_fn, projectionLastMaskExec, &err);
+                _ = db2.scalarFunctionRegister(mask_fn, &err);
+            }
+        }
+    }
+}
+
+fn projectionLastMaskExec(info: db2.ScalarFunctionExecInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    _ = context;
+    var row_count: db2.idx_t = 0;
+    if (db2.scalarFunctionExecGetRowCount(info, &row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var result_vec: db2.VectorHandle = undefined;
+    if (db2.scalarFunctionExecGetResult(info, &result_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.vectorSetSize(result_vec, row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var out_data: ?*anyopaque = null;
+    if (db2.vectorGetDataMutable(result_vec, &out_data, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    const ptr: [*]i64 = @ptrCast(@alignCast(out_data));
+    var row: db2.idx_t = 0;
+    while (row < row_count) : (row += 1) ptr[row] = projection_last_mask;
 }
 
 // Private test-only decls of duckdb_v2.zig, re-exposed here so this file
