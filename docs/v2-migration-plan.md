@@ -1401,15 +1401,23 @@ history around that file, re-verify the refactor the same way: capture
 
 ## Testing infrastructure gaps
 
-- The `v2.0.0-alpha46057` CLI this entire branch was verified against
-  lives at `~/.duckdb/cli/2.0.0-alpha46057/duckdb` on this machine only —
-  installed via `DUCKDB_VERSION=alpha bash <(curl
-  https://install.duckdb.org)`, not vendored or pinned anywhere in the
-  repo. Any other machine (or CI) re-running these functions needs the
-  same install step, and the alpha build number will drift over time.
-  Worth deciding whether to vendor a specific build (like
-  `duckdb_capi/duckdb_v2.h` already is) or document the install command
-  somewhere durable (this file, or a `task` recipe).
+- ~~The `v2.0.0-alpha46057` CLI this entire branch was verified against
+  lives at `~/.duckdb/cli/2.0.0-alpha46057/duckdb` on this machine
+  only...~~ — **closed, 2026-10-12.** `build.zig.zon` now has
+  content-hash-pinned `duckdb_cli_v2_linux_amd64`/`linux_arm64` lazy
+  dependencies (the only two platforms DuckDB publishes a CLI for at
+  `artifacts.duckdb.org/staged/v2.0-cyanoptera/` — confirmed live that
+  macOS/Windows both 404 there today), resolved by `duckdbV2CliLazyPath`
+  in `build.zig` and wired into `duckdb-extension`/`sqllogictest-v2`.
+  Verified the resolved binary is genuinely the pinned dependency, not a
+  PATH coincidence, by extracting it directly and checking `-version`
+  independent of whatever `duckdb` resolves to on `PATH`. Falls back to a
+  bare `duckdb` lookup for any other host (macOS/Windows, or a fetch
+  failure) rather than hard-failing the build — those platforms are
+  still a manual install, same as before, just not a regression from
+  adding this. Still machine-independent only for Linux; still a
+  *staged* artifact (hashes need periodic re-pinning until 2.0 ships as
+  a tagged release, same caveat as `build.zig.zon`'s own comment).
 - `zls` (Zig language server) for 0.17.0 has no tagged release yet either
   — this session built it from `zigtools/zls`'s `master` branch (versioned
   `0.17.0-dev`) and installed it to `~/.local/bin/zls`, also
