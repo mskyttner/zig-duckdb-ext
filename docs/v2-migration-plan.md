@@ -550,6 +550,62 @@ Two real findings along the way, both confirmed live, not assumed:
   pragma at all, confirming it's an unrelated, now-defunct internal
   DuckDB consistency-check knob, not part of the sqllogictest format
   itself.
+- **CSV quoting is content-dependent, not just comma/quote/newline-
+  triggered**: DuckDB's `-csv` writer also quotes fields containing
+  certain non-ASCII content — e.g. `tp_bar`'s box-drawing characters
+  (`█`/`░`) come back quoted (`"███████████░░░░"`) even with no comma or
+  embedded newline present, while the same function called with plain
+  ASCII fill characters (`X`/`.`) comes back unquoted. Found porting
+  `test:e2e`/`smoke.sql` into `test/sql/zig_ext.test` (2026-10-12,
+  see "Ported from test:e2e" below) — four blocks failed on a literal
+  CSV-quoting mismatch until the expected value included the quotes
+  verbatim. The runner does an exact trimmed-string match with no CSV
+  unquoting, so this has to be captured by hand per case, not assumed
+  from the SQL alone.
+
+### Ported `test:e2e`/`smoke.sql` to this runner — done (2026-10-12)
+
+Every case from the old `task test:e2e`'s `test/sql/smoke.sql` is now a
+real exact-value check in `test/sql/zig_ext.test` (53 blocks, up from 5) —
+`test:e2e` only ever checked exit code (did the whole piped-in script
+error?), never the actual output, so this is a strictly stronger
+replacement, not a lateral move. `test:e2e` and `smoke.sql` are retired;
+`Taskfile.yml` gained `sqllogictest`/`sqllogictest:v2` thin wrappers
+around the existing `zig build sqllogictest`/`sqllogictest-v2` steps.
+
+Two things learned doing the port that generalize beyond this one file:
+
+- **Multi-column table-function results need splitting into one
+  single-column query per column** — this runner has no tab-separated-
+  row support (documented gap, not new). `zig_tokenize`/`ct_tokenize`'s
+  `(token_pos, token)` output became two separate `query I`/`query T`
+  blocks selecting one column each, same coverage, no loss.
+- **A result that's a genuinely multi-line rendered value (embedded
+  newlines, like `tp_line`/`tp_snakemap`'s ASCII/ANSI charts) doesn't
+  need the runner extended to be portable** — wrapping it in `md5(...)`
+  collapses the whole thing to one deterministic hex string on one line.
+  This is a real exact-match check, not a weaker substitute: any pixel of
+  the rendered output changing changes the hash. Confirmed live that the
+  runner correctly fails on a deliberately corrupted hash and passes once
+  restored. The alternative — switching the runner to `-json` output mode
+  instead of `-csv`, since DuckDB's JSON writer escapes embedded newlines
+  as literal `\n` rather than emitting real newline bytes (confirmed
+  live: a 6-line `tp_line` chart printed as one JSON-encoded line) — would
+  let these blocks show the literal expected text instead of an opaque
+  hash. That's a readability improvement over `md5(...)`, not a coverage
+  one, and would need `sqllogictest_main.zig`'s parser rewritten from raw
+  CSV-line-splitting to JSON-array parsing (and would likely also sidestep
+  the CSV-quoting finding above, since JSON string encoding has its own,
+  simpler escaping rules). Not attempted — tracked here as a known,
+  worthwhile follow-up, not a gap blocking anything.
+- One latent bug in the SOURCE SQL itself was caught doing the port, not
+  introduced by it: `smoke.sql`'s `tp_line(list(v::DOUBLE) ORDER BY i)`
+  bound `ORDER BY` to the `tp_line` macro call instead of the `list(...)`
+  aggregate it was meant to order ("tp_line is a Macro Function... ORDER
+  BY only applicable to aggregate functions") — `test:e2e`'s weak
+  verification never caught this. Fixed to
+  `tp_line((SELECT list(v ORDER BY i) FROM ...))`, confirmed correct
+  against the real extension.
 
 ### 2. STRUCT support — both directions done; VARIANT also added
 
