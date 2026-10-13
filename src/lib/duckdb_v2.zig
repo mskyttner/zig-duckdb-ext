@@ -1248,6 +1248,73 @@ pub fn contextCreateStructType(
     );
 }
 
+/// Create MAP(key_type, value_type) — two positional parameters (key
+/// type, value type, both TYPE-kind Values), per
+/// `logical_type_get_param_count`'s own doc comment ("MAP 2 (key type,
+/// value type)"). Same two-step Value-wrapping dance as
+/// `contextCreateListType`/`contextCreateArrayType`, generalized to two
+/// children instead of one.
+pub fn contextCreateMapType(
+    ctx: ContextHandle,
+    key_type: LogicalTypeHandle,
+    value_type: LogicalTypeHandle,
+    out_type: *LogicalTypeHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    var key_type_value: ValueHandle = undefined;
+    if (valueCreateTypeWithContext(ctx, key_type, &key_type_value, err) != c.DUCKDB_V2_ERROR_NONE) {
+        return c.DUCKDB_V2_ERROR_API;
+    }
+    defer _ = valueDestroy(&key_type_value);
+    var value_type_value: ValueHandle = undefined;
+    if (valueCreateTypeWithContext(ctx, value_type, &value_type_value, err) != c.DUCKDB_V2_ERROR_NONE) {
+        return c.DUCKDB_V2_ERROR_API;
+    }
+    defer _ = valueDestroy(&value_type_value);
+    const param_values = [_]ValueHandle{ key_type_value, value_type_value };
+    return getApi().duckdb_v2_context_create_type_from_id.?(
+        ctx,
+        c.DUCKDB_V2_LOGICAL_TYPE_ID_MAP,
+        null,
+        &param_values,
+        2,
+        out_type,
+        err,
+    );
+}
+
+/// Create UNION(names[0] member_types[0], ...) — one *named* TYPE-kind
+/// Value parameter per member, per `logical_type_get_param_count`'s own
+/// doc comment ("UNION one per member"). Identical shape to
+/// `contextCreateStructType`, just a different type id — unlike STRUCT,
+/// there is no `duckdb_v2_value_create_union_*` constructor at all
+/// (confirmed by grepping the header), so UNION support is read
+/// (argument) and direct-vector-write (return) only, never boxed
+/// through a `Value` — see `comptime_scalar_v2.zig`'s UNION handling.
+pub fn contextCreateUnionType(
+    ctx: ContextHandle,
+    names: []const IdentifierT,
+    member_types: []const LogicalTypeHandle,
+    member_type_values: []ValueHandle,
+    out_type: *LogicalTypeHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    for (member_types, 0..) |mt, i| {
+        if (valueCreateTypeWithContext(ctx, mt, &member_type_values[i], err) != c.DUCKDB_V2_ERROR_NONE) {
+            return c.DUCKDB_V2_ERROR_API;
+        }
+    }
+    return getApi().duckdb_v2_context_create_type_from_id.?(
+        ctx,
+        c.DUCKDB_V2_LOGICAL_TYPE_ID_UNION,
+        names.ptr,
+        member_type_values.ptr,
+        names.len,
+        out_type,
+        err,
+    );
+}
+
 pub fn logicalTypeDestroy(logical_type: *LogicalTypeHandle) ErrorCode {
     return getApi().duckdb_v2_logical_type_destroy.?(logical_type);
 }
@@ -1688,6 +1755,24 @@ pub fn valueCreateStructWithContext(
     err: *ErrorInfoHandle,
 ) ErrorCode {
     return getApi().duckdb_v2_value_create_struct_with_context.?(ctx, names.ptr, children.ptr, names.len, out_value, err);
+}
+
+/// Box parallel `keys`/`values` (already-boxed `Value`s) as a MAP
+/// `Value`, for use with `vectorSetValue`. `key_type`/`value_type` name
+/// the types explicitly (required here — resolving them from the
+/// entries isn't exposed by this wrapper, matching how this project's
+/// other type-requiring constructors already work). Same ownership
+/// shape as `valueCreateListWithContext`.
+pub fn valueCreateMapWithContext(
+    ctx: ContextHandle,
+    key_type: LogicalTypeHandle,
+    value_type: LogicalTypeHandle,
+    keys: []const ValueHandle,
+    values: []const ValueHandle,
+    out_value: *ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_value_create_map_with_context.?(ctx, key_type, value_type, keys.ptr, values.ptr, keys.len, out_value, err);
 }
 
 /// Box `children` as an ARRAY `Value` (fixed-size: the array's length IS

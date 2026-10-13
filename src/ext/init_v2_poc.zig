@@ -340,6 +340,90 @@ const ArrayScale3Ct = comptime_scalar_v2.Function("zig_v2_array_scale3_ct", stru
     }
 }.eval);
 
+/// Proves MAP(BIGINT, BIGINT) as a parameter type: zero-copy-ish decode
+/// (zipped into a bounded per-row stack buffer, since db.Map's `entries`
+/// field is an array of structs but the source storage is two parallel
+/// flat key/value arrays) from the parent MAP vector's own
+/// ListEntry{offset,length} plus its nested entries-STRUCT child.
+const MapSumValuesCt = comptime_scalar_v2.Function("zig_v2_map_sum_values_ct", struct {
+    fn eval(m: comptime_scalar_v2.Map(i64, i64)) i64 {
+        var total: i64 = 0;
+        for (m.entries) |e| total += e.value;
+        return total;
+    }
+}.eval);
+
+/// Proves MAP(BIGINT, BIGINT) as a return type: boxed via
+/// valueCreateMapWithContext (parallel key/value Value arrays). Returns
+/// a slice into a file-scope `const` array (static storage), same
+/// safety reasoning as `ListRangeCt`.
+const map_range_entries = [4]comptime_scalar_v2.Map(i64, i64).Entry{
+    .{ .key = 1, .value = 10 },
+    .{ .key = 2, .value = 20 },
+    .{ .key = 3, .value = 30 },
+    .{ .key = 4, .value = 40 },
+};
+const MapRangeCt = comptime_scalar_v2.Function("zig_v2_map_range_ct", struct {
+    fn eval(n: i64) comptime_scalar_v2.Map(i64, i64) {
+        const len = @min(@as(usize, @intCast(@max(n, 0))), map_range_entries.len);
+        return .{ .entries = map_range_entries[0..len] };
+    }
+}.eval);
+
+/// Proves UNION as a parameter and return type (round-trip), including
+/// a VARCHAR member — a plain Zig tagged union, no wrapper type needed
+/// (unlike MAP), since it's already a 1:1 match for SQL UNION.
+/// Proves UNION as a parameter and return type (round-trip) — a plain
+/// Zig tagged union, no wrapper type needed (unlike MAP), since it's
+/// already a 1:1 match for SQL UNION. Live-verified over a real
+/// multi-row table with MIXED tags per row, not just a single constant
+/// value — see `UnionMakeCt`'s own doc comment for why that distinction
+/// mattered here.
+const NumOrText = union(enum) { num: i64, text: []const u8 };
+const UnionRoundtripCt = comptime_scalar_v2.Function("zig_v2_union_roundtrip_ct", struct {
+    fn eval(u: NumOrText) NumOrText {
+        return u;
+    }
+}.eval);
+
+/// Proves UNION as an argument type specifically (decode via the tag
+/// child + the active member's own child, `@unionInit`).
+const UnionTagCt = comptime_scalar_v2.Function("zig_v2_union_tag_ct", struct {
+    fn eval(u: NumOrText) i64 {
+        return switch (u) {
+            .num => |n| n,
+            .text => |t| @intCast(t.len),
+        };
+    }
+}.eval);
+
+/// Proves UNION as a return type over a real multi-row batch with
+/// MIXED tags (alternating num/text per row) — the case that caught a
+/// real bug: writing only the active member's child vector per row and
+/// leaving every other member's row untouched worked fine when every
+/// member was a flat numeric type (see `UnionMakeNumNumCt` below, which
+/// never crashed), but segfaulted as soon as one member was VARCHAR —
+/// confirmed narrowed to exactly that combination by testing both
+/// shapes independently. Fixed in `comptime_scalar_v2.zig`'s
+/// `writeUnionResult` by explicitly `vectorSetNull`-ing every
+/// *inactive* member's row, not just leaving it alone.
+const UnionMakeCt = comptime_scalar_v2.Function("zig_v2_union_make_ct", struct {
+    fn eval(n: i64) NumOrText {
+        return if (@mod(n, 2) == 0) .{ .num = n } else .{ .text = "odd" };
+    }
+}.eval);
+
+/// The control case for `UnionMakeCt`'s bug: two flat numeric members,
+/// mixed tags across rows — worked correctly even before the
+/// `vectorSetNull`-the-inactive-members fix, narrowing the real bug to
+/// specifically a VARCHAR member combined with mixed tags.
+const NumOrNum = union(enum) { a: i64, b: f64 };
+const UnionMakeNumNumCt = comptime_scalar_v2.Function("zig_v2_union_make_numnum_ct", struct {
+    fn eval(n: i64) NumOrNum {
+        return if (@mod(n, 2) == 0) .{ .a = n } else .{ .b = @floatFromInt(n) };
+    }
+}.eval);
+
 /// Proves comptime_table_v2's generalized Row/init/next framework through a
 /// real table-function argument (`n`) and a real VARCHAR output column —
 /// unlike zig_v2_range3 above, bind/exec are fully generated, not
@@ -728,6 +812,12 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     ListSumCt.register(input) catch {};
     ListRangeCt.register(input) catch {};
     ArrayScale3Ct.register(input) catch {};
+    MapSumValuesCt.register(input) catch {};
+    MapRangeCt.register(input) catch {};
+    UnionRoundtripCt.register(input) catch {};
+    UnionTagCt.register(input) catch {};
+    UnionMakeCt.register(input) catch {};
+    UnionMakeNumNumCt.register(input) catch {};
     RangeCt.register(input) catch {};
     RangeProgressCt.register(input) catch {};
     RepeatCt.register(input) catch {};

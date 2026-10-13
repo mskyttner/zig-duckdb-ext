@@ -1187,8 +1187,8 @@ workload:
     produce dead code — type-correct, but uncallable from anywhere this
     project's extension can actually run — so deliberately not done,
     not merely deferred.
-- **LIST/ARRAY as `comptime_scalar_v2` argument/return types — done
-  (2026-10-13); MAP/UNION still not started.** Found 2026-10-12 while
+- **LIST/ARRAY/MAP/UNION as `comptime_scalar_v2` argument/return types —
+  all four done (2026-10-13).** Found 2026-10-12 while
   cataloguing remaining gaps; item 2 above only ever targeted STRUCT and
   VARIANT. **Correction to this entry's own earlier text**: it previously
   claimed `contextCreateArrayType`/`contextCreateMapType`/
@@ -1224,10 +1224,48 @@ workload:
   assumed: a NULL *element* inside a non-NULL LIST/ARRAY row decodes as
   uninitialized garbage, not a crash — individual-element NULL checking
   was deliberately not attempted (one-level-deep restriction, same
-  spirit as STRUCT fields). MAP and UNION remain fully unscoped — no
-  Zig-type convention decided for either, and their constructor wrappers
-  (`contextCreateMapType`/`contextCreateUnionType`) still don't exist.
-  Not attempted.
+  spirit as STRUCT fields).
+
+  **MAP and UNION added as a follow-up (2026-10-13)**. Added
+  `contextCreateMapType`/`contextCreateUnionType`/
+  `valueCreateMapWithContext` to `duckdb_v2.zig` (previously missing —
+  the correction above). `db.Map(K, V)` (a dedicated wrapper type, K/V
+  scoped to the same flat leaf set as LIST/ARRAY elements) maps to
+  MAP(K, V); a plain Zig tagged union maps to SQL UNION directly (a
+  genuine 1:1 match, no wrapper type needed — unlike MAP). MAP argument
+  decode zips each row's parallel key/value flat arrays into a bounded
+  per-row stack buffer (not zero-copy like LIST, since
+  `Entry{key,value}` is an array of structs but the source storage is
+  two parallel flat arrays); MAP return boxes through
+  `valueCreateMapWithContext`. UNION reuses STRUCT's per-field
+  child-vector machinery (its `vectorGetChild` layout — [0]=tag,
+  [1..N]=every member — is directly analogous to STRUCT's
+  [i]=field-i), argument decode via the tag's flat `u8` ordinal plus
+  `@unionInit`; **UNION return writes directly into each member's own
+  child vector — there is no `duckdb_v2_value_create_union_*`
+  constructor at all** (confirmed by grepping the header), unlike every
+  other composite return type this framework supports.
+
+  **A real bug found and fixed, not just a type-level pass**: a
+  mixed-tag UNION-returning batch over a real multi-row table segfaulted
+  — narrowed by testing a two-flat-numeric-member union (worked fine
+  across mixed tags) against a numeric+VARCHAR union (crashed on every
+  mixed-tag batch, never on a same-tag one) to: leaving an *inactive*
+  member's row untouched (uninitialized) is fine for a flat numeric
+  type but not for VARCHAR — something downstream apparently reads a
+  leftover, never-initialized `duckdb_v2_string_t` regardless of that
+  row's own tag. Fixed by explicitly `vectorSetNull`-ing every inactive
+  member's row in `writeUnionResult`, not just leaving it alone. Kept
+  all three reproduction cases (`UnionMakeCt`/`UnionMakeNumNumCt`/
+  `UnionTagCt`) as real `init_v2_poc.zig` functions, not throwaway debug
+  code, since they're genuine regression coverage for this exact bug.
+
+  Live-verified: `zig_v2_map_sum_values_ct`/`zig_v2_map_range_ct` (MAP
+  argument including empty map and NULL, MAP return at varying lengths)
+  and `zig_v2_union_roundtrip_ct`/`zig_v2_union_tag_ct`/
+  `zig_v2_union_make_ct` (UNION round-trip over a real mixed-tag
+  multi-row table, argument-only decode, return-only with the bug fix
+  confirmed) — all against the real `v2.0.0-alpha46057` runtime.
 - ~~**Table-function projection pushdown — not started, no wrapper
   exists**~~ — **done.** Found while comparing against
   `ducklink-extension`, same pass as the cast-function gap above. The v1

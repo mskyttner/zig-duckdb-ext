@@ -69,8 +69,7 @@
 ///!   that's VARCHAR, unchanged) maps to SQL LIST(T); `[N]T` maps to
 ///!   ARRAY(T, N). Scoped to flat leaf element types only (not nested
 ///!   STRUCT/DECIMAL/ENUM/VARIANT/another LIST, and not `[]const u8`
-///!   elements — all deferred, along with MAP and UNION entirely, which
-///!   have no Zig-type convention here yet). A LIST argument decodes
+///!   elements — all deferred). A LIST argument decodes
 ///!   zero-copy (a real slice into the flattened child vector, sliced via
 ///!   the parent's own `ListEntry{offset,length}` per row); an ARRAY
 ///!   argument likewise, strided by its fixed length. Returns box each
@@ -88,6 +87,41 @@
 ///!   garbage, not a crash, but also not a meaningful value; a future
 ///!   addition, not attempted here. Can't be combined with STRUCT/
 ///!   VARIANT parameters/return in the same function yet (compile error).
+///! - `Map(K, V)` (a dedicated wrapper type — Zig has no built-in
+///!   parallel-key/value-array shape — wrapping `entries: []const
+///!   Entry{key,value}`) maps to SQL MAP(K, V), K/V scoped to the same
+///!   flat leaf set LIST/ARRAY elements use. Argument decode zips each
+///!   row's parallel key/value flat arrays (addressed via the parent
+///!   MAP vector's own `ListEntry{offset,length}`, since MAP is
+///!   physically LIST(STRUCT(key,value)) internally) into a bounded
+///!   per-row stack buffer — not zero-copy like LIST, since
+///!   `Entry{key,value}` is an array of structs but the source storage
+///!   is two parallel flat arrays; entries past the cap are silently
+///!   truncated (documented, not an error). Returns box through
+///!   `valueCreateMapWithContext` (parallel key/value `Value` arrays),
+///!   capped the same way LIST returns are (a query error past the cap).
+///! - A plain Zig tagged union (`union(enum) { ... }`) maps to SQL
+///!   UNION(name1 type1, ...) directly — Zig's native tagged union is
+///!   already a 1:1 match, no wrapper type needed (unlike MAP). Member
+///!   types scoped to the same flat leaf set as STRUCT fields (numeric/
+///!   bool/`[]const u8`, one level deep) — reuses that machinery, since
+///!   UNION's child-vector-per-member layout is directly analogous to
+///!   STRUCT's child-vector-per-field layout. CAUTION: there is no
+///!   `duckdb_v2_value_create_union_*` constructor at all (confirmed by
+///!   grepping the header) — writes go directly into the tag child's
+///!   flat buffer plus the active member's own child vector, never
+///!   through a boxed whole-UNION `Value`. CAUTION, confirmed live (a
+///!   real bug, since fixed): every member's child vector at a given
+///!   row — not just the active one — must be given a well-defined
+///!   value; leaving an *inactive* member's row untouched worked fine
+///!   across a mixed-tag batch when every member was a flat numeric
+///!   type, but segfaulted as soon as one member was VARCHAR (a
+///!   leftover, never-initialized `duckdb_v2_string_t` apparently gets
+///!   read by something downstream regardless of that row's own active
+///!   tag) — fixed by explicitly `vectorSetNull`-ing every inactive
+///!   member's row rather than leaving it alone. Can't be combined with
+///!   STRUCT/VARIANT/LIST/ARRAY/the other of MAP or UNION in the same
+///!   function yet (compile error).
 ///!
 ///! Usage:
 ///!   const MyFn = comptime_scalar_v2.Function("my_double", struct {
@@ -171,15 +205,67 @@ fn isSupportedListArrayElem(comptime T: type) bool {
     };
 }
 
+const isSupportedMapKV = isSupportedListArrayElem;
+
+fn isSupportedUnionMember(comptime T: type) bool {
+    return T == []const u8 or isSupportedListArrayElem(T);
+}
+
 fn isStructType(comptime T: type) bool {
     // db.Blob and db.Decimal(w,s) are Zig structs (wrapping a []const u8
     // and a raw storage int, respectively) but must never be treated as a
     // one-field SQL STRUCT — each has its own dedicated decode/encode path
     // instead (see the `return_is_blob`/`return_is_decimal` branches
-    // below).
+    // below). Map(K,V) (wrapping `entries: []const Entry`) is excluded
+    // the same way.
     if (T == db.Blob) return false;
     if (comptime isDecimalType(T)) return false;
+    if (comptime isMapType(T)) return false;
     return @typeInfo(T) == .@"struct";
+}
+
+/// MAP(key_type, value_type): `db.Map(K, V)`, a dedicated wrapper type
+/// (Zig has no built-in parallel-key/value-array shape) wrapping a flat
+/// `entries: []const Entry` slice. K/V scoped to the same flat leaf set
+/// `isSupportedListArrayElem` already uses — not `[]const u8`, not
+/// nested STRUCT/DECIMAL/ENUM/VARIANT/LIST/ARRAY/another MAP — matching
+/// LIST/ARRAY's own element-type restriction (reusing that same read
+/// path's flat-buffer convention, not the STRUCT-field path's
+/// per-field/`[]const u8` support).
+pub fn Map(comptime K: type, comptime V: type) type {
+    return struct {
+        pub const v2_map_key = K;
+        pub const v2_map_value = V;
+        pub const Entry = struct { key: K, value: V };
+        entries: []const Entry,
+    };
+}
+
+fn isMapType(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "v2_map_key") and @hasDecl(T, "v2_map_value");
+}
+
+fn MapKey(comptime T: type) type {
+    return T.v2_map_key;
+}
+
+fn MapValue(comptime T: type) type {
+    return T.v2_map_value;
+}
+
+/// UNION(names[0] member_types[0], ...): a plain Zig tagged union —
+/// Zig's native tagged union is a genuine 1:1 match for SQL UNION, no
+/// wrapper type needed (unlike MAP). Member types scoped to the same
+/// flat leaf set as STRUCT fields (numeric/bool/`[]const u8`, one level
+/// deep) — reuses that machinery, since UNION's child-vector-per-member
+/// layout is directly analogous to STRUCT's child-vector-per-field
+/// layout. CAUTION: there is no `duckdb_v2_value_create_union_*`
+/// constructor at all (confirmed by grepping the header) — UNION return
+/// writes go directly into each member's own child vector
+/// (`vectorGetDataMutable`/boxed-per-row VARCHAR), never through a
+/// boxed whole-UNION `Value`.
+fn isUnionType(comptime T: type) bool {
+    return @typeInfo(T) == .@"union" and @typeInfo(T).@"union".tag_type != null;
 }
 
 /// Build "ENUM('member0','member1',...)" from a Zig enum's own variant
@@ -231,6 +317,53 @@ fn createLogicalType(ctx: db.ContextHandle, comptime T: type, out_type: *db.Logi
         }
         defer _ = db.logicalTypeDestroy(&elem_type);
         return db.contextCreateArrayType(ctx, elem_type, @intCast(ArrayLen(T)), out_type, err);
+    }
+    if (comptime isMapType(T)) {
+        const K = MapKey(T);
+        const V = MapValue(T);
+        if (!comptime isSupportedMapKV(K)) {
+            @compileError("unsupported MAP key type for DuckDB v2 mapping: " ++ @typeName(K));
+        }
+        if (!comptime isSupportedMapKV(V)) {
+            @compileError("unsupported MAP value type for DuckDB v2 mapping: " ++ @typeName(V));
+        }
+        var key_type: db.LogicalTypeHandle = undefined;
+        if (createLogicalType(ctx, K, &key_type, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            return db.c.DUCKDB_V2_ERROR_API;
+        }
+        defer _ = db.logicalTypeDestroy(&key_type);
+        var value_type: db.LogicalTypeHandle = undefined;
+        if (createLogicalType(ctx, V, &value_type, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            return db.c.DUCKDB_V2_ERROR_API;
+        }
+        defer _ = db.logicalTypeDestroy(&value_type);
+        return db.contextCreateMapType(ctx, key_type, value_type, out_type, err);
+    }
+    if (comptime isUnionType(T)) {
+        const info = @typeInfo(T).@"union";
+        const n = info.field_types.len;
+        inline for (0..n) |f| {
+            if (!comptime isSupportedUnionMember(info.field_types[f])) {
+                @compileError("unsupported UNION member type for DuckDB v2 mapping: " ++ @typeName(info.field_types[f]));
+            }
+        }
+        var member_logical_types: [n]db.LogicalTypeHandle = undefined;
+        inline for (0..n) |f| {
+            if (createLogicalType(ctx, info.field_types[f], &member_logical_types[f], err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                return db.c.DUCKDB_V2_ERROR_API;
+            }
+        }
+        defer inline for (0..n) |f| {
+            _ = db.logicalTypeDestroy(&member_logical_types[f]);
+        };
+        var names: [n]db.IdentifierT = undefined;
+        inline for (0..n) |f| names[f] = db.str(info.field_names[f]);
+        var member_type_values: [n]db.ValueHandle = undefined;
+        const rc = db.contextCreateUnionType(ctx, &names, &member_logical_types, &member_type_values, out_type, err);
+        defer inline for (0..n) |f| {
+            _ = db.valueDestroy(&member_type_values[f]);
+        };
+        return rc;
     }
     if (comptime isStructType(T)) {
         const fields = @typeInfo(T).@"struct";
@@ -307,9 +440,9 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
     }
 
     inline for (param_types) |t| {
-        if (comptime !isStructType(t.?) and !isDecimalType(t.?) and !isEnumType(t.?) and !isListType(t.?) and !isArrayType(t.?)) _ = duckdbV2TypeId(t.?);
+        if (comptime !isStructType(t.?) and !isDecimalType(t.?) and !isEnumType(t.?) and !isListType(t.?) and !isArrayType(t.?) and !isMapType(t.?) and !isUnionType(t.?)) _ = duckdbV2TypeId(t.?);
     }
-    if (comptime !isStructType(ReturnType) and !isDecimalType(ReturnType) and !isEnumType(ReturnType) and !isListType(ReturnType) and !isArrayType(ReturnType)) _ = duckdbV2TypeId(ReturnType);
+    if (comptime !isStructType(ReturnType) and !isDecimalType(ReturnType) and !isEnumType(ReturnType) and !isListType(ReturnType) and !isArrayType(ReturnType) and !isMapType(ReturnType) and !isUnionType(ReturnType)) _ = duckdbV2TypeId(ReturnType);
 
     const has_variant_arg = raw_has_variant_arg;
     const return_is_decimal = isDecimalType(ReturnType);
@@ -317,6 +450,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
     const return_is_struct = isStructType(ReturnType);
     const return_is_list = isListType(ReturnType);
     const return_is_array = isArrayType(ReturnType);
+    const return_is_map = isMapType(ReturnType);
+    const return_is_union = isUnionType(ReturnType);
     const has_struct_arg = blk: {
         inline for (param_types) |t| {
             if (comptime isStructType(t.?)) break :blk true;
@@ -330,8 +465,28 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         break :blk false;
     };
     const has_list_or_array = has_list_or_array_arg or return_is_list or return_is_array;
+    const has_map_arg = blk: {
+        inline for (param_types) |t| {
+            if (comptime isMapType(t.?)) break :blk true;
+        }
+        break :blk false;
+    };
+    const has_map = has_map_arg or return_is_map;
+    const has_union_arg = blk: {
+        inline for (param_types) |t| {
+            if (comptime isUnionType(t.?)) break :blk true;
+        }
+        break :blk false;
+    };
+    const has_union = has_union_arg or return_is_union;
     if (has_list_or_array and (has_variant_arg or return_is_variant or has_struct_arg or return_is_struct)) {
         @compileError("a Function can't mix LIST/ARRAY with STRUCT or VARIANT parameters/return in the same function yet");
+    }
+    if (has_map and (has_variant_arg or return_is_variant or has_struct_arg or return_is_struct or has_list_or_array or has_union)) {
+        @compileError("a Function can't mix MAP with STRUCT/VARIANT/LIST/ARRAY/UNION parameters/return in the same function yet");
+    }
+    if (has_union and (has_variant_arg or return_is_variant or has_struct_arg or return_is_struct or has_list_or_array or has_map)) {
+        @compileError("a Function can't mix UNION with STRUCT/VARIANT/LIST/ARRAY/MAP parameters/return in the same function yet");
     }
 
     return struct {
@@ -430,6 +585,12 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             }
             if (comptime has_list_or_array) {
                 return executeListArray(info, context, result_vec, row_count, err);
+            }
+            if (comptime has_map) {
+                return executeMap(info, context, result_vec, row_count, err);
+            }
+            if (comptime has_union) {
+                return executeUnion(info, context, result_vec, row_count, err);
             }
 
             // Cache each argument's view (flattened first — sequence/FSST/
@@ -1058,6 +1219,323 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 }
             }
         }
+
+        /// A MAP argument's per-row entry count is capped here — past it,
+        /// entries are silently truncated (not an error; documented, not
+        /// attempted to be made more precise, same posture as the
+        /// LIST/ARRAY per-element-NULL limitation above).
+        const map_arg_max_entries = 256;
+        /// A MAP return longer than this per row is a query error, same
+        /// convention as `list_return_max_elems`.
+        const map_return_max_entries = 4096;
+
+        /// Dedicated exec path for a MAP argument and/or return, scoped
+        /// to flat leaf key/value types (`isSupportedMapKV`). Argument
+        /// decode mirrors LIST's: the parent MAP vector's own view gives
+        /// per-row `ListEntry{offset,length}` (MAP is physically
+        /// LIST(STRUCT(key,value)) internally — confirmed by
+        /// `vector_get_child_count`'s own doc comment grouping
+        /// LIST/MAP/ARRAY together); `vectorGetChild(map_vec, 0, ...)`
+        /// descends into the entries STRUCT vector, whose own children
+        /// [0]/[1] are the flat key/value arrays. Unlike LIST, this can't
+        /// be a zero-copy slice reinterpretation — `db.Map(K,V).entries`
+        /// is `[]const Entry{key,value}`, an array of structs, but the
+        /// source storage is two parallel flat arrays — so each row's
+        /// entries are zipped into a bounded stack buffer
+        /// (`map_arg_max_entries`), reused per row since it's consumed
+        /// synchronously within the same iteration (safe, unlike
+        /// returning a slice into it — see the VARCHAR-return CAUTION
+        /// above). Return is boxed via `valueCreateMapWithContext`
+        /// (parallel key/value `Value` arrays) — same "simpler, if
+        /// slower" tradeoff as LIST/ARRAY returns.
+        fn executeMap(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, result_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
+            var arg_vecs: [param_types.len]db.VectorHandle = undefined;
+            var parent_views: [param_types.len]db.VectorView = undefined;
+            var key_views: [param_types.len]db.VectorView = undefined;
+            var value_views: [param_types.len]db.VectorView = undefined;
+
+            inline for (0..param_types.len) |i| {
+                const T = param_types[i].?;
+                if (db.scalarFunctionExecGetArg(info, i, &arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (db.vectorFlatten(arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (db.vectorGetView(arg_vecs[i], &parent_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (comptime isMapType(T)) {
+                    var entries_vec: db.VectorHandle = undefined;
+                    if (db.vectorGetChild(arg_vecs[i], 0, &entries_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var key_vec: db.VectorHandle = undefined;
+                    if (db.vectorGetChild(entries_vec, 0, &key_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (db.vectorFlatten(key_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (db.vectorGetView(key_vec, &key_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var value_vec: db.VectorHandle = undefined;
+                    if (db.vectorGetChild(entries_vec, 1, &value_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (db.vectorFlatten(value_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (db.vectorGetView(value_vec, &value_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                }
+            }
+
+            const MapK = if (comptime return_is_map) MapKey(ReturnType) else void;
+            const MapV = if (comptime return_is_map) MapValue(ReturnType) else void;
+            var return_key_type: db.LogicalTypeHandle = undefined;
+            var return_value_type: db.LogicalTypeHandle = undefined;
+            if (comptime return_is_map) {
+                if (createLogicalType(context, MapK, &return_key_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (createLogicalType(context, MapV, &return_value_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            }
+            defer if (comptime return_is_map) {
+                _ = db.logicalTypeDestroy(&return_key_type);
+                _ = db.logicalTypeDestroy(&return_value_type);
+            };
+
+            var out: [*]ReturnType = undefined;
+            if (comptime !return_is_map and !return_is_varchar) {
+                var out_data: ?*anyopaque = null;
+                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                out = @ptrCast(@alignCast(out_data));
+            }
+
+            var row: db.idx_t = 0;
+            while (row < row_count) : (row += 1) {
+                if (!listRowIsValid(&parent_views, row)) {
+                    if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    continue;
+                }
+
+                var args: ArgsTuple = undefined;
+                inline for (0..param_types.len) |i| {
+                    const T = param_types[i].?;
+                    if (comptime isMapType(T)) {
+                        const K = MapKey(T);
+                        const V = MapValue(T);
+                        const Entry = T.Entry;
+                        // SAFETY: a flattened MAP vector's view data is an
+                        // array of ListEntry{offset,length} records, per row.
+                        const list_entries: [*]const db.ListEntry = @ptrCast(@alignCast(parent_views[i].data));
+                        const list_entry = list_entries[row];
+                        const keys: [*]const K = @ptrCast(@alignCast(key_views[i].data));
+                        const values: [*]const V = @ptrCast(@alignCast(value_views[i].data));
+                        const n = @min(list_entry.length, map_arg_max_entries);
+                        var buf: [map_arg_max_entries]Entry = undefined;
+                        for (0..n) |k| buf[k] = .{ .key = keys[list_entry.offset + k], .value = values[list_entry.offset + k] };
+                        args[i] = .{ .entries = buf[0..n] };
+                    } else if (comptime T == []const u8) {
+                        const typed: [*]const db.BytesValue = @ptrCast(@alignCast(parent_views[i].data));
+                        args[i] = db.bytesSlice(&typed[row]);
+                    } else {
+                        const typed: [*]const T = @ptrCast(@alignCast(parent_views[i].data));
+                        args[i] = typed[row];
+                    }
+                }
+
+                const result = @call(.auto, implFn, args);
+
+                if (comptime return_is_map) {
+                    if (result.entries.len > map_return_max_entries) {
+                        const msg = db.str("MAP return exceeds the supported maximum entry count");
+                        _ = db.errorInfoSetCode(err.*, db.c.DUCKDB_V2_ERROR_API);
+                        _ = db.errorInfoSetText(err.*, &msg);
+                        return;
+                    }
+                    var boxed_keys: [map_return_max_entries]db.ValueHandle = undefined;
+                    var boxed_values: [map_return_max_entries]db.ValueHandle = undefined;
+                    for (result.entries, 0..) |entry, k| {
+                        if (!boxLeafValue(context, MapK, entry.key, &boxed_keys[k], err)) return;
+                        if (!boxLeafValue(context, MapV, entry.value, &boxed_values[k], err)) return;
+                    }
+                    defer for (0..result.entries.len) |k| {
+                        _ = db.valueDestroy(&boxed_keys[k]);
+                        _ = db.valueDestroy(&boxed_values[k]);
+                    };
+                    var value: db.ValueHandle = undefined;
+                    if (db.valueCreateMapWithContext(context, return_key_type, return_value_type, boxed_keys[0..result.entries.len], boxed_values[0..result.entries.len], &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    defer _ = db.valueDestroy(&value);
+                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                } else if (comptime return_is_varchar) {
+                    var value: db.ValueHandle = undefined;
+                    if (db.valueCreateVarcharWithContext(context, result, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    defer _ = db.valueDestroy(&value);
+                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                } else {
+                    out[row] = result;
+                }
+            }
+        }
+
+        /// Dedicated exec path for a UNION argument and/or return, scoped
+        /// to flat leaf member types including `[]const u8`
+        /// (`isSupportedUnionMember`) — reuses STRUCT's per-field
+        /// child-vector read/write machinery, since UNION's
+        /// child-vector-per-member layout (`vectorGetChild`: [0] = tag,
+        /// [1..N] = every member) is directly analogous. CAUTION: there
+        /// is no `duckdb_v2_value_create_union_*` constructor at all
+        /// (confirmed by grepping the header) — writes go directly into
+        /// the tag child's flat buffer plus the active member's own
+        /// child vector (flat write, or boxed-per-row `Value` for a
+        /// `[]const u8` member), never through a boxed whole-UNION
+        /// `Value`. The tag is a UTINYINT (`u8`) dictionary-style index
+        /// into the member list, same convention `value_get_child`'s own
+        /// doc comment describes at the `Value` level; confirmed live
+        /// this also holds at the vector level.
+        fn executeUnion(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, result_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
+            var arg_vecs: [param_types.len]db.VectorHandle = undefined;
+            var parent_views: [param_types.len]db.VectorView = undefined;
+
+            inline for (0..param_types.len) |i| {
+                if (db.scalarFunctionExecGetArg(info, i, &arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                // Flattened/viewed uniformly, union args included — a
+                // union vector's own top-level `.validity` bit is still
+                // meaningful and readable this way, even though its
+                // `.data` is never read directly (the tag/member
+                // children, descended via `vectorGetChild` on the
+                // original `arg_vecs[i]` handle below, carry the actual
+                // value).
+                if (db.vectorFlatten(arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (db.vectorGetView(arg_vecs[i], &parent_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            }
+
+            var out: [*]ReturnType = undefined;
+            if (comptime !return_is_union and !return_is_varchar) {
+                var out_data: ?*anyopaque = null;
+                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                out = @ptrCast(@alignCast(out_data));
+            }
+
+            var row: db.idx_t = 0;
+            while (row < row_count) : (row += 1) {
+                var row_valid = true;
+                inline for (0..param_types.len) |i| {
+                    if (parent_views[i].validity) |validity| {
+                        const entry_idx = row / 64;
+                        const bit_idx: u6 = @intCast(row % 64);
+                        if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) row_valid = false;
+                    }
+                }
+                if (!row_valid) {
+                    if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    continue;
+                }
+
+                var args: ArgsTuple = undefined;
+                inline for (0..param_types.len) |i| {
+                    const T = param_types[i].?;
+                    if (comptime isUnionType(T)) {
+                        args[i] = readUnionArg(T, arg_vecs[i], row, err) orelse return;
+                    } else if (comptime T == []const u8) {
+                        const typed: [*]const db.BytesValue = @ptrCast(@alignCast(parent_views[i].data));
+                        args[i] = db.bytesSlice(&typed[row]);
+                    } else {
+                        const typed: [*]const T = @ptrCast(@alignCast(parent_views[i].data));
+                        args[i] = typed[row];
+                    }
+                }
+
+                const result = @call(.auto, implFn, args);
+
+                if (comptime return_is_union) {
+                    if (!writeUnionResult(context, result_vec, row, result, err)) return;
+                } else if (comptime return_is_varchar) {
+                    var value: db.ValueHandle = undefined;
+                    if (db.valueCreateVarcharWithContext(context, result, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    defer _ = db.valueDestroy(&value);
+                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                } else {
+                    out[row] = result;
+                }
+            }
+        }
+
+        /// Decode a UNION argument at `row`: read the tag child's flat
+        /// `u8` ordinal, then read the corresponding member child at the
+        /// same row. Returns `null` (having already set `err`) only on a
+        /// genuine API failure, not on any data condition.
+        fn readUnionArg(comptime T: type, union_vec: db.VectorHandle, row: db.idx_t, err: [*c]db.ErrorInfoHandle) ?T {
+            const info = @typeInfo(T).@"union";
+            const n = info.field_types.len;
+
+            var tag_vec: db.VectorHandle = undefined;
+            if (db.vectorGetChild(union_vec, 0, &tag_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
+            if (db.vectorFlatten(tag_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
+            var tag_view: db.VectorView = undefined;
+            if (db.vectorGetView(tag_vec, &tag_view, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
+            // SAFETY: the tag child is a flattened UTINYINT vector.
+            const tags: [*]const u8 = @ptrCast(@alignCast(tag_view.data));
+            const active = tags[row];
+
+            inline for (0..n) |m| {
+                if (active == m) {
+                    var member_vec: db.VectorHandle = undefined;
+                    if (db.vectorGetChild(union_vec, 1 + m, &member_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
+                    if (db.vectorFlatten(member_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
+                    var member_view: db.VectorView = undefined;
+                    if (db.vectorGetView(member_vec, &member_view, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
+                    const FT = info.field_types[m];
+                    const field_name = info.field_names[m];
+                    if (comptime FT == []const u8) {
+                        const typed: [*]const db.BytesValue = @ptrCast(@alignCast(member_view.data));
+                        return @unionInit(T, field_name, db.bytesSlice(&typed[row]));
+                    } else {
+                        const typed: [*]const FT = @ptrCast(@alignCast(member_view.data));
+                        return @unionInit(T, field_name, typed[row]);
+                    }
+                }
+            }
+            unreachable; // `active` is a dictionary ordinal DuckDB itself produced, always < n
+        }
+
+        /// Write a UNION return value at `row`: the active tag, plus the
+        /// active member's own value into its own child vector — every
+        /// other member's child vector at this row is left untouched
+        /// (unspecified, not required to be NULL or zeroed — UNION's
+        /// tag is what determines which value is meaningful).
+        fn writeUnionResult(context: db.ContextHandle, result_vec: db.VectorHandle, row: db.idx_t, value: ReturnType, err: [*c]db.ErrorInfoHandle) bool {
+            const info = @typeInfo(ReturnType).@"union";
+            const n = info.field_types.len;
+
+            var tag_vec: db.VectorHandle = undefined;
+            if (db.vectorGetChild(result_vec, 0, &tag_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+            var tag_data: ?*anyopaque = null;
+            if (db.vectorGetDataMutable(tag_vec, &tag_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+            const tags: [*]u8 = @ptrCast(@alignCast(tag_data));
+
+            const active = @backingInt(value);
+            tags[row] = @intCast(active);
+
+            // CAUTION, confirmed live: every member's child vector, not
+            // just the active one, must be given a well-defined value at
+            // this row — a mixed-tag batch left the *inactive* members'
+            // rows untouched (uninitialized), which worked fine across
+            // rows when every member was a flat numeric type, but
+            // segfaulted as soon as one member was VARCHAR (a leftover,
+            // never-initialized `duckdb_v2_string_t` is apparently read
+            // by something downstream regardless of the row's own tag —
+            // narrowed by testing a two-numeric-member union, which
+            // never crashed, against a num/VARCHAR union, which crashed
+            // on every mixed-tag batch and never on a same-tag batch).
+            // Fixed by explicitly NULLing every non-active member's row,
+            // not just leaving it alone.
+            inline for (0..n) |m| {
+                var member_vec: db.VectorHandle = undefined;
+                if (db.vectorGetChild(result_vec, 1 + m, &member_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                if (active == m) {
+                    const FT = info.field_types[m];
+                    const field_name = info.field_names[m];
+                    const field_value = @field(value, field_name);
+                    if (comptime FT == []const u8) {
+                        var v: db.ValueHandle = undefined;
+                        if (db.valueCreateVarcharWithContext(context, field_value, &v, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                        defer _ = db.valueDestroy(&v);
+                        if (db.vectorSetValue(member_vec, row, v, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                    } else {
+                        var member_data: ?*anyopaque = null;
+                        if (db.vectorGetDataMutable(member_vec, &member_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                        const typed: [*]FT = @ptrCast(@alignCast(member_data));
+                        typed[row] = field_value;
+                    }
+                } else {
+                    if (db.vectorSetNull(member_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                }
+            }
+            return true;
+        }
     };
 }
 
@@ -1294,5 +1772,42 @@ test "Function supports LIST mixed with a plain argument" {
     }.eval);
     _ = &WeightedSum.register;
     const exec_cb: db.ScalarFunctionExecCallback = WeightedSum.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports a MAP(BIGINT, BIGINT) argument" {
+    const MapSumValues = Function("v2_test_map_sum_values", struct {
+        fn eval(m: Map(i64, i64)) i64 {
+            var total: i64 = 0;
+            for (m.entries) |e| total += e.value;
+            return total;
+        }
+    }.eval);
+    _ = &MapSumValues.register;
+    const exec_cb: db.ScalarFunctionExecCallback = MapSumValues.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports a MAP(BIGINT, BIGINT) return type" {
+    const MapMake = Function("v2_test_map_make", struct {
+        fn eval(n: i64) Map(i64, i64) {
+            _ = n;
+            return .{ .entries = &.{ .{ .key = 1, .value = 10 }, .{ .key = 2, .value = 20 } } };
+        }
+    }.eval);
+    _ = &MapMake.register;
+    const exec_cb: db.ScalarFunctionExecCallback = MapMake.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports a UNION argument and return type, including a VARCHAR member" {
+    const NumOrText = union(enum) { num: i64, text: []const u8 };
+    const UnionRoundtrip = Function("v2_test_union_roundtrip", struct {
+        fn eval(u: NumOrText) NumOrText {
+            return u;
+        }
+    }.eval);
+    _ = &UnionRoundtrip.register;
+    const exec_cb: db.ScalarFunctionExecCallback = UnionRoundtrip.execute;
     try std.testing.expect(exec_cb != null);
 }
