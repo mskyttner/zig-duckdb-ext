@@ -1182,6 +1182,40 @@ pub fn contextCreateListType(
     );
 }
 
+/// Create ARRAY(child_type, size) — a fixed-size counterpart to LIST,
+/// taking two positional parameters (element type, size) per
+/// `logical_type_get_param_count`'s own doc comment ("ARRAY 2 (element
+/// type, size)"): the element type wrapped as a TYPE-kind Value the same
+/// way `contextCreateListType` does, plus the size as a BIGINT-kind Value.
+pub fn contextCreateArrayType(
+    ctx: ContextHandle,
+    child_type: LogicalTypeHandle,
+    size: i64,
+    out_type: *LogicalTypeHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    var child_type_value: ValueHandle = undefined;
+    if (valueCreateTypeWithContext(ctx, child_type, &child_type_value, err) != c.DUCKDB_V2_ERROR_NONE) {
+        return c.DUCKDB_V2_ERROR_API;
+    }
+    defer _ = valueDestroy(&child_type_value);
+    var size_value: ValueHandle = undefined;
+    if (valueCreateBigintWithContext(ctx, size, &size_value, err) != c.DUCKDB_V2_ERROR_NONE) {
+        return c.DUCKDB_V2_ERROR_API;
+    }
+    defer _ = valueDestroy(&size_value);
+    const param_values = [_]ValueHandle{ child_type_value, size_value };
+    return getApi().duckdb_v2_context_create_type_from_id.?(
+        ctx,
+        c.DUCKDB_V2_LOGICAL_TYPE_ID_ARRAY,
+        null,
+        &param_values,
+        2,
+        out_type,
+        err,
+    );
+}
+
 /// Create STRUCT(names[0] field_types[0], ...). Unlike LIST's single
 /// positional child type, STRUCT needs one *named* TYPE-kind Value
 /// parameter per field — same two-step Value-wrapping dance

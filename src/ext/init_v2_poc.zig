@@ -127,6 +127,75 @@ const WordOrDigitsToBigint = comptime_cast_v2.Function([]const u8, i64, struct {
     }
 }.cast);
 
+/// Proves comptime_cast_v2's DECIMAL support: CAST(price AS DOUBLE)
+/// dividing out the DECIMAL(10,2)'s own scale, and the reverse direction.
+const CastPrice = db2.Decimal(10, 2);
+const PriceToDoubleCast = comptime_cast_v2.Function(CastPrice, f64, struct {
+    fn cast(p: CastPrice) ?f64 {
+        return @as(f64, @floatFromInt(p.raw)) / 100.0;
+    }
+}.cast);
+const DoubleToPriceCast = comptime_cast_v2.Function(f64, CastPrice, struct {
+    fn cast(d: f64) ?CastPrice {
+        return .{ .raw = @intFromFloat(@round(d * 100.0)) };
+    }
+}.cast);
+
+/// Proves comptime_cast_v2's ENUM support. `MoodToIntCast` (ENUM source
+/// to a flat BIGINT target) is live-verified working correctly, including
+/// over a real multi-row table column. `MoodToVarcharCast` (ENUM source
+/// to VARCHAR, a `vectorSetValue`-boxed target) is registered to prove
+/// registration itself succeeds, but is confirmed BROKEN at exec time on
+/// this alpha build — see comptime_cast_v2.zig's module doc comment for
+/// the precise repro (not a bug in this framework's decode/registration
+/// logic, confirmed via debug instrumentation). `VarcharToMoodCast`
+/// (VARCHAR source to ENUM target) is live-verified working correctly.
+const CastMood = enum(u8) { sad = 1, neutral = 5, happy = 9 };
+const MoodToIntCast = comptime_cast_v2.Function(CastMood, i64, struct {
+    fn cast(m: CastMood) ?i64 {
+        return @backingInt(m);
+    }
+}.cast);
+const MoodToVarcharCast = comptime_cast_v2.Function(CastMood, []const u8, struct {
+    fn cast(m: CastMood) ?[]const u8 {
+        return @tagName(m);
+    }
+}.cast);
+const VarcharToMoodCast = comptime_cast_v2.Function([]const u8, CastMood, struct {
+    fn cast(s: []const u8) ?CastMood {
+        return std.meta.stringToEnum(CastMood, s);
+    }
+}.cast);
+
+/// Proves comptime_cast_v2's STRUCT support, both directions (one level
+/// deep, numeric/bool/VARCHAR fields).
+const CastPoint = struct { x: i64, y: i64 };
+const PointToVarcharCast = comptime_cast_v2.Function(CastPoint, []const u8, struct {
+    fn cast(p: CastPoint) ?[]const u8 {
+        _ = p;
+        return "point";
+    }
+}.cast);
+const IntToPointCast = comptime_cast_v2.Function(i64, CastPoint, struct {
+    fn cast(n: i64) ?CastPoint {
+        return .{ .x = n, .y = n * 2 };
+    }
+}.cast);
+
+/// Proves comptime_cast_v2's VARIANT-as-source-type support (target is a
+/// compile error — see that file's module doc comment for why): NULL
+/// VARIANT cells cast to -1, non-NULL cells cast to 1 (not decoding the
+/// held value, just distinguishing NULL from not — the smallest check
+/// that proves castFn received a real, usable `db.ValueHandle`).
+const VariantToIntCast = comptime_cast_v2.Function(db2.ValueHandle, i64, struct {
+    fn cast(v: db2.ValueHandle) ?i64 {
+        var err: db2.ErrorInfoHandle = undefined;
+        var is_null: bool = false;
+        _ = db2.valueIsNull(v, &is_null, &err);
+        return if (is_null) -1 else 1;
+    }
+}.cast);
+
 /// Proves comptime_scalar_v2's STRUCT *return* support: constructs a fresh
 /// `STRUCT(x BIGINT, y BIGINT)` point from a single scalar.
 const PointMake = comptime_scalar_v2.Function("zig_v2_point_make_ct", struct {
@@ -236,6 +305,38 @@ const NextMoodCt = comptime_scalar_v2.Function("zig_v2_next_mood_ct", struct {
             .neutral => .happy,
             .happy => .happy,
         };
+    }
+}.eval);
+
+/// Proves LIST(BIGINT) as a parameter type: zero-copy slice decode via
+/// ListEntry{offset,length} into the flattened child vector.
+const ListSumCt = comptime_scalar_v2.Function("zig_v2_list_sum_ct", struct {
+    fn eval(xs: []const i64) i64 {
+        var total: i64 = 0;
+        for (xs) |x| total += x;
+        return total;
+    }
+}.eval);
+
+/// Proves LIST(BIGINT) as a return type: boxed element-by-element via
+/// valueCreateListWithContext, a dynamic (per-row) length. Slices a
+/// file-scope `const` array (static storage) rather than a local stack
+/// buffer — per comptime_scalar_v2.zig's own CAUTION on VARCHAR returns,
+/// a slice into implFn's own stack frame is unsafe, since the Value box
+/// happens after implFn returns.
+const list_range_values = [16]i64{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+const ListRangeCt = comptime_scalar_v2.Function("zig_v2_list_range_ct", struct {
+    fn eval(n: i64) []const i64 {
+        const len = @min(@as(usize, @intCast(@max(n, 0))), list_range_values.len);
+        return list_range_values[0..len];
+    }
+}.eval);
+
+/// Proves ARRAY(DOUBLE, 3) as a parameter and return type: fixed-size,
+/// contiguous-per-row decode/encode, no ListEntry needed.
+const ArrayScale3Ct = comptime_scalar_v2.Function("zig_v2_array_scale3_ct", struct {
+    fn eval(xs: [3]f64, factor: f64) [3]f64 {
+        return .{ xs[0] * factor, xs[1] * factor, xs[2] * factor };
     }
 }.eval);
 
@@ -609,6 +710,14 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     PointMake.register(input) catch {};
     PersonBirthday.register(input) catch {};
     WordOrDigitsToBigint.register(input) catch {};
+    PriceToDoubleCast.register(input) catch {};
+    DoubleToPriceCast.register(input) catch {};
+    MoodToVarcharCast.register(input) catch {};
+    MoodToIntCast.register(input) catch {};
+    VarcharToMoodCast.register(input) catch {};
+    PointToVarcharCast.register(input) catch {};
+    IntToPointCast.register(input) catch {};
+    VariantToIntCast.register(input) catch {};
     VariantDefault.register(input) catch {};
     NarrowSum.register(input) catch {};
     TimestampAddCt.register(input) catch {};
@@ -616,6 +725,9 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     ApplyTaxCt.register(input) catch {};
     BigDecimalDoubleCt.register(input) catch {};
     NextMoodCt.register(input) catch {};
+    ListSumCt.register(input) catch {};
+    ListRangeCt.register(input) catch {};
+    ArrayScale3Ct.register(input) catch {};
     RangeCt.register(input) catch {};
     RangeProgressCt.register(input) catch {};
     RepeatCt.register(input) catch {};

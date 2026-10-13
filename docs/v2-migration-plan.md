@@ -1067,6 +1067,52 @@ workload:
   close before 2.0 ships, or a real restriction; the TRY-mode branch in
   `comptime_cast_v2.zig`'s `execute` is implemented per the header's
   documented contract but is unexercised and unverified on this build.
+  **Follow-up (2026-10-13): DECIMAL/ENUM/STRUCT/VARIANT added as cast
+  source/target types — DECIMAL and VARIANT (source-only) fully reliable;
+  ENUM and STRUCT confirmed broken/unreliable at exec time on this alpha
+  build.** DECIMAL is live-verified both directions (DECIMAL(10,2)↔DOUBLE,
+  confirmed genuinely invoked — not DuckDB's own built-in cast — via a
+  temporary obviously-wrong marker value that showed up in the output).
+  VARIANT is source-only by design (target would need `context` to build
+  a fresh `Value`, which `castFn`'s fixed `fn(SourceT) ?TargetT` signature
+  doesn't receive) and live-verified (NULL vs. non-NULL VARIANT cells
+  correctly distinguished). STRUCT support mirrors
+  `comptime_scalar_v2.zig`'s one-level-deep, numeric/bool/VARCHAR-field
+  restriction, reusing its proven child-vector read/write code.
+  **Two distinct, confirmed-live DuckDB-side (not this framework's) bugs
+  found building ENUM/STRUCT support**:
+  1. Writing an ENUM **target** via the same "box as VARCHAR, then
+     `valueCastWithContext` to the enum type" trick
+     `comptime_scalar_v2.zig`'s scalar-return path uses safely is NOT
+     safe for a *registered cast*: the cast-to-target-type call
+     re-enters the SAME cast function recursively, since it's now the
+     registered VARCHAR→ENUM conversion DuckDB would use — infinite
+     recursion, stack overflow, segfault, confirmed live. Fixed by
+     writing the dictionary ordinal directly into the output vector's
+     flat buffer instead (`encodeEnumOrdinal`), never calling
+     `valueCastWithContext` for an ENUM target.
+  2. This alpha's custom-cast dispatch is broadly unreliable whenever a
+     **composite type (STRUCT or ENUM) is involved on either side**,
+     beyond bug 1. A composite source combined with a
+     `vectorSetValue`-boxed target (VARCHAR) fails even in complete
+     isolation with a bogus "row out of range" — confirmed via debug
+     instrumentation that decode itself is correct up to that exact
+     call. A composite source combined with a flat-buffer target
+     (BIGINT) works correctly when registered alone, but registering
+     BOTH directions for the same composite type corrupts dispatch for
+     the rest of that session, breaking even the otherwise-correct
+     direction — confirmed for both ENUM (`MoodToIntCast`/
+     `MoodToVarcharCast`/`VarcharToMoodCast`) and STRUCT
+     (`IntToPointCast`/`PointToVarcharCast`) in `init_v2_poc.zig`. A
+     plain non-composite cast run in between is unaffected — scoped to
+     composite-type casts specifically. Not investigated further into
+     DuckDB's own internals (would need a source debug build of DuckDB
+     itself for symbolized backtraces — a large C++ build this
+     project's whole architecture, ADR-0001, deliberately avoids, and
+     not worth it for a staged alpha that will change again before a
+     real 2.0 release). Treated with the same posture as the TRY_CAST
+     finding above: documented precisely, left unresolved, not a
+     blocker since nothing currently depends on it.
 - **No SQL-execution pipeline wrapped at all — not started** (found
   2026-10-12, systematically checking this project's v2 coverage against
   every section of https://duckdb.org/docs/preview/clients/c/api, not
@@ -1141,31 +1187,46 @@ workload:
     produce dead code — type-correct, but uncallable from anywhere this
     project's extension can actually run — so deliberately not done,
     not merely deferred.
-- **LIST/ARRAY/MAP/UNION as `comptime_scalar_v2` argument or return
-  types — not started, not even scoped before now.** Found 2026-10-12
-  while cataloguing remaining gaps. Item 2 above only ever targeted
-  STRUCT (now both directions — argument and return, done) and VARIANT
-  (both directions) — LIST, ARRAY, MAP, and UNION were never on the list
-  at all. The low-level plumbing already exists and has been
-  exercised by hand, just never generalized into the comptime framework's
-  type-mapping (`duckdbV2TypeId`/`isStructType`/etc.): `contextCreateListType`/
-  `contextCreateArrayType`/`contextCreateMapType`/`contextCreateUnionType`
-  all exist in `duckdb_v2.zig`, and a hand-written POC (the nested-type
-  Appender test in `init_v2_poc.zig`) already decodes a real
-  `LIST(BIGINT)` column by hand — `vectorGetView` on the LIST vector
-  itself yields a `[*]ListEntry{offset, length}` array (not element
-  values), and `vectorGetChild(vec, 0, ...)` gets the flat child vector
-  those offsets index into, which is then read exactly like any other
-  argument. MAP decodes the same way DuckDB represents it internally
-  (child 0 is a STRUCT(key, value), confirmed via `duckdb_v2.zig`'s
-  `vectorGetChild` doc comment, carried over from item 5's STRUCT work);
-  UNION's child 0 is the tag, 1..N the members, same doc comment. So the
-  mechanism for all four is already proven at the wrapper level — what's
-  missing is comptime-generating this from a plain Zig type the way
-  STRUCT already does from a `struct`, which would need a convention for
-  each (e.g. `[]const T` for LIST, `[N]T` for ARRAY, a dedicated
-  `db.Map(K, V)`/`db.Union(...)` wrapper type for MAP/UNION, since Zig has
-  no built-in map/tagged-union-with-named-variants shape that maps 1:1).
+- **LIST/ARRAY as `comptime_scalar_v2` argument/return types — done
+  (2026-10-13); MAP/UNION still not started.** Found 2026-10-12 while
+  cataloguing remaining gaps; item 2 above only ever targeted STRUCT and
+  VARIANT. **Correction to this entry's own earlier text**: it previously
+  claimed `contextCreateArrayType`/`contextCreateMapType`/
+  `contextCreateUnionType` "all exist in `duckdb_v2.zig`" — confirmed by
+  direct grep that only `contextCreateListType` existed at the time; the
+  other three didn't (aspirational, not verified before writing it down).
+  `contextCreateArrayType` has since been added (2-param
+  `context_create_type_from_id` call: element type as a TYPE-kind Value,
+  size as a BIGINT-kind Value, per `logical_type_get_param_count`'s own
+  doc comment); `contextCreateMapType`/`contextCreateUnionType` still
+  don't exist.
+  `[]const T` (T a flat leaf type, excluding `[]const u8` — that's still
+  VARCHAR) maps to LIST(T); `[N]T` maps to ARRAY(T, N) — both argument
+  and return, scoped to numeric/bool element types only (not nested
+  STRUCT/DECIMAL/ENUM/VARIANT/another LIST, and not `[]const u8`
+  elements — all deferred). Argument decode is zero-copy: LIST slices
+  directly into the flattened child vector via the parent's own
+  `ListEntry{offset,length}` per row (confirmed this plumbing works
+  exactly as the nested-type Appender POC had already proven by hand);
+  ARRAY likewise, strided by its fixed comptime-known length, no
+  `ListEntry` needed. Returns box each element through the matching
+  `value_create_*` leaf constructor and
+  `valueCreateListWithContext`/`valueCreateArrayWithContext` — the same
+  "simpler, if slower" tradeoff already accepted for VARCHAR/BLOB/
+  STRUCT-VARCHAR-field returns, not a direct child-vector write (which
+  would need cumulative per-row offset bookkeeping across the whole
+  batch). Live-verified: `zig_v2_list_sum_ct`/`zig_v2_list_range_ct`/
+  `zig_v2_array_scale3_ct` in `init_v2_poc.zig` — LIST argument
+  (including empty list and NULL argument), LIST return at varying
+  lengths (including composing with a real DuckDB aggregate,
+  `list_sum(zig_v2_list_range_ct(x))`, across multiple rows), and ARRAY
+  both directions. CAUTION, confirmed live and documented, not just
+  assumed: a NULL *element* inside a non-NULL LIST/ARRAY row decodes as
+  uninitialized garbage, not a crash — individual-element NULL checking
+  was deliberately not attempted (one-level-deep restriction, same
+  spirit as STRUCT fields). MAP and UNION remain fully unscoped — no
+  Zig-type convention decided for either, and their constructor wrappers
+  (`contextCreateMapType`/`contextCreateUnionType`) still don't exist.
   Not attempted.
 - ~~**Table-function projection pushdown — not started, no wrapper
   exists**~~ — **done.** Found while comparing against

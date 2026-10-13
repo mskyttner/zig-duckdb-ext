@@ -65,6 +65,29 @@
 ///!   it was handed unchanged — the framework destroys the return value
 ///!   AND every VARIANT argument independently, so returning the same
 ///!   handle it received double-frees it.
+///! - `[]const T` (T a numeric/bool leaf type, excluding `[]const u8` —
+///!   that's VARCHAR, unchanged) maps to SQL LIST(T); `[N]T` maps to
+///!   ARRAY(T, N). Scoped to flat leaf element types only (not nested
+///!   STRUCT/DECIMAL/ENUM/VARIANT/another LIST, and not `[]const u8`
+///!   elements — all deferred, along with MAP and UNION entirely, which
+///!   have no Zig-type convention here yet). A LIST argument decodes
+///!   zero-copy (a real slice into the flattened child vector, sliced via
+///!   the parent's own `ListEntry{offset,length}` per row); an ARRAY
+///!   argument likewise, strided by its fixed length. Returns box each
+///!   element through the matching `value_create_*` leaf constructor and
+///!   `valueCreateListWithContext`/`valueCreateArrayWithContext` — the
+///!   same "simpler, if slower" tradeoff already accepted for VARCHAR/
+///!   BLOB/STRUCT-VARCHAR-field returns, not a direct child-vector write
+///!   (which would need cumulative per-row offset bookkeeping across the
+///!   whole batch). A LIST return is capped at a fixed max length per
+///!   row (a query error past it, not silent truncation); ARRAY needs no
+///!   such cap, since its length is fixed and comptime-known. CAUTION:
+///!   individual elements inside a non-NULL LIST/ARRAY row are NOT
+///!   checked for their own NULL-ness, only the LIST/ARRAY row itself —
+///!   confirmed live that a NULL element decodes as uninitialized
+///!   garbage, not a crash, but also not a meaningful value; a future
+///!   addition, not attempted here. Can't be combined with STRUCT/
+///!   VARIANT parameters/return in the same function yet (compile error).
 ///!
 ///! Usage:
 ///!   const MyFn = comptime_scalar_v2.Function("my_double", struct {
@@ -111,6 +134,43 @@ fn isEnumType(comptime T: type) bool {
     return @typeInfo(T) == .@"enum";
 }
 
+/// LIST(elem_type): a plain Zig slice, excluding `[]const u8` (reserved for
+/// VARCHAR, matching the plain non-nested parameter/return path's existing
+/// convention). Scoped to a flat leaf element type only (the same numeric/
+/// bool set `duckdbV2TypeId` maps directly) — not STRUCT/DECIMAL/ENUM/
+/// VARIANT/another LIST elements, and not `[]const u8` elements either, all
+/// deferred (see this file's module doc comment).
+fn isListType(comptime T: type) bool {
+    if (T == []const u8) return false;
+    const info = @typeInfo(T);
+    return info == .pointer and info.pointer.size == .slice and info.pointer.attrs.@"const";
+}
+
+fn ListElem(comptime T: type) type {
+    return @typeInfo(T).pointer.child;
+}
+
+/// ARRAY(elem_type, size): a fixed-size Zig array, same element-type scope
+/// as `isListType`.
+fn isArrayType(comptime T: type) bool {
+    return @typeInfo(T) == .array;
+}
+
+fn ArrayElem(comptime T: type) type {
+    return @typeInfo(T).array.child;
+}
+
+fn ArrayLen(comptime T: type) usize {
+    return @typeInfo(T).array.len;
+}
+
+fn isSupportedListArrayElem(comptime T: type) bool {
+    return switch (T) {
+        i8, i16, i32, i64, f32, f64, bool => true,
+        else => false,
+    };
+}
+
 fn isStructType(comptime T: type) bool {
     // db.Blob and db.Decimal(w,s) are Zig structs (wrapping a []const u8
     // and a raw storage int, respectively) but must never be treated as a
@@ -147,6 +207,30 @@ fn createLogicalType(ctx: db.ContextHandle, comptime T: type, out_type: *db.Logi
     }
     if (comptime isEnumType(T)) {
         return db.contextCreateTypeFromText(ctx, comptime enumSqlText(T), out_type, err);
+    }
+    if (comptime isListType(T)) {
+        const Elem = ListElem(T);
+        if (!comptime isSupportedListArrayElem(Elem)) {
+            @compileError("unsupported LIST element type for DuckDB v2 mapping: " ++ @typeName(Elem));
+        }
+        var elem_type: db.LogicalTypeHandle = undefined;
+        if (createLogicalType(ctx, Elem, &elem_type, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            return db.c.DUCKDB_V2_ERROR_API;
+        }
+        defer _ = db.logicalTypeDestroy(&elem_type);
+        return db.contextCreateListType(ctx, elem_type, out_type, err);
+    }
+    if (comptime isArrayType(T)) {
+        const Elem = ArrayElem(T);
+        if (!comptime isSupportedListArrayElem(Elem)) {
+            @compileError("unsupported ARRAY element type for DuckDB v2 mapping: " ++ @typeName(Elem));
+        }
+        var elem_type: db.LogicalTypeHandle = undefined;
+        if (createLogicalType(ctx, Elem, &elem_type, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            return db.c.DUCKDB_V2_ERROR_API;
+        }
+        defer _ = db.logicalTypeDestroy(&elem_type);
+        return db.contextCreateArrayType(ctx, elem_type, @intCast(ArrayLen(T)), out_type, err);
     }
     if (comptime isStructType(T)) {
         const fields = @typeInfo(T).@"struct";
@@ -223,20 +307,32 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
     }
 
     inline for (param_types) |t| {
-        if (comptime !isStructType(t.?) and !isDecimalType(t.?) and !isEnumType(t.?)) _ = duckdbV2TypeId(t.?);
+        if (comptime !isStructType(t.?) and !isDecimalType(t.?) and !isEnumType(t.?) and !isListType(t.?) and !isArrayType(t.?)) _ = duckdbV2TypeId(t.?);
     }
-    if (comptime !isStructType(ReturnType) and !isDecimalType(ReturnType) and !isEnumType(ReturnType)) _ = duckdbV2TypeId(ReturnType);
+    if (comptime !isStructType(ReturnType) and !isDecimalType(ReturnType) and !isEnumType(ReturnType) and !isListType(ReturnType) and !isArrayType(ReturnType)) _ = duckdbV2TypeId(ReturnType);
 
     const has_variant_arg = raw_has_variant_arg;
     const return_is_decimal = isDecimalType(ReturnType);
     const return_is_enum = isEnumType(ReturnType);
     const return_is_struct = isStructType(ReturnType);
+    const return_is_list = isListType(ReturnType);
+    const return_is_array = isArrayType(ReturnType);
     const has_struct_arg = blk: {
         inline for (param_types) |t| {
             if (comptime isStructType(t.?)) break :blk true;
         }
         break :blk false;
     };
+    const has_list_or_array_arg = blk: {
+        inline for (param_types) |t| {
+            if (comptime isListType(t.?) or isArrayType(t.?)) break :blk true;
+        }
+        break :blk false;
+    };
+    const has_list_or_array = has_list_or_array_arg or return_is_list or return_is_array;
+    if (has_list_or_array and (has_variant_arg or return_is_variant or has_struct_arg or return_is_struct)) {
+        @compileError("a Function can't mix LIST/ARRAY with STRUCT or VARIANT parameters/return in the same function yet");
+    }
 
     return struct {
         /// Register this scalar function against the extension being loaded.
@@ -331,6 +427,9 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             }
             if (comptime has_struct_arg or return_is_struct) {
                 return executeStruct(info, context, result_vec, row_count, err);
+            }
+            if (comptime has_list_or_array) {
+                return executeListArray(info, context, result_vec, row_count, err);
             }
 
             // Cache each argument's view (flattened first — sequence/FSST/
@@ -785,6 +884,180 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             }
             return args;
         }
+
+        /// A LIST return longer than this per row is a query error, not a
+        /// silent truncation. ARRAY returns need no such cap — their
+        /// length is fixed and comptime-known (`ArrayLen(ReturnType)`).
+        const list_return_max_elems = 4096;
+
+        inline fn boxLeafValue(ctx: db.ContextHandle, comptime T: type, v: T, out: *db.ValueHandle, err: [*c]db.ErrorInfoHandle) bool {
+            const rc = switch (T) {
+                i8 => db.valueCreateTinyintWithContext(ctx, v, out, err),
+                i16 => db.valueCreateSmallintWithContext(ctx, v, out, err),
+                i32 => db.valueCreateIntWithContext(ctx, v, out, err),
+                i64 => db.valueCreateBigintWithContext(ctx, v, out, err),
+                f32 => db.valueCreateFloatWithContext(ctx, v, out, err),
+                f64 => db.valueCreateDoubleWithContext(ctx, v, out, err),
+                bool => db.valueCreateBoolWithContext(ctx, v, out, err),
+                else => @compileError("unsupported LIST/ARRAY element type for boxing: " ++ @typeName(T)),
+            };
+            return rc == db.c.DUCKDB_V2_ERROR_NONE;
+        }
+
+        inline fn listRowIsValid(views: *const [param_types.len]db.VectorView, row: db.idx_t) bool {
+            inline for (0..param_types.len) |i| {
+                if (views.*[i].validity) |validity| {
+                    const entry_idx = row / 64;
+                    const bit_idx: u6 = @intCast(row % 64);
+                    if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) return false;
+                }
+            }
+            return true;
+        }
+
+        /// Dedicated exec path for a LIST/ARRAY-typed argument and/or
+        /// return, scoped to flat leaf element types
+        /// (`isSupportedListArrayElem`) — not combined with STRUCT/VARIANT
+        /// in the same function (see the `has_list_or_array` compile-time
+        /// guard above).
+        ///
+        /// Argument decode is zero-copy: LIST reads each row's
+        /// `ListEntry{offset, length}` from the flattened parent vector's
+        /// own view, then slices directly into the flattened child
+        /// vector's flat element buffer. ARRAY has no per-row metadata —
+        /// elements are contiguous, strided by the fixed array length.
+        /// CAUTION: individual elements inside a non-NULL LIST/ARRAY row
+        /// are NOT checked for their own NULL-ness — only the LIST/ARRAY
+        /// row itself (via the parent vector's own validity bit); a
+        /// future addition, not attempted here (mirrors the one-level-
+        /// deep restriction already documented for STRUCT fields).
+        ///
+        /// Return is boxed through
+        /// `valueCreateListWithContext`/`valueCreateArrayWithContext`
+        /// (building each element as its own boxed `Value` via the
+        /// matching `value_create_*` leaf constructor, the same "simpler,
+        /// if slower" tradeoff already accepted for VARCHAR/BLOB/STRUCT-
+        /// VARCHAR-field returns) rather than a direct child-vector
+        /// write — a direct write would need computing cumulative
+        /// per-row offsets into one shared child vector across the whole
+        /// batch, real added complexity this first implementation
+        /// doesn't take on.
+        fn executeListArray(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, result_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
+            var arg_vecs: [param_types.len]db.VectorHandle = undefined;
+            var parent_views: [param_types.len]db.VectorView = undefined;
+            var child_views: [param_types.len]db.VectorView = undefined;
+
+            inline for (0..param_types.len) |i| {
+                const T = param_types[i].?;
+                if (db.scalarFunctionExecGetArg(info, i, &arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (db.vectorFlatten(arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (db.vectorGetView(arg_vecs[i], &parent_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (comptime isListType(T) or isArrayType(T)) {
+                    var child_vec: db.VectorHandle = undefined;
+                    if (db.vectorGetChild(arg_vecs[i], 0, &child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (db.vectorFlatten(child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (db.vectorGetView(child_vec, &child_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                }
+            }
+
+            const ReturnElem = if (comptime return_is_list) ListElem(ReturnType) else if (comptime return_is_array) ArrayElem(ReturnType) else void;
+            var return_elem_type: db.LogicalTypeHandle = undefined;
+            if (comptime return_is_list or return_is_array) {
+                if (createLogicalType(context, ReturnElem, &return_elem_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            }
+            defer if (comptime return_is_list or return_is_array) {
+                _ = db.logicalTypeDestroy(&return_elem_type);
+            };
+
+            var out: [*]ReturnType = undefined;
+            if (comptime !return_is_list and !return_is_array and !return_is_varchar) {
+                var out_data: ?*anyopaque = null;
+                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                out = @ptrCast(@alignCast(out_data));
+            }
+
+            var row: db.idx_t = 0;
+            while (row < row_count) : (row += 1) {
+                if (!listRowIsValid(&parent_views, row)) {
+                    if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    continue;
+                }
+
+                var args: ArgsTuple = undefined;
+                inline for (0..param_types.len) |i| {
+                    const T = param_types[i].?;
+                    if (comptime isListType(T)) {
+                        const Elem = ListElem(T);
+                        // SAFETY: a flattened LIST vector's view data is an
+                        // array of ListEntry{offset,length} records, per row.
+                        const entries: [*]const db.ListEntry = @ptrCast(@alignCast(parent_views[i].data));
+                        const entry = entries[row];
+                        // SAFETY: the flattened child vector's view data is
+                        // the flat element buffer shared across all rows.
+                        const elems: [*]const Elem = @ptrCast(@alignCast(child_views[i].data));
+                        args[i] = elems[entry.offset..][0..entry.length];
+                    } else if (comptime isArrayType(T)) {
+                        const Elem = ArrayElem(T);
+                        const n = comptime ArrayLen(T);
+                        // SAFETY: an ARRAY's flattened child vector has
+                        // `row_count * n` elements, strided by n per row.
+                        const elems: [*]const Elem = @ptrCast(@alignCast(child_views[i].data));
+                        const start = row * n;
+                        var arr: T = undefined;
+                        inline for (0..n) |k| arr[k] = elems[start + k];
+                        args[i] = arr;
+                    } else if (comptime T == []const u8) {
+                        const typed: [*]const db.BytesValue = @ptrCast(@alignCast(parent_views[i].data));
+                        args[i] = db.bytesSlice(&typed[row]);
+                    } else {
+                        const typed: [*]const T = @ptrCast(@alignCast(parent_views[i].data));
+                        args[i] = typed[row];
+                    }
+                }
+
+                const result = @call(.auto, implFn, args);
+
+                if (comptime return_is_list) {
+                    if (result.len > list_return_max_elems) {
+                        const msg = db.str("LIST return exceeds the supported maximum length");
+                        _ = db.errorInfoSetCode(err.*, db.c.DUCKDB_V2_ERROR_API);
+                        _ = db.errorInfoSetText(err.*, &msg);
+                        return;
+                    }
+                    var boxed: [list_return_max_elems]db.ValueHandle = undefined;
+                    for (result, 0..) |item, k| {
+                        if (!boxLeafValue(context, ReturnElem, item, &boxed[k], err)) return;
+                    }
+                    defer for (0..result.len) |k| {
+                        _ = db.valueDestroy(&boxed[k]);
+                    };
+                    var value: db.ValueHandle = undefined;
+                    if (db.valueCreateListWithContext(context, return_elem_type, boxed[0..result.len], &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    defer _ = db.valueDestroy(&value);
+                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                } else if (comptime return_is_array) {
+                    const n = comptime ArrayLen(ReturnType);
+                    var boxed: [n]db.ValueHandle = undefined;
+                    inline for (0..n) |k| {
+                        if (!boxLeafValue(context, ReturnElem, result[k], &boxed[k], err)) return;
+                    }
+                    defer inline for (0..n) |k| {
+                        _ = db.valueDestroy(&boxed[k]);
+                    };
+                    var value: db.ValueHandle = undefined;
+                    if (db.valueCreateArrayWithContext(context, return_elem_type, &boxed, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    defer _ = db.valueDestroy(&value);
+                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                } else if (comptime return_is_varchar) {
+                    var value: db.ValueHandle = undefined;
+                    if (db.valueCreateVarcharWithContext(context, result, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    defer _ = db.valueDestroy(&value);
+                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                } else {
+                    out[row] = result;
+                }
+            }
+        }
     };
 }
 
@@ -972,5 +1245,54 @@ test "Function supports ENUM as a parameter and return type, including manually-
     }.eval);
     _ = &NextStatus.register;
     const exec_cb: db.ScalarFunctionExecCallback = NextStatus.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports a LIST(BIGINT) argument" {
+    const Sum = Function("v2_test_list_sum", struct {
+        fn eval(xs: []const i64) i64 {
+            var total: i64 = 0;
+            for (xs) |x| total += x;
+            return total;
+        }
+    }.eval);
+    _ = &Sum.register;
+    const exec_cb: db.ScalarFunctionExecCallback = Sum.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports a LIST(BIGINT) return type" {
+    const Pair = Function("v2_test_list_return", struct {
+        fn eval(a: i64) []const i64 {
+            _ = a;
+            return &.{ 1, 2, 3 };
+        }
+    }.eval);
+    _ = &Pair.register;
+    const exec_cb: db.ScalarFunctionExecCallback = Pair.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports an ARRAY(DOUBLE, N) argument and return type" {
+    const Scale2 = Function("v2_test_array_scale", struct {
+        fn eval(xs: [2]f64) [2]f64 {
+            return .{ xs[0] * 2, xs[1] * 2 };
+        }
+    }.eval);
+    _ = &Scale2.register;
+    const exec_cb: db.ScalarFunctionExecCallback = Scale2.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "Function supports LIST mixed with a plain argument" {
+    const WeightedSum = Function("v2_test_list_mixed", struct {
+        fn eval(xs: []const i64, scale: i64) i64 {
+            var total: i64 = 0;
+            for (xs) |x| total += x;
+            return total * scale;
+        }
+    }.eval);
+    _ = &WeightedSum.register;
+    const exec_cb: db.ScalarFunctionExecCallback = WeightedSum.execute;
     try std.testing.expect(exec_cb != null);
 }
