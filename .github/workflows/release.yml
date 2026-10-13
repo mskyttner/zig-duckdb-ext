@@ -59,33 +59,13 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      - name: Cross-compile the extension for every target
+      - name: Cross-compile and package the extension for every target
         run: |
-          zig build cross \
+          zig build dist \
             -Dname="${EXTENSION_NAME}" \
             -Dapi-version="${EXTENSION_API_VERSION}" \
-            -Dextension-version="${EXTENSION_VERSION}"
-
-      - name: Arrange and compress into the custom-repository layout
-        run: |
-          set -euo pipefail
-          dist_dir="dist/${DUCKDB_VERSION}"
-          mkdir -p "$dist_dir"
-          found=0
-          for platform_dir in zig-out/lib/*/; do
-            platform="$(basename "$platform_dir")"
-            ext_file="${platform_dir}${EXTENSION_NAME}.duckdb_extension"
-            if [ -f "$ext_file" ]; then
-              mkdir -p "$dist_dir/$platform"
-              gzip -c "$ext_file" > "$dist_dir/$platform/${EXTENSION_NAME}.duckdb_extension.gz"
-              found=$((found + 1))
-            fi
-          done
-          if [ "$found" -eq 0 ]; then
-            echo "no cross-built extension artifacts found under zig-out/lib/*/"
-            exit 1
-          fi
-          echo "published $found platform artifact(s):"
+            -Dextension-version="${EXTENSION_VERSION}" \
+            -Ddist-version="${DUCKDB_VERSION}"
           find dist -type f
 
       - uses: actions/configure-pages@v5

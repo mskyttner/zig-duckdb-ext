@@ -198,6 +198,14 @@ pub fn build(b: *std.Build) void {
         "platform",
         "Override the auto-detected platform string written into the host build's metadata (e.g. linux_amd64) — does not affect `cross`, which already computes the correct one per target",
     );
+    // The DuckDB CLIENT version directory `dist` publishes under — a
+    // separate concern from `target_duckdb_version` (the extension's own
+    // ABI-compat minimum). See docs/rationale/0004_extension-distribution-and-signing.md.
+    const dist_version = b.option(
+        []const u8,
+        "dist-version",
+        "DuckDB client version directory for `dist` packaging (default: v1.5.6)",
+    ) orelse "v1.5.6";
 
     // `-Dname=`/`-Dapi-version=` must also reach `src/ext/init.zig`'s
     // actual exported entry point, not just the metadata footer —
@@ -450,6 +458,27 @@ pub fn build(b: *std.Build) void {
         const install_cross = b.addInstallFile(output, b.fmt("lib/{s}/{s}.duckdb_extension", .{ platform, extension_name }));
         cross_step.dependOn(&install_cross.step);
     }
+
+    // ── "dist" step: arrange and gzip `cross`'s output into the DuckDB
+    // custom-extension-repository layout `INSTALL ... FROM '<url>'`
+    // expects — replaces the GitHub Actions workflow's old hand-rolled
+    // bash (find/gzip) with a build-graph step that's testable locally. ──
+    const dist_tool = b.addExecutable(.{
+        .name = "dist_main",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/dist_main.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const dist_run = b.addRunArtifact(dist_tool);
+    dist_run.step.dependOn(cross_step);
+    dist_run.addArg("zig-out/lib");
+    dist_run.addArg("dist");
+    dist_run.addArg(extension_name);
+    dist_run.addArg(dist_version);
+    const dist_step = b.step("dist", "Cross-compile, then arrange and gzip into dist/<dist-version>/<platform>/<name>.duckdb_extension.gz");
+    dist_step.dependOn(cross_step);
+    dist_step.dependOn(&dist_run.step);
 
     // ── Interactive session with the real v1 extension pre-loaded ────────
     // See the v2 step above for why this uses -cmd + addFileArg2's

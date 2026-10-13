@@ -1716,6 +1716,41 @@ does NOT undo the deploy it already triggered — confirmed both musl
 `.gz` paths now permanently 200 on the live site (this was the
 intended, desired side effect, not a loose end).
 
+**`zig build dist` step added (done, 2026-10-13)**: replaced the
+release workflow's hand-rolled bash "Arrange and compress into the
+custom-repository layout" step with a new `dist` build.zig step, so the
+packaging logic is build-graph code (testable with `zig build dist`
+locally) rather than CI-only shell. A new `src/dist_main.zig` host tool
+(same pattern as `append_metadata_main.zig`) walks `zig-out/lib/*/`,
+gzips each `<ext_name>.duckdb_extension` found via
+`std.compress.flate.Compress.init(..., .gzip, .level_9)` (confirmed
+Zig 0.17's stdlib supports gzip container writing directly — no
+shelling out to `gzip`; the real call shape was cross-checked against
+an actual stdlib caller, `lib/compiler/Maker/Fetch.zig`'s package-tarball
+step, not guessed), and writes it to
+`dist/<dist-version>/<platform>/<ext_name>.duckdb_extension.gz` — same
+layout and exit-1-on-zero-found behavior as the old script. `dist`
+takes a new `-Ddist-version=` option (default `v1.5.6`) — deliberately
+a *separate* setting from `-Dapi-version=`/`target_duckdb_version` (the
+extension's ABI-compat minimum): the dist directory name must match the
+installing DuckDB CLIENT's own exact running version (an existing,
+already-documented distinction in this ADR), not the ABI minimum
+embedded in the extension's own metadata footer. `dist` depends on
+`cross` (`dist_run.step.dependOn(cross_step)`, not just
+`dist_step.dependOn(cross_step)` — the latter alone wouldn't order the
+run *before* cross's installs finish), so one command
+(`zig build dist`) now does the whole cross-compile-and-package
+pipeline that used to need `zig build cross` plus a separate shell
+script. Verified: default run packages all 7 cross targets; gzip
+integrity (`gunzip -t`) and round-trip byte-identity against the
+uncompressed original both confirmed; `-Dname=`/`-Ddist-version=`
+overrides work; the zero-artifacts-found path returns exit code 1 (ran
+the tool directly against an empty lib dir to prove this, since `dist`
+always re-runs `cross` first and would never naturally hit that path
+through the step itself). `.github/workflows/release.yml`'s two old
+steps collapsed into one `zig build dist -Dname=... -Dapi-version=...
+-Dextension-version=... -Ddist-version="${DUCKDB_VERSION}"` call.
+
 **Side investigation, no code change**: asked whether the v2/v2-poc
 builds would also fail to cross-compile for musl, since they're a
 separate, much larger header surface. Tried directly
