@@ -100,6 +100,41 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/deploy-pages@v4
         id: deployment
+
+  verify-musl:
+    name: verify-musl (${{ matrix.arch }})
+    needs: deploy
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only arm64 actually needs emulation on these (x86_64) runners;
+      # registering it is a no-op for the amd64 matrix leg.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      # End-to-end: a real musl DuckDB CLI, in a real Alpine container,
+      # installing the extension from the just-deployed GitHub Pages
+      # repository — not a locally mounted build artifact — proving the
+      # whole publish pipeline for the musl cross targets, not just that
+      # they compile. See docs/rationale/0004_extension-distribution-and-signing.md
+      # for why this is unsigned (`-unsigned`) rather than a trusted install.
+      - name: Install and run the published extension (linux_${{ matrix.arch }}_musl)
+        run: |
+          docker run --rm --platform "linux/${{ matrix.arch }}" \
+            -e DUCKDB_VERSION="${DUCKDB_VERSION}" \
+            -e EXTENSION_NAME="${EXTENSION_NAME}" \
+            -e REPO_URL="${{ needs.deploy.outputs.page_url }}" \
+            -e ARCH="${{ matrix.arch }}" \
+            -v "${{ github.workspace }}/.github/scripts/verify-musl-e2e.sh:/verify.sh:ro" \
+            docker.io/library/alpine:3.20 sh /verify.sh

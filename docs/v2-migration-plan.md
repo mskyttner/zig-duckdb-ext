@@ -1656,6 +1656,45 @@ inside a real `alpine:3.20` arm64 container under QEMU —
 updated; the latter needed no code change since its artifact-packaging
 loop already iterates `zig-out/lib/*/` generically.
 
+**`verify-musl` GitHub Actions job added (done, 2026-10-13)**: a new
+`.github/workflows/release.yml` job, `needs: deploy`, matrix over
+`amd64`/`arm64`. Registers `qemu-aarch64` via `docker/setup-qemu-action@v3`
+(a no-op for the `amd64` leg on these x86_64 runners), then runs
+`.github/scripts/verify-musl-e2e.sh` inside a real `alpine:3.20`
+container: downloads the real musl DuckDB CLI for that arch from
+`install.duckdb.org`, then `INSTALL <name> FROM '<page_url>'; LOAD
+<name>;` against the artifact the `deploy` job (`actions/deploy-pages`)
+just published — not a locally mounted build artifact — so this proves
+the whole publish pipeline for the musl targets, not just that they
+compile. `deploy`'s job gained a `page_url` output
+(`steps.deployment.outputs.page_url`) so the verify job doesn't need to
+hardcode or reconstruct the Pages URL. Investigated and rejected the
+official `duckdb/duckdb` Docker Hub image (multi-arch, confirmed via
+the Docker Hub API) as a shortcut here — it's built on
+`gcr.io/distroless/cc-debian12`, a glibc base, so it can't stand in for
+a musl/Alpine test and wouldn't remove the QEMU requirement for arm64
+either; it could simplify a future *glibc* arm64 CI check (replacing
+the manual CLI-download + Ubuntu container in `verify:cross-arm64`),
+unrelated to this task.
+
+**Verified before committing, not just YAML-lint**: GitHub Pages
+doesn't yet have `linux_amd64_musl`/`linux_arm64_musl` published
+(confirmed live: 404 on both `.gz` paths — the release workflow only
+runs on a tag push/`workflow_dispatch`, and these musl-target commits
+are still local-only), so the new job couldn't be exercised against the
+real live site yet. Instead, stood up a throwaway `python3 -m
+http.server` mimicking the exact `<version>/<platform>/<name>.duckdb_extension.gz`
+repository layout, serving the real locally cross-built
+`linux_amd64_musl`/`linux_arm64_musl` artifacts, and ran
+`verify-musl-e2e.sh` against it from both a native and (under QEMU) an
+emulated-arm64 Alpine container — both passed, including the real
+`INSTALL ... FROM` mechanism end-to-end, not a mocked one. **One real
+bug caught this way**: the script's first assertion checked for a bare
+`Hello, ci!` line, but `-csv` quotes any field containing a comma —
+the real output line is `"Hello, ci!"` — so the unquoted check
+false-negatived on real output; fixed before it ever would have failed
+silently-wrong in CI.
+
 **Side investigation, no code change**: asked whether the v2/v2-poc
 builds would also fail to cross-compile for musl, since they're a
 separate, much larger header surface. Tried directly
