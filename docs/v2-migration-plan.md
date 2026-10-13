@@ -417,27 +417,46 @@ Replaces our hardcoded `extension_version = "v0.1.0"` constant in
 `build.zig`. Small, worth adopting whenever this project starts tagging
 releases — no value before then.
 
-### Version-pinned DuckDB header vendoring
+### Version-pinned DuckDB header vendoring — done (2026-10-13)
 
-`build.zig.zon` dependencies with real content hashes, fetched from
-DuckDB's own tagged GitHub releases:
+~~Applies cleanly to v1.5.6; does not yet apply to v2.0-alpha, since
+`install.duckdb.org`'s staged build isn't a tagged release — revisit once
+one exists.~~ Turned out to apply to v2 too, via a different URL: the same
+staged artifact host (`artifacts.duckdb.org/staged/v2.0-cyanoptera/`)
+that already serves the pinned CLI binary (see "Testing infrastructure
+gaps" below) *also* serves a `libduckdb-src.zip` with the matching
+headers — confirmed byte-identical to the exact commit (`b15358c371`)
+the alpha CLI itself reports via `-version`. `duckdb_capi/*.h` (never
+actually `v1.2.0` despite the label — diffed against that tag, v1.3.0
+through v1.5.6, and `main`; none matched byte-for-byte, origin unknown)
+is gone — `build.zig.zon` now has:
 
 ```zig
-.libduckdb_1_5_6 = .{
+.duckdb_headers_v1 = .{
     .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-src.zip",
-    .hash = "...", // from `zig fetch`
+    .hash = "N-V-__8AANq4rwEjjrNWz619N1Pu61lS5GAi7o4Qx9cHU7aN",
+},
+.duckdb_headers_v2 = .{
+    .url = "https://artifacts.duckdb.org/staged/v2.0-cyanoptera/libduckdb-src.zip",
+    .hash = "N-V-__8AAL-2EwBI2NUq5ff3_vktqJo_yWCjvSZf2a-ID-p9",
 },
 ```
 
-Directly addresses the "Testing infrastructure gaps" complaint below:
-this project's `duckdb_capi/duckdb.h`/`duckdb_extension.h` (v1.2.0) are
-committed as plain vendored files with no provenance/hash, and the
-v1.5.6/v2.0-alpha headers used for comparison this session were manually
-`curl`'d into a scratchpad and never pinned anywhere. Applies cleanly to
-v1.5.6 (tagged release exists); **does not yet apply to v2.0-alpha** —
-`install.duckdb.org`'s staged alpha build isn't a tagged GitHub release,
-so there's nothing a `url`+`hash` pair could point at yet. Revisit once
-DuckDB publishes an actual v2.0 release artifact.
+`build.zig` resolves both via `b.dependency(...)` and points `Translator`/
+`addIncludePath` at `dep.path("duckdb_extension*.h")`/`dep.path(".")`
+instead of a local `duckdb_capi/` path, for the host build, the v2
+translation, and every `addCrossBuild` target. A bare `.h` file served as
+`text/plain` isn't a format `zig fetch` recognizes (tried first,
+rejected) — `libduckdb-src.zip` is small (a few hundred KB to 5MB, not a
+full source clone) and a format it accepts. Verified extensively before
+committing to the swap: full build, unit tests, the 53-block v1
+sqllogictest suite, and all 5 cross-compiled targets passed against the
+real v1.5.6 headers; `v2-check`/`ext-v2`/`v2-poc`/`sqllogictest-v2` and
+live runs (`ct_add_numbers`, the replacement-scan POC) passed against the
+real v2 headers — same "verify before swapping" posture as every other
+change on this branch. Same staged-artifact caveat as the CLI pin: the
+v2 hash will need periodic re-pinning until 2.0 ships as a tagged
+release.
 
 ### sqllogictest adoption
 
