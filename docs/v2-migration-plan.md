@@ -1343,14 +1343,51 @@ conflate:
 already-verified code. Mechanism 1 is a different project in its own
 right (direct-link bindings bypassing the vtable entirely) and only
 worth it if a specific embedding scenario demands avoiding the vtable
-indirection. Neither has been prototyped against a live runtime —
-treat the "our entrypoint just works" claim for mechanism 2 as a
-hypothesis to verify, not a confirmed fact, before relying on it. Not
-urgent: nothing currently requires shipping this extension statically:
-the use case would be embedding DuckDB+extension into another
-application, or distributing a single self-contained `duckdb` binary
-without the `LOAD`/`-unsigned`/signing friction a loadable extension
-carries.
+indirection. Not urgent: nothing currently requires shipping this
+extension statically: the use case would be embedding DuckDB+extension
+into another application, or distributing a single self-contained
+`duckdb` binary without the `LOAD`/`-unsigned`/signing friction a
+loadable extension carries.
+
+**Type-level prototype of mechanism 2 built (done, 2026-10-13)** —
+`src/lib/duckdb_static_extension.h` (vendored directly, not pinned via
+`build.zig.zon` — see that file's own header comment for why: it's a
+single self-contained ~3KB file, not bundled in `libduckdb-src.zip`,
+and `raw.githubusercontent.com` serves a bare `.h` as `text/plain`,
+which `zig fetch` rejects) + `src/lib/duckdb_static.zig`, wired through
+the existing Translator pipeline (`duckdb_c_static`) exactly like the
+v1/v2 extension headers, checked as part of `v2-check`. **Confirmed the
+header is real and vendorable**: fetched and read in full from
+`raw.githubusercontent.com/duckdb/duckdb/b15358c371/src/include/duckdb_static_extension.h`
+(the exact pinned v2 alpha commit) — self-contained, only
+`#include <stdint.h>`, no DuckDB internals, so vendoring it doesn't
+risk the C++-coupling ADR-0001 rejects. **Confirmed the specific
+hypothesis this section used to flag as unverified**: a function with
+this project's real v2 entrypoint signature
+(`fn (*const ExtensionInput) callconv(.c) void`, matching
+`src/ext/init_v2.zig`'s actual `zig_ext_v2_init_c_api_v2`) casts
+cleanly into the descriptor's generic `entry_capi_v2` slot and the
+resulting descriptor round-trips correctly — a real `zig build v2-check`
+test (`duckdb_static.zig`'s own test block), not just a compile check.
+
+**What could NOT be verified, and why this stays a prototype, not a
+feature**: actually calling `duckdb_register_static_extension` and
+opening a live database needs linking against a real `libduckdb`
+shared/static library — confirmed live that this staged v2.0 alpha
+build doesn't publish one anywhere. Checked
+`artifacts.duckdb.org/staged/v2.0-cyanoptera/libduckdb-linux-amd64.zip`
+(and `-arm64`/`-musl` variants): all 302-redirect to
+`duckdb-staging.duckdb.org/.../github_release/libduckdb-linux-amd64.zip`,
+which then 404s — confirmed this isn't a path-naming guess by checking
+that a deliberately bogus filename produces the identical redirect
+pattern (the redirect itself proves nothing; only the final target's
+status does). Only CLI binaries and the header-only `libduckdb-src.zip`
+are actually published at that location. Getting a real `libduckdb` to
+link against would mean building DuckDB from source at the pinned
+commit — a large C++ build this project's whole architecture (ADR-0001:
+pure Zig, no C++ toolchain) deliberately avoids, and well beyond this
+prototype's scope. Revisit once (if ever) a prebuilt `libduckdb`
+artifact is published for this alpha, or DuckDB 2.0 ships for real.
 
 ### 6a. WASM support (speculative, not started — not currently feasible as a straight port)
 

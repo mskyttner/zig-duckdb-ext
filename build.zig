@@ -268,6 +268,26 @@ pub fn build(b: *std.Build) void {
     });
     duckdb_v2_mod.addImport("duckdb_c_v2", duckdb_c_v2.mod);
 
+    // ── Static-extension registration header (speculative prototype —
+    // see docs/v2-migration-plan.md's "Static linking" section) ──────────
+    // Vendored directly in src/lib/ rather than pinned via build.zig.zon;
+    // see that file's own header comment for why.
+    const duckdb_c_static: Translator = .init(translate_c_dep, .{
+        .name = "duckdb_c_static",
+        .c_source_file = b.path("src/lib/duckdb_static_extension.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const duckdb_static_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/duckdb_static.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    duckdb_static_mod.addImport("duckdb_c_static", duckdb_c_static.mod);
+    duckdb_static_mod.addImport("duckdb_v2", duckdb_v2_mod);
+    const duckdb_static_check = b.addTest(.{ .root_module = duckdb_static_mod });
+    const run_duckdb_static_check = b.addRunArtifact(duckdb_static_check);
+
     const v2_check = b.addTest(.{ .root_module = duckdb_v2_mod });
     const run_v2_check = b.addRunArtifact(v2_check);
 
@@ -335,6 +355,7 @@ pub fn build(b: *std.Build) void {
     v2_check_step.dependOn(&run_comptime_aggregate_v2_check.step);
     v2_check_step.dependOn(&run_comptime_appender_v2_check.step);
     v2_check_step.dependOn(&run_comptime_cast_v2_check.step);
+    v2_check_step.dependOn(&run_duckdb_static_check.step);
 
     // ── v2 proof-of-concept extension (real runtime test, not the real
     // extension) — registers one scalar function against a live DuckDB
