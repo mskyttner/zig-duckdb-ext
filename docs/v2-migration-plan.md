@@ -1027,17 +1027,45 @@ workload:
   of row→Arrow FFI encoding, so if this project ever needs zero-copy
   interop with Arrow-consuming tools, the v2 surface for it already
   exists, unexercised.
-- **Replacement Scans and Table Description — present in both v1 and
-  v2, unused in either, not a v2-specific gap.** v1's `duckdb.zig` only
-  type-aliases `ReplacementScanInfo`/`TableDescription` (`c.duckdb_replacement_scan_info`/
-  `c.duckdb_table_description`) with no functions ever wrapped around
-  them; v2's header has the equivalent surface
-  (`replacement_scan_create_with_extension`/`set_callback`/
-  `add_argument`/`register`/`set_alias`/`set_subquery`, and
-  `table_description_get_column`/`_count`/`_qname`/`is_readonly`) with
-  the same zero wrapping. Lower priority than the items above since
-  there's no parity regression to close — this project has simply never
-  used either capability on either API version.
+- ~~**Replacement Scans and Table Description — present in both v1 and
+  v2, unused in either, not a v2-specific gap.**~~ Looked into both in
+  depth, 2026-10-13 — one implemented, the other confirmed genuinely
+  unreachable, not just unprioritized:
+  - **Replacement scans — done.** Wrapped the name-claim form
+    (`replacement_scan_create_with_extension`/`set_callback`/`register`/
+    `destroy`/`get_name`, plus the `qname` accessors it depends on:
+    `qname_create`/`get_part_count`/`get_part`/`destroy`).
+    `set_collection`/`set_subquery`/`set_alias`/`add_named_argument`/
+    user-data exist in the header but are unwrapped, same posture as the
+    cast-function gap. Live-verified with a `zig_v2_range_<N>` POC:
+    `FROM zig_v2_range_5` (bare table-reference syntax, no function-call
+    parens) redirects to `zig_v2_range_ct(5)` via
+    `replacementScanSetFunctionName` + `replacementScanAddArgument` —
+    proving argument-threading, not just that the callback fires — and
+    composes correctly with ordinary query processing (`WHERE` filtering
+    on top of the redirected scan). Both an unrelated name and one
+    matching the prefix but failing to parse correctly fall through to
+    DuckDB's normal "table does not exist" error, confirming the decline
+    path leaves everything else untouched.
+  - **Table Description — confirmed unreachable from this project's own
+    extension code, not merely unwrapped.** Its only entry point,
+    `duckdb_v2_connection_describe_table`, needs a real
+    `duckdb_v2_connection_handle` — and grepped the *entire* header for
+    any accessor that could produce one from anything an extension's own
+    callback actually receives (`ContextHandle` everywhere: extension
+    init, scalar/table/aggregate exec, cast exec, and now replacement
+    scan too, whose own doc comment says outright "may be used to read
+    settings, but not to run queries"). None exists:
+    `connection_create`/`instance_create` are embedding-application-side
+    constructors (build a *new* instance/connection from scratch), not
+    accessors recovering a handle to the *already-running* host instance
+    an extension was loaded into. This is the exact same root cause as
+    the already-documented "No SQL-execution pipeline wrapped" gap
+    above, confirmed a second, independent time via a completely
+    different API surface. Wrapping Table Description's functions would
+    produce dead code — type-correct, but uncallable from anywhere this
+    project's extension can actually run — so deliberately not done,
+    not merely deferred.
 - **LIST/ARRAY/MAP/UNION as `comptime_scalar_v2` argument or return
   types — not started, not even scoped before now.** Found 2026-10-12
   while cataloguing remaining gaps. Item 2 above only ever targeted
