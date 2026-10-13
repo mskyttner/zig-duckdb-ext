@@ -1751,6 +1751,20 @@ through the step itself). `.github/workflows/release.yml`'s two old
 steps collapsed into one `zig build dist -Dname=... -Dapi-version=...
 -Dextension-version=... -Ddist-version="${DUCKDB_VERSION}"` call.
 
+**Then actually exercised on real GitHub Actions (2026-10-13)**: pushed
+and used the same throwaway-tag convention as `verify-musl`
+(`v0.0.0-test-dist`, deleted after) to trigger a real run, since the
+`github-pages` environment still only allows `main`/`v*`. Full pipeline
+went green: `build` (now running `zig build dist` directly, no
+separate bash step) → `deploy` → `verify-musl (amd64)` → `verify-musl
+(arm64)`. Confirmed from the actual job log: all 7 platform artifacts
+packaged (`published 7 platform artifact(s)`), the `find dist -type f`
+listing matched exactly, and both `verify-musl` legs still passed
+against the newly-deployed repository — proving the new Zig-native
+packaging step produces output the real `INSTALL ... FROM` mechanism
+accepts identically to the old bash script, not just that the gzip
+files are well-formed in isolation.
+
 **Side investigation, no code change**: asked whether the v2/v2-poc
 builds would also fail to cross-compile for musl, since they're a
 separate, much larger header surface. Tried directly
