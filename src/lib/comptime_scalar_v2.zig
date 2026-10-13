@@ -172,15 +172,31 @@ fn createLogicalType(ctx: db.ContextHandle, comptime T: type, out_type: *db.Logi
     return db.contextCreateTypeFromId(ctx, duckdbV2TypeId(T), out_type, err);
 }
 
-/// Define a v2 DuckDB scalar function from a comptime-known Zig function.
-///
-/// If `implFn` involves VARIANT anywhere (a `db.ValueHandle` parameter or
-/// return type), its FIRST parameter must be `context: db.ContextHandle`,
-/// not counted as a SQL parameter — constructing a `Value` to return
-/// always needs a context in v2 (see `duckdb_v2.zig`'s own note on type/
-/// value construction being context-scoped), and `implFn` has no other way
-/// to reach one.
+/// Define a v2 DuckDB scalar function from a comptime-known Zig function,
+/// with synthesized `a0`/`a1`/... SQL parameter names (Zig function
+/// parameters carry no names at the ABI level — confirmed live:
+/// `SELECT parameters FROM duckdb_functions() WHERE function_name =
+/// 'ct_add_numbers'` showed exactly that, the anti-pattern
+/// posit-dev/ggsql-duckdb#16 flags). Use `FunctionNamed` instead for real
+/// parameter names; see its doc comment. A separate function rather than
+/// an optional argument here, since Zig has no default-parameter-value
+/// syntax to keep this call site unchanged for every existing caller.
 pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
+    return FunctionImpl(name, implFn, null);
+}
+
+/// Like `Function`, but `param_names` supplies the SQL parameter names in
+/// order instead of synthesizing `a0`/`a1`/.... Hand-registered v2
+/// functions (`functionSignatureAddParameter` called directly) already
+/// get real names for free; this closes the same gap for comptime-
+/// registered ones. Must have exactly one name per SQL parameter (not
+/// counting a leading VARIANT `context` parameter, which isn't a SQL
+/// parameter at all).
+pub fn FunctionNamed(comptime name: [:0]const u8, comptime implFn: anytype, comptime param_names: []const [:0]const u8) type {
+    return FunctionImpl(name, implFn, param_names);
+}
+
+fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime param_names: ?[]const [:0]const u8) type {
     const fn_info = @typeInfo(@TypeOf(implFn)).@"fn";
     const raw_param_types = fn_info.param_types;
     const ReturnType = fn_info.return_type.?;
@@ -197,6 +213,14 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
         @compileError("a VARIANT-involving Function's implFn must take `context: db.ContextHandle` as its first parameter");
     }
     const param_types = if (needs_context) raw_param_types[1..] else raw_param_types;
+    if (param_names) |names| {
+        if (names.len != param_types.len) {
+            @compileError(std.fmt.comptimePrint(
+                "FunctionNamed(\"{s}\", ...): param_names has {d} entries but implFn takes {d} SQL parameters",
+                .{ name, names.len, param_types.len },
+            ));
+        }
+    }
 
     inline for (param_types) |t| {
         if (comptime !isStructType(t.?) and !isDecimalType(t.?) and !isEnumType(t.?)) _ = duckdbV2TypeId(t.?);
@@ -247,10 +271,11 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
                 }
                 defer _ = db.logicalTypeDestroy(&param_type);
 
-                // Zig function parameters carry no names at the ABI level —
-                // synthesize positional names ("a0", "a1", ...) since v2's
-                // signature requires one per parameter.
-                const param_name_buf = std.fmt.comptimePrint("a{d}", .{i});
+                // Real names from `FunctionNamed`, or synthesized
+                // positional ones ("a0", "a1", ...) — see `Function`'s
+                // doc comment on why Zig function parameters have no
+                // names of their own to use here.
+                const param_name_buf = if (param_names) |names| names[i] else std.fmt.comptimePrint("a{d}", .{i});
                 const param_name = db.str(param_name_buf);
                 if (db.functionSignatureAddParameter(
                     sig,
@@ -775,6 +800,17 @@ test "Function generates a valid Zig type" {
     // matching it against the exact callback type.
     _ = &Double.register;
     const exec_cb: db.ScalarFunctionExecCallback = Double.execute;
+    try std.testing.expect(exec_cb != null);
+}
+
+test "FunctionNamed supports real parameter names" {
+    const Add = FunctionNamed("v2_test_named_add", struct {
+        fn eval(a: i64, b: i64) i64 {
+            return a + b;
+        }
+    }.eval, &.{ "a", "b" });
+    _ = &Add.register;
+    const exec_cb: db.ScalarFunctionExecCallback = Add.execute;
     try std.testing.expect(exec_cb != null);
 }
 

@@ -113,11 +113,35 @@ fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
     };
 }
 
+/// Define a v2 DuckDB aggregate function from a comptime-known `State`
+/// type, with synthesized `a0`/`a1`/... names for `State.update`'s
+/// per-row arguments (Zig function parameters carry no names at the ABI
+/// level). Use `FunctionNamed` instead for real argument names.
 pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
+    return FunctionImpl(name, State, null);
+}
+
+/// Like `Function`, but `arg_names` supplies `State.update`'s per-row
+/// argument names in order instead of synthesizing `a0`/`a1`/.... Must
+/// have exactly one name per `update` argument (not counting its leading
+/// `self` parameter).
+pub fn FunctionNamed(comptime name: [:0]const u8, comptime State: type, comptime arg_names: []const [:0]const u8) type {
+    return FunctionImpl(name, State, arg_names);
+}
+
+fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_names: ?[]const [:0]const u8) type {
     const update_info = @typeInfo(@TypeOf(State.update)).@"fn";
     // update_info.param_types[0] is *State (self); the rest are the
     // per-row arguments to expose as the SQL function's parameters.
     const arg_types = update_info.param_types[1..];
+    if (arg_names) |names| {
+        if (names.len != arg_types.len) {
+            @compileError(std.fmt.comptimePrint(
+                "FunctionNamed(\"{s}\", ...): arg_names has {d} entries but update takes {d} arguments",
+                .{ name, names.len, arg_types.len },
+            ));
+        }
+    }
     const finalize_info = @typeInfo(@TypeOf(State.finalize)).@"fn";
     const RawReturnType = finalize_info.return_type.?;
     // `finalize` may return `?T` instead of `T` to produce SQL NULL for a
@@ -169,7 +193,7 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
                 }
                 defer _ = db.logicalTypeDestroy(&param_type);
 
-                const param_name_buf = std.fmt.comptimePrint("a{d}", .{i});
+                const param_name_buf = if (arg_names) |names| names[i] else std.fmt.comptimePrint("a{d}", .{i});
                 const param_name = db.str(param_name_buf);
                 if (db.functionSignatureAddParameter(
                     sig,
@@ -433,6 +457,25 @@ test "Function generates a valid Zig type for a sum aggregate" {
     try std.testing.expect(update_cb != null);
     try std.testing.expect(combine_cb != null);
     try std.testing.expect(finalize_cb != null);
+}
+
+test "FunctionNamed supports a real per-row argument name" {
+    const Sum = FunctionNamed("v2_test_agg_sum_named", struct {
+        sum: i64,
+        pub fn init() @This() {
+            return .{ .sum = 0 };
+        }
+        pub fn update(self: *@This(), x: i64) void {
+            self.sum += x;
+        }
+        pub fn combine(self: *@This(), other: @This()) void {
+            self.sum += other.sum;
+        }
+        pub fn finalize(self: @This()) i64 {
+            return self.sum;
+        }
+    }, &.{"x"});
+    _ = &Sum.register;
 }
 
 test "Function supports multiple arguments" {

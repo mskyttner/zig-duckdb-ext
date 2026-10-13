@@ -117,9 +117,26 @@ fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
 /// hand-written batching (DuckDB's own standard vector size).
 const max_rows_per_batch = 2048;
 
-/// Define a v2 DuckDB table function from a comptime-known `State` type.
-/// See this file's module doc comment for `State`'s required shape.
+/// Define a v2 DuckDB table function from a comptime-known `State` type,
+/// with synthesized `a0`/`a1`/... names for `State.init`'s call arguments
+/// (Zig function parameters carry no names at the ABI level). Use
+/// `FunctionNamed` instead for real argument names. See this file's
+/// module doc comment for `State`'s required shape.
 pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
+    return FunctionImpl(name, State, null);
+}
+
+/// Like `Function`, but `arg_names` supplies `State.init`'s call-argument
+/// names in order instead of synthesizing `a0`/`a1`/.... `Row`'s own
+/// field names are unaffected either way — those were already real SQL
+/// column names (a struct's fields carry names at comptime, unlike a
+/// function's parameters), this only concerns the function's own call
+/// arguments. Must have exactly one name per `State.init` parameter.
+pub fn FunctionNamed(comptime name: [:0]const u8, comptime State: type, comptime arg_names: []const [:0]const u8) type {
+    return FunctionImpl(name, State, arg_names);
+}
+
+fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_names: ?[]const [:0]const u8) type {
     const Row = State.Row;
     const row_info = @typeInfo(Row).@"struct";
     const row_field_names = row_info.field_names;
@@ -127,6 +144,14 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
     const num_row_fields = row_field_names.len;
     const init_info = @typeInfo(@TypeOf(State.init)).@"fn";
     const arg_types = init_info.param_types;
+    if (arg_names) |names| {
+        if (names.len != arg_types.len) {
+            @compileError(std.fmt.comptimePrint(
+                "FunctionNamed(\"{s}\", ...): arg_names has {d} entries but State.init takes {d} parameters",
+                .{ name, names.len, arg_types.len },
+            ));
+        }
+    }
     const has_deinit = @hasDecl(State, "deinit");
     const has_pushdown = @hasDecl(State, "pushdown");
     const has_progress = @hasDecl(State, "progress");
@@ -163,7 +188,7 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
                     }
                     defer _ = db.logicalTypeDestroy(&param_type);
 
-                    const param_name_buf = std.fmt.comptimePrint("a{d}", .{i});
+                    const param_name_buf = if (arg_names) |names| names[i] else std.fmt.comptimePrint("a{d}", .{i});
                     const param_name = db.str(param_name_buf);
                     if (db.functionSignatureAddParameter(
                         sig,
@@ -422,6 +447,23 @@ test "Function generates a valid Zig type for a zero-argument range-like source"
     const exec_cb: db.c.duckdb_v2_table_function_exec_callback_fn = Range.execCallback;
     try std.testing.expect(bind_cb != null);
     try std.testing.expect(exec_cb != null);
+}
+
+test "FunctionNamed supports real call-argument names" {
+    const Range = FunctionNamed("v2_test_table_range_named", struct {
+        n: i64,
+        i: i64,
+        pub const Row = struct { value: i64 };
+        pub fn init(n: i64) @This() {
+            return .{ .n = n, .i = 0 };
+        }
+        pub fn next(self: *@This()) ?Row {
+            if (self.i >= self.n) return null;
+            defer self.i += 1;
+            return .{ .value = self.i };
+        }
+    }, &.{"n"});
+    _ = &Range.register;
 }
 
 test "Function supports multiple output columns of different types" {
