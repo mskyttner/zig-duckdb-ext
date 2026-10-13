@@ -1,9 +1,17 @@
 const std = @import("std");
 const Translator = @import("translate_c").Translator;
 
-const extension_name = "zig_ext";
-const target_duckdb_version = "v1.2.0";
-const extension_version = "v0.1.0";
+// Defaults for the v1 extension's own identity — overridable via
+// `-Dname=`/`-Dapi-version=`/`-Dextension-version=`/`-Dplatform=` (see
+// `build()`), the same four build-time settings
+// habedi/template-duckdb-extension-zig exposes, under the names this
+// project already used internally before they became configurable. Not
+// applied to the separate, experimental v2/v2-poc builds (their own
+// identity stays hardcoded — this project's v1→v2 migration exploration,
+// not the general-purpose template surface these options are for).
+const default_extension_name = "zig_ext";
+const default_target_duckdb_version = "v1.2.0";
+const default_extension_version = "v0.1.0";
 const abi_type = "C_STRUCT";
 
 /// Map a resolved target to the platform string DuckDB's extension
@@ -110,6 +118,10 @@ fn addCrossBuild(
     b: *std.Build,
     translate_c_dep: *std.Build.Dependency,
     duckdb_headers_v1_dep: *std.Build.Dependency,
+    build_options_mod: *std.Build.Module,
+    extension_name: []const u8,
+    target_duckdb_version: []const u8,
+    extension_version: []const u8,
     optimize: std.builtin.OptimizeMode,
     query: std.Target.Query,
 ) std.Build.LazyPath {
@@ -135,6 +147,7 @@ fn addCrossBuild(
         }),
     });
     lib.root_module.addImport("duckdb_c", duckdb_c.mod);
+    lib.root_module.addImport("build_options", build_options_mod);
     lib.root_module.link_libc = true;
 
     // Note: `name` here (unlike the other 3 args) is used only to name
@@ -152,6 +165,53 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const duckdb_cli_v2 = duckdbV2CliLazyPath(b);
+
+    // ── The v1 extension's own identity — configurable, mirroring
+    // habedi/template-duckdb-extension-zig's `-Dextension-name=`/
+    // `-Dapi-version=`/`-Dextension-version=`/`-Dplatform=` (there under
+    // slightly different flag names; kept short here since this project
+    // has no Makefile layer renaming them for CLI ergonomics the way that
+    // template's `make build EXTENSION_NAME=...` does — a Taskfile.yml
+    // recipe can do the same forwarding if needed). Optimization mode
+    // (their `RELEASE_MODE`) needs no separate option at all — it's
+    // already Zig's own standard `-Doptimize=`, set above.
+    const extension_name = b.option(
+        []const u8,
+        "name",
+        "Extension name (default: " ++ default_extension_name ++ ")",
+    ) orelse default_extension_name;
+    const target_duckdb_version = b.option(
+        []const u8,
+        "api-version",
+        "DuckDB extension API version to target (default: " ++ default_target_duckdb_version ++ ")",
+    ) orelse default_target_duckdb_version;
+    const extension_version = b.option(
+        []const u8,
+        "extension-version",
+        "Version recorded in the extension metadata (default: " ++ default_extension_version ++ ")",
+    ) orelse default_extension_version;
+    const platform_override = b.option(
+        []const u8,
+        "platform",
+        "Override the auto-detected platform string written into the host build's metadata (e.g. linux_amd64) — does not affect `cross`, which already computes the correct one per target",
+    );
+
+    // `-Dname=`/`-Dapi-version=` must also reach `src/ext/init.zig`'s
+    // actual exported entry point, not just the metadata footer —
+    // DuckDB's loader looks for the symbol `<filename>_init_c_api` by
+    // name (confirmed live: renaming only the output file, without this,
+    // produces a `.duckdb_extension` DuckDB reports as "did not contain
+    // function '<name>_init_c_api'", unloadable under its new name). A
+    // plain `export fn <literal>` can't take a build-time string, so
+    // `init.zig` instead `@export`s under a name built from this
+    // generated module at comptime. The runtime API-version string
+    // `initApi` negotiates with DuckDB also comes from here now, instead
+    // of its own separate hardcoded `"v1.2.0"` — one source of truth
+    // instead of two, now that this is actually configurable.
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "extension_name", extension_name);
+    build_options.addOption([]const u8, "api_version", target_duckdb_version);
+    const build_options_mod = build_options.createModule();
 
     // ── Translate the vendored DuckDB C API headers ───────────────────────
     // `@cImport` was removed in Zig 0.17.0 in favor of this explicit
@@ -357,15 +417,17 @@ pub fn build(b: *std.Build) void {
         }),
     });
     lib.root_module.addImport("duckdb_c", duckdb_c.mod);
+    lib.root_module.addImport("build_options", build_options_mod);
     lib.root_module.link_libc = true;
 
     b.installArtifact(lib);
 
     // ── Post-build step: append metadata to produce .duckdb_extension ────
-    const ext_output = addDuckdbExtensionMetadata(b, lib, extension_name, target_duckdb_version, extension_version, abi_type, duckdbPlatformString(target));
+    const host_platform = platform_override orelse duckdbPlatformString(target);
+    const ext_output = addDuckdbExtensionMetadata(b, lib, extension_name, target_duckdb_version, extension_version, abi_type, host_platform);
 
     // Install the .duckdb_extension file into zig-out/lib/
-    const install_ext = b.addInstallFile(ext_output, "lib/" ++ extension_name ++ ".duckdb_extension");
+    const install_ext = b.addInstallFile(ext_output, b.fmt("lib/{s}.duckdb_extension", .{extension_name}));
     b.getInstallStep().dependOn(&install_ext.step);
 
     // ── "ext" step: just build the .duckdb_extension ─────────────────────
@@ -374,12 +436,15 @@ pub fn build(b: *std.Build) void {
 
     // ── "cross" step: build the real v1 extension for every target in
     // `cross_targets`, each installed under zig-out/lib/<platform>/ ──────
+    // `-Dplatform=` deliberately doesn't reach here: each target already
+    // computes its own correct platform string, and a single override
+    // can't mean anything sensible across 5 different platforms at once.
     const cross_step = b.step("cross", "Cross-compile the real v1 extension for every target in cross_targets");
     for (cross_targets) |query| {
         const resolved = b.resolveTargetQuery(query);
         const platform = duckdbPlatformString(resolved);
-        const output = addCrossBuild(b, translate_c_dep, duckdb_headers_v1_dep, optimize, query);
-        const install_cross = b.addInstallFile(output, b.fmt("lib/{s}/" ++ extension_name ++ ".duckdb_extension", .{platform}));
+        const output = addCrossBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, target_duckdb_version, extension_version, optimize, query);
+        const install_cross = b.addInstallFile(output, b.fmt("lib/{s}/{s}.duckdb_extension", .{ platform, extension_name }));
         cross_step.dependOn(&install_cross.step);
     }
 
@@ -428,6 +493,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     lib_unit_tests.root_module.addImport("duckdb_c", duckdb_c.mod);
+    lib_unit_tests.root_module.addImport("build_options", build_options_mod);
     lib_unit_tests.root_module.link_libc = true;
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);

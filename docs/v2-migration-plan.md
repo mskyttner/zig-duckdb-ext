@@ -1541,26 +1541,76 @@ repo" — i.e. using this repo as a fork/template, not continuing the v1→v2
 migration itself. Three items, deliberately not started yet (explicit
 "plan for it, hold off on implementing" from the user):
 
-### 1. Extension name as a build setting, plus a rename step
+### 1. Extension name as a build setting, plus a rename step — PARTIALLY DONE (2026-10-13)
 
-No native `zig build init` mechanism exists for this (`zig init` is Zig's
-own CLI subcommand, but it's a generic empty-project scaffolder, unrelated
-to retrofitting an existing project). What's real and already half-built:
-`build.zig:4`'s `const extension_name = "zig_ext";` is already the single
-source of truth for the v1 target. Plan:
-- Convert it to `b.option([]const u8, "name", "Extension name") orelse
-  "zig_ext"`, so `-Dname=my_ext` renames the v1 build artifacts.
-- This only reaches what the Zig build graph touches. Confirmed by grep:
-  `zig_ext` also appears hardcoded in the v2/v2-poc targets inside
-  `build.zig` itself (`zig_ext_v2`, `zig_ext_v2_poc`), plus separately in
-  `Taskfile.yml`, `README.md`, `CLAUDE.md`, and
-  `.github/workflows/release.yml` — 28 occurrences total across 5 files.
-  A build option alone doesn't reach any of those.
-- So the full plan is two parts: (a) the `-Dname=` build option above,
-  and (b) a small rename script (`task init NAME=my_ext` or
-  `scripts/rename.sh`) doing the actual find/replace across the
-  non-build-graph files, since they're prose/config outside what
-  `zig build` itself can parameterize.
+Prompted by a direct comparison to
+[habedi/template-duckdb-extension-zig](https://github.com/habedi/template-duckdb-extension-zig),
+whose `Makefile`/`build.zig`/`.github/workflows/builds.yml` pass
+`EXTENSION_NAME`/`EXTENSION_API_VERSION`/`EXTENSION_VERSION`/`PLATFORM` as
+`-D` build options, with CI env vars forwarding into them. Their
+`RELEASE_MODE` is not a custom option at all — it maps straight onto
+Zig's own `-Doptimize=`, confirmed by reading their `Makefile`.
+
+Done, for the v1 target only (v2/v2-poc keep their own hardcoded
+identity — scoped out deliberately, see below):
+- `build.zig` renamed the file-level consts to `default_extension_name`/
+  `default_target_duckdb_version`/`default_extension_version`, and added
+  `b.option` for `-Dname=`, `-Dapi-version=`, `-Dextension-version=`
+  (`-Dplatform=` overrides only the host build's own metadata, not
+  `cross`, since one override can't apply across 5 cross targets at
+  once). No new option for release mode — `-Doptimize=` already covers
+  it, matching habedi's own approach.
+- **Non-obvious blocker hit and resolved**: renaming the output file
+  alone is not enough. DuckDB's loader derives the expected init symbol
+  from the *loaded file's own basename* (`<name>_init_c_api`), confirmed
+  live via `"did not contain function 'my_ext_init_c_api'"` after a
+  naive rename. A literal `export fn zig_ext_init_c_api(...)` can't take
+  a build-time string — the C-based habedi template sidesteps this via a
+  preprocessor macro, which Zig has no equivalent of. Fixed via
+  `b.addOptions()` (generates a real `build_options` module, comptime-
+  available since the string arrives as an actual `pub const` literal in
+  generated source) plus, in `src/ext/init.zig`, a plain `fn initCApi`
+  exported from a `comptime { @export(&initCApi, .{ .name =
+  build_options.extension_name ++ "_init_c_api" }); }` block instead of
+  a literal `export fn`. The same `build_options` module also now
+  supplies the extension API version string to `db.initApi` at runtime
+  (previously a second, independent hardcoded `"v1.2.0"` in
+  `init.zig`, unreached by the metadata-footer version) — one source of
+  truth now. `[*:0]const u8` was recovered from the `[]const u8` option
+  via `build_options.api_version[0..build_options.api_version.len :0]`
+  (safe: `addOptions()`-generated strings are literals, which are
+  null-terminated in memory; the sentinel slice is a runtime-checked
+  cast, not unsafe).
+- Verified live: `zig build -Dname=my_ext -Dapi-version=v1.3.0
+  -Dextension-version=v9.9.9` produces a loadable
+  `my_ext.duckdb_extension` (correct metadata footer, loads under its
+  own `my_ext_init_c_api` symbol, `zig_hello`/`zig_add_numbers` work);
+  `zig build cross -Dname=my_ext` also produces correctly-named,
+  correctly-exported artifacts per platform. Plain `zig build` (no `-D`)
+  still produces the unchanged default `zig_ext.duckdb_extension`.
+  Full regression suite re-run clean: `zig build test`,
+  `zig build sqllogictest` (53 blocks), `zig build v2-check`,
+  `zig build v2-poc`, `zig build sqllogictest-v2` (6 blocks),
+  `zig build cross` (5 targets), `task check:all`.
+- `.github/workflows/release.yml` gained an `EXTENSION_NAME`/
+  `EXTENSION_API_VERSION`/`EXTENSION_VERSION` `env:` block (defaults
+  matching `build.zig`'s own), forwarded into the single `zig build
+  cross` step as `-D` flags; the artifact-filename step now uses
+  `${EXTENSION_NAME}` instead of the literal `zig_ext`.
+
+Not done (deliberately out of scope for this pass — `zig_ext` still
+appears hardcoded elsewhere, confirmed by grep):
+- v2/v2-poc targets in `build.zig` itself (`zig_ext_v2`,
+  `zig_ext_v2_poc`) — these are the experimental migration targets, not
+  the template-facing v1 build, and keep their own fixed identity on
+  purpose.
+- `Taskfile.yml` has no variable-forwarding layer (e.g. `task build
+  NAME=foo`) the way habedi's `Makefile` does — not added; the user's
+  request was specifically about `zig build` accepting arguments
+  directly, which it now does, and CI, which now forwards env vars.
+- No rename script / `task init` scaffolding step, and no
+  `src/functions/README.md` — those remain exactly as scoped in item 5
+  below, untouched.
 - Investigated `codeberg.org/tensorush/liza` ("Zig codebase initializer")
   as a possible off-the-shelf tool for this — not a fit. It generates
   brand-new generic Zig projects from its own `exe`/`lib`/`bld` templates

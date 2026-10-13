@@ -36,6 +36,11 @@ env:
   # build.zig, "v1.2.0": a separate concern). This is the latest stable
   # release this project has actually tested against this session.
   DUCKDB_VERSION: "v1.5.6"
+  # Forwarded into `zig build cross` as -Dname/-Dapi-version/-Dextension-version;
+  # defaults here match build.zig's own defaults.
+  EXTENSION_NAME: "zig_ext"
+  EXTENSION_API_VERSION: "v1.2.0"
+  EXTENSION_VERSION: "v0.1.0"
 
 jobs:
   build:
@@ -55,7 +60,11 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Cross-compile the extension for every target
-        run: zig build cross
+        run: |
+          zig build cross \
+            -Dname="${EXTENSION_NAME}" \
+            -Dapi-version="${EXTENSION_API_VERSION}" \
+            -Dextension-version="${EXTENSION_VERSION}"
 
       - name: Arrange and compress into the custom-repository layout
         run: |
@@ -65,10 +74,10 @@ jobs:
           found=0
           for platform_dir in zig-out/lib/*/; do
             platform="$(basename "$platform_dir")"
-            ext_file="${platform_dir}zig_ext.duckdb_extension"
+            ext_file="${platform_dir}${EXTENSION_NAME}.duckdb_extension"
             if [ -f "$ext_file" ]; then
               mkdir -p "$dist_dir/$platform"
-              gzip -c "$ext_file" > "$dist_dir/$platform/zig_ext.duckdb_extension.gz"
+              gzip -c "$ext_file" > "$dist_dir/$platform/${EXTENSION_NAME}.duckdb_extension.gz"
               found=$((found + 1))
             fi
           done

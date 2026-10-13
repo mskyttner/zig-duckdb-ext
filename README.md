@@ -142,6 +142,17 @@ zig build -Doptimize=ReleaseSafe
 
 The build produces `zig-out/lib/zig_ext.duckdb_extension`.
 
+The extension name, targeted DuckDB C extension API version, and recorded
+extension version are configurable build options, each defaulting to the
+values above:
+
+```sh
+zig build -Dname=my_ext -Dapi-version=v1.3.0 -Dextension-version=v0.2.0
+```
+
+produces `zig-out/lib/my_ext.duckdb_extension`, loadable via `LOAD
+'zig-out/lib/my_ext.duckdb_extension';`.
+
 With Task:
 
 ```sh
