@@ -71,7 +71,7 @@ Read `rules/INDEX.yaml` at the start of every task to identify which rule files 
 
 ## Key conventions
 
-**Memory**: Pass allocators explicitly; use `defer`/`errdefer` for all cleanup; never leak on error paths. Choose `ArenaAllocator` for request-scoped work, `GeneralPurposeAllocator` for long-lived allocations.
+**Memory**: Pass allocators explicitly; use `defer`/`errdefer` for all cleanup; never leak on error paths. Choose `ArenaAllocator` for request-scoped work, `std.heap.DebugAllocator` for long-lived allocations (`GeneralPurposeAllocator` was removed in Zig 0.17 — `DebugAllocator` is its direct successor; `SafeAllocator`, new in 0.17, wraps safety checks around an arbitrary backing allocator instead).
 
 **C interop**: Every `@ptrCast`/`@alignCast` at the C boundary requires a `// SAFETY:` comment. DuckDB owns memory it allocates; Zig owns memory it allocates — never cross ownership boundaries. Strings to C must be null-terminated (`[:0]const u8`).
 
