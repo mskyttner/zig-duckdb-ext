@@ -42,36 +42,59 @@ review**:
 1. **[#26820](https://github.com/duckdb/duckdb/pull/26820) "Break-out
    common functionality"** — almost certainly the largest source of
    rename/restructure work this branch's `duckdb_v2.zig` will face on the
-   next re-vendor. Introduces `duckdb_v2_factory`, a unified handle for
-   constructing values/types/datachunks (obtainable from a connection,
-   instance, OR context), explicitly to stop duplicating the same
-   constructors across handle types. Virtually every `*WithContext`
-   wrapper this project has written —
+   next re-vendor, AND the one that closes the long-standing
+   `description`/`examples`/`categories` gap (see that finding above, now
+   struck through for v2 — this is the PR). Introduces `duckdb_v2_factory`,
+   a unified handle for constructing values/types/datachunks (obtainable
+   from a connection, instance, OR context), explicitly to stop
+   duplicating the same constructors across handle types. Virtually every
+   `*WithContext` wrapper this project has written —
    `contextCreateTypeFromId`/`contextCreateListType`/`contextCreateStructType`/
    `contextCreateDecimalType`/`contextCreateTypeFromText`/every
    `valueCreate*WithContext` — may get consolidated onto this `Factory`
    handle instead of `Context` directly. Also introduces `duckdb_v2_config`
    (a unified settings handle, also reachable from instance/connection/
-   context) and reworks `duckdb_v2_instance` to start eagerly with a new
-   `duckdb_v2_instance_create_with_options` for startup-only config — not
-   directly relevant to this project (an extension never creates an
-   instance), but part of the same PR's surface area.
+   context), reworks `duckdb_v2_instance` to start eagerly with a new
+   `duckdb_v2_instance_create_with_options` for startup-only config (not
+   directly relevant to this project — an extension never creates an
+   instance), and a `function_docs` handle
+   (`scalar_function_get_docs`/`table_function_get_docs`/
+   `aggregate_function_get_docs`/`pragma_function_get_docs`/
+   `macro_function_get_docs` → `function_docs_set_description`/
+   `_add_example`/`_add_category`) — genuinely new capability this
+   project's existing scalar/table/aggregate registration path can use
+   directly, no macro-wrapping needed, confirmed via the PR author's own
+   description, not inferred. Explicitly does NOT add comment/tag
+   support — see the `COMMENT ON FUNCTION` finding below, unaffected by
+   this PR despite first appearances.
 2. **[#26863](https://github.com/duckdb/duckdb/pull/26863) "PRAGMA/MACRO/
-   SET custom_option"** — potentially resolves a gap ADR-0003 and this
-   plan both documented as a confirmed (tested, not assumed) finding: "v2
-   has no way to run SQL at init time at all" and therefore "can't
-   self-register a `COMMENT ON FUNCTION` the way a v1 extension's
-   macro-wrapper step could." This PR adds **native MACRO function
-   registration for extensions** ("Scalar/table `MACRO` functions for
-   extensions, defined with a `FunctionSignature`") alongside custom
-   `PRAGMA` functions and custom config options. If this produces a real
-   catalog macro object (not just SQL-text execution under the hood), it
-   may let v2 attach a `COMMENT` the same way v1's macro-wrapper trick
-   does — directly affecting the one point this plan found in v2's favor
-   being traded for one in v1's favor (native named params vs.
-   comment-ability). **Re-test this explicitly once it's in the vendored
-   header — don't assume either way**, consistent with how every other
-   finding in this document was established.
+   SET custom_option"** — adds **native MACRO function registration for
+   extensions** ("Scalar/table `MACRO` functions for extensions, defined
+   with a `FunctionSignature`": `macro_function_create` → `_set_name`/
+   `_set_body` (the macro's SQL expression/query body text, parsed at
+   registration, not executed as a connection query — doesn't need the
+   SQL-execution-pipeline capability this plan already found missing) →
+   `_get_signature` (the same `function_signature` type this project's
+   plain scalar/table functions already use) → `extension_register_macro_function`)
+   alongside custom `PRAGMA` functions and custom config options.
+   **Narrower relevance than first thought**: since #26820's
+   `function_docs` already covers description/examples/categories for
+   *plain* scalar/table/aggregate functions directly, this PR's remaining
+   relevance is narrower — whether a v2 extension registering a function
+   as a genuine catalog *macro* (not a plain C-API function) would let a
+   **user**, after load, run `COMMENT ON FUNCTION` against it the way v1's
+   macro-wrapper convention already allows (v1's `tp_bar`/`tp_line`/
+   `tp_treemap`/`tp_snakemap` are real catalog macros for exactly this
+   reason). This does NOT mean the *extension* could self-register that
+   comment at load time either way — no SQL-execution path exists for that
+   in v2 regardless of whether the target is a macro, confirmed
+   independently twice already (see "v2 extensions have no way to run SQL
+   at init time at all" and the Table Description investigation above, two
+   separate API surfaces hitting the identical wall). **Re-test the
+   user-side `COMMENT ON FUNCTION`-against-a-v2-macro question explicitly
+   once this is in the vendored header — don't assume either way**,
+   consistent with how every other finding in this document was
+   established.
 3. **[#26872](https://github.com/duckdb/duckdb/pull/26872) "Log-sink
    support"** — brings v1's log storage to v2 (renamed "log sink"). A new
    capability, not used by anything built on this branch; no action
@@ -118,11 +141,18 @@ exercise for):
    reconstructing it from PR descriptions after the fact.
 2. Expect `duckdb_v2_factory`/`duckdb_v2_config` renames (PR #26820
    above) to be the dominant source of compile errors in `duckdb_v2.zig`.
-3. Re-test the MACRO/comment finding from ADR-0003 explicitly (PR #26863
-   above) — it may no longer be accurate.
-4. Grep for `DUCKDB_V2_ERROR_API` (PR #26347 above); fix the 4 call sites
+3. Wrap `function_docs`/`scalar_function_get_docs`/etc. (PR #26820 above)
+   and attach real descriptions/examples/categories to this project's
+   existing comptime-registered functions — a genuinely new capability,
+   not just a rename to absorb.
+4. Re-test the macro/`COMMENT ON FUNCTION` question from ADR-0003
+   explicitly (PR #26863 above) — specifically whether a *user* can
+   `COMMENT ON FUNCTION` a v2-registered macro after load, not whether the
+   extension can self-register one (confirmed separately that it still
+   can't, regardless of this PR).
+5. Grep for `DUCKDB_V2_ERROR_API` (PR #26347 above); fix the 4 call sites
    if it's gone.
-5. Re-run every `zig build v2-check`/`sqllogictest-v2`/live POC check this
+6. Re-run every `zig build v2-check`/`sqllogictest-v2`/live POC check this
    branch already has — they're the regression net for exactly this kind
    of churn, and already proved themselves catching real bugs throughout
    this branch, not just type-level drift.
@@ -241,10 +271,36 @@ live:
   confirmed live against the real `zig_ext_v2.duckdb_extension` that
   `duckdb_functions()` now shows `parameters = [a, b]`, still computing
   correctly.
-- **`description`/`examples`/`categories` are unreachable from the C
-  extension API in both v1 and v2** — grepped both vendored headers for
-  anything resembling C++'s `FunctionDescription`; nothing exists. Not a
-  comptime-solvable gap; it's a missing C-API hook in DuckDB itself.
+- ~~**`description`/`examples`/`categories` are unreachable from the C
+  extension API in both v1 and v2**~~ — **true for v1, no longer true for
+  v2 once re-vendored (found 2026-10-13, via PR #26820, not yet usable
+  against our currently-vendored header).** v1 genuinely has nothing —
+  confirmed again, grepped both headers, no C++-`FunctionDescription`
+  equivalent in v1's surface. But #26820 ("Break-out common
+  functionality," already flagged above as "NOT yet in our vendored
+  header," merged 2026-10-11) adds exactly this for v2: a `function_docs`
+  handle obtainable from `scalar_function_get_docs`/
+  `table_function_get_docs`/`aggregate_function_get_docs`/
+  `pragma_function_get_docs`/`macro_function_get_docs`, with
+  `function_docs_set_description`/`_add_example`/`_add_category` —
+  confirmed directly from the PR author's own description (not
+  inference): "You can now get a borrowed `function_docs` handle from a
+  scalar/window/aggregate function. This can be used to set a
+  description or add multiple categories or examples... This will
+  populate the description/example output in `duckdb_functions()` for
+  these functions." Applies to this project's *existing* plain scalar/
+  table/aggregate registration path directly — no macro-wrapping needed
+  at all, unlike the v1 convention. **Not usable yet**: confirmed by grep
+  that `function_docs` doesn't exist anywhere in our currently-vendored
+  `duckdb_v2.h` (predates even #26820 entirely) — needs the re-vendor
+  this doc's "Anticipated upcoming refactoring" section already scopes,
+  not implementable against what's committed today. **Does NOT resolve
+  the separate `COMMENT ON FUNCTION` finding below** — the same PR
+  author states outright "we do not support adding comments or tags
+  yet," closing a different upstream issue (#25962) than the comment
+  one; `description`/`examples`/`categories` and SQL `COMMENT` remain
+  two genuinely separate DuckDB catalog mechanisms, confirmed by the
+  person who built this, not assumed from the API shape alone.
 - **The one partially-reachable field, SQL `COMMENT ON FUNCTION`, only
   works on real catalog objects (macros), not raw C-API-registered
   functions** — confirmed live on both versions: `COMMENT ON FUNCTION
