@@ -1642,13 +1642,17 @@ official DuckDB CLI build, despite being musl-linked for libc, still
 dynamically links `libstdc++.so.6`/`libgcc_s.so.1` (it's a C++ binary;
 musl only replaces libc, not libstdc++) — a bare Alpine image doesn't
 have these by default (`apk add libstdc++ libgcc` first).
-`linux_arm64_musl` verified build/ELF/metadata-correct (aarch64 ELF,
-`NEEDED: libc.so` — musl's shared-lib name, vs. glibc's `libc.so.6`)
-but NOT run-verified: that needs a registered `qemu-aarch64` binfmt
-handler, which this host doesn't currently have and which (per the
-existing `verify:cross-arm64` task's own notes) needs real root to set
-up — left as a `task verify:cross-arm64`-style follow-up, not done
-inline here. README's platform table and `.github/workflows/release.yml`
+`linux_arm64_musl` run-verified too, as a same-day follow-up: registered
+the `qemu-aarch64` binfmt handler (`sudo docker run --rm --privileged
+docker.io/tonistiigi/binfmt --install arm64` — real root, confirmed
+needed; the user ran this step directly rather than the assistant, since
+it's a host-wide, sudo-gated, hard-to-reverse-cleanly change outside the
+repo), downloaded the real musl arm64 DuckDB CLI
+(`duckdb_cli-linux-arm64-musl.zip`, confirmed `ld-musl-aarch64.so.1`
+interpreter via `file`), and loaded the cross-built extension with it
+inside a real `alpine:3.20` arm64 container under QEMU —
+`zig_hello`/`zig_add_numbers` both correct. README's platform table and
+`.github/workflows/release.yml`
 updated; the latter needed no code change since its artifact-packaging
 loop already iterates `zig-out/lib/*/` generically.
 
