@@ -226,15 +226,21 @@ live:
   names: `SELECT parameters FROM duckdb_functions() WHERE function_name =
   'tp_bar'` → `[value, on, off, width]`. No macro wrapper needed, unlike
   v1 (see next point).
-- **`comptime_scalar_v2.Function(name, implFn)` synthesizes `a0`/`a1`**
-  (documented in its own doc comment, since Zig function parameters carry
-  no names at the ABI level) — confirmed live: `ct_add_numbers` shows
-  `[a0, a1]` in the catalog, exactly the anti-pattern the issue flags.
-  **Fix, not yet done**: extend `Function()` (and `comptime_table_v2`/
-  `comptime_aggregate_v2`) to accept real names, e.g. a `Cfg`-style struct
-  like `comptime_table_v2` already uses, or a parallel tuple argument.
-  Small, concrete, matches the issue's stated highest-leverage ask
-  ("if you only do one thing, do parameter names").
+- ~~**`comptime_scalar_v2.Function(name, implFn)` synthesizes
+  `a0`/`a1`**~~ — **done (2026-10-13).** Added `FunctionNamed(name,
+  implFn/State, param_names)` to all three frameworks
+  (`comptime_scalar_v2`/`comptime_table_v2`/`comptime_aggregate_v2`),
+  sharing each framework's existing logic via a renamed `FunctionImpl`
+  taking an optional name list — `Function()` itself is untouched (still
+  2 args, zero existing call sites needed changes), since Zig has no
+  default-parameter-value syntax that would let a third argument stay
+  optional on the very same function. A name-count mismatch is a clear
+  compile error (verified live). `ct_add_numbers_v2.zig` — the real v2
+  extension, not just a POC, the exact function this finding's `[a0, a1]`
+  example cited — switched to `FunctionNamed(..., &.{"a", "b"})`;
+  confirmed live against the real `zig_ext_v2.duckdb_extension` that
+  `duckdb_functions()` now shows `parameters = [a, b]`, still computing
+  correctly.
 - **`description`/`examples`/`categories` are unreachable from the C
   extension API in both v1 and v2** — grepped both vendored headers for
   anything resembling C++'s `FunctionDescription`; nothing exists. Not a
