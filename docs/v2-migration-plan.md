@@ -1620,32 +1620,48 @@ appears hardcoded elsewhere, confirmed by grep):
   pattern (`-d`/`-c`/`-l` feature flags, `$y`/`$n` substitution) is worth
   borrowing conceptually for the rename script, not the tool itself.
 
-### linux_amd64_musl cross target added (done, 2026-10-13)
+### linux_amd64_musl / linux_arm64_musl cross targets added (done, 2026-10-13)
 
 Prompted by a link to `https://install.duckdb.org/v1.5.6/duckdb_cli-linux-amd64-musl.zip`.
-Added `.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl }` to
-`cross_targets` in `build.zig`, and taught `duckdbPlatformString` to
-check `resolved_target.result.abi.isMusl()` and append `_musl` to the
-platform string (`linux_amd64_musl`/`linux_arm64_musl` — the latter not
-currently in `cross_targets`, just handled for completeness since the
-check is cheap). No other build.zig changes needed: `addCrossBuild`
+Added `.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl }` (and,
+in a follow-up, the aarch64 equivalent) to `cross_targets` in
+`build.zig`, and taught `duckdbPlatformString` to check
+`resolved_target.result.abi.isMusl()` and append `_musl` to the
+platform string. No other build.zig changes needed: `addCrossBuild`
 already took `query`/`optimize` generically, and `link_libc = true` is
 all a musl target needs — Zig vendors and statically links its own musl
 libc for a cross target, no system musl toolchain required.
 
-Verified live, not just "builds without error": downloaded the real
-musl DuckDB CLI from the URL above (confirmed musl-linked via `file`:
-`interpreter /lib/ld-musl-x86_64.so.1`) and loaded the cross-compiled
-`linux_amd64_musl/zig_ext.duckdb_extension` with it inside a real
-`alpine:3.20` container — `zig_hello`/`zig_add_numbers` both correct.
-**Non-obvious snag**: the official DuckDB CLI build, despite being
-musl-linked for libc, still dynamically links `libstdc++.so.6`/
-`libgcc_s.so.1` (it's a C++ binary; musl only replaces libc, not
-libstdc++) — a bare Alpine image doesn't have these by default
-(`apk add libstdc++ libgcc` first). README's platform table and
-`.github/workflows/release.yml` updated; the latter needed no code
-change since its artifact-packaging loop already iterates
-`zig-out/lib/*/` generically.
+`linux_amd64_musl` verified live, not just "builds without error":
+downloaded the real musl DuckDB CLI from the URL above (confirmed
+musl-linked via `file`: `interpreter /lib/ld-musl-x86_64.so.1`) and
+loaded the cross-compiled `linux_amd64_musl/zig_ext.duckdb_extension`
+with it inside a real `alpine:3.20` container —
+`zig_hello`/`zig_add_numbers` both correct. **Non-obvious snag**: the
+official DuckDB CLI build, despite being musl-linked for libc, still
+dynamically links `libstdc++.so.6`/`libgcc_s.so.1` (it's a C++ binary;
+musl only replaces libc, not libstdc++) — a bare Alpine image doesn't
+have these by default (`apk add libstdc++ libgcc` first).
+`linux_arm64_musl` verified build/ELF/metadata-correct (aarch64 ELF,
+`NEEDED: libc.so` — musl's shared-lib name, vs. glibc's `libc.so.6`)
+but NOT run-verified: that needs a registered `qemu-aarch64` binfmt
+handler, which this host doesn't currently have and which (per the
+existing `verify:cross-arm64` task's own notes) needs real root to set
+up — left as a `task verify:cross-arm64`-style follow-up, not done
+inline here. README's platform table and `.github/workflows/release.yml`
+updated; the latter needed no code change since its artifact-packaging
+loop already iterates `zig-out/lib/*/` generically.
+
+**Side investigation, no code change**: asked whether the v2/v2-poc
+builds would also fail to cross-compile for musl, since they're a
+separate, much larger header surface. Tried directly
+(`zig build -Dtarget=x86_64-linux-musl ext-v2`/`v2-poc`) — both built
+and linked against musl cleanly (same `NEEDED: libc.so` signature).
+Confirmed unrelated either way: `cross_step` never depends on `ext-v2`/
+`v2-poc`/`v2-check` (they're independent `b.step()`s, always built for
+the single `-Dtarget=`/host value, never looped across
+`cross_targets`), so enabling or disabling v2 work has zero interaction
+with the `cross` step regardless of ABI.
 
 ### 5. Trim or clearly label the example functions
 
