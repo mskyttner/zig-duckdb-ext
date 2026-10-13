@@ -438,6 +438,46 @@ pub fn build(b: *std.Build) void {
     const v2_poc_step = b.step("v2-poc", "Build the v2 proof-of-concept .duckdb_extension file");
     v2_poc_step.dependOn(&install_v2_poc.step);
 
+    // ── v2 proof-of-concept: image-to-braille-art demo (zignal dependency,
+    // isolated) ────────────────────────────────────────────────────────────
+    // A completely separate extension/step from `v2-poc` above, on purpose:
+    // this is the only place in the project pulling in `zignal` (an image
+    // decode/resize library), and it's `lazy = true` in build.zig.zon —
+    // `b.lazyDependency` returns null on any invocation that doesn't ask
+    // for this specific step, so nothing else (the real extensions, the
+    // main v2-poc, `zig build test`, CI) is affected if this fails to
+    // fetch or build. See src/ext/init_v2_poc_braille.zig's own doc
+    // comment for what it registers.
+    if (b.lazyDependency("zignal", .{ .target = target, .optimize = optimize })) |zignal_dep| {
+        const braille_image_mod = b.createModule(.{
+            .root_source_file = b.path("src/lib/braille_image.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        braille_image_mod.addImport("zignal", zignal_dep.module("zignal"));
+
+        const v2_poc_braille_lib = b.addLibrary(.{
+            .linkage = .dynamic,
+            .name = "zig_ext_v2_poc_braille",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ext/init_v2_poc_braille.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        v2_poc_braille_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
+        v2_poc_braille_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
+        v2_poc_braille_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
+        v2_poc_braille_lib.root_module.addImport("braille_image", braille_image_mod);
+        v2_poc_braille_lib.root_module.link_libc = true;
+
+        const v2_poc_braille_output = addDuckdbExtensionMetadata(b, v2_poc_braille_lib, "zig_ext_v2_poc_braille", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
+        const install_v2_poc_braille = b.addInstallFile(v2_poc_braille_output, "lib/zig_ext_v2_poc_braille.duckdb_extension");
+
+        const v2_poc_braille_step = b.step("v2-poc-braille", "Build the image-to-braille-art v2 proof-of-concept .duckdb_extension file");
+        v2_poc_braille_step.dependOn(&install_v2_poc_braille.step);
+    }
+
     // ── Shared library (the DuckDB extension) ────────────────────────────
     const lib = b.addLibrary(.{
         .linkage = .dynamic,

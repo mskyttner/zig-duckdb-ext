@@ -1910,3 +1910,72 @@ delete versus what's load-bearing framework code. Plan:
 
 None of the three have any code/file changes yet — this section exists so
 the plan survives a context reset, not as a record of work done.
+
+## Image-to-Braille-art v2-poc demo (done, 2026-10-13)
+
+Vendored `../braille_image` (a sibling scratch project, not a git repo,
+no commit to pin to) into `src/lib/braille_image.zig` — image decode/
+resize via the `zignal` dependency, HTTP(S) fetch via `std.http.Client`.
+Registered as a **completely separate, isolated extension/build step**
+(`zig build v2-poc-braille` → `zig_ext_v2_poc_braille.duckdb_extension`),
+deliberately never touching `init_v2_poc.zig`/`zig_ext_v2_poc` or either
+real extension: this is the only place in the project pulling in
+`zignal`, and keeping it fully separate means nothing else is at risk if
+it ever fails to fetch or build.
+
+**`zignal` is `lazy = true` in `build.zig.zon`, gating the entire step's
+existence on `b.lazyDependency` returning non-null** — a genuinely new
+pattern for this project (every other dependency here is either always-
+fetched, like `translate_c`/the header zips, or lazy-but-always-present-
+as-a-step like the CLI binaries, where `lazyDependency` only varies
+*which path* a step resolves to, never whether the step exists at all).
+**Verified live, not assumed**: a cold `zig build v2-check` (no zignal
+fetched yet) builds and passes with zero effect, confirming the
+`if (b.lazyDependency(...)) |dep| { ...construct the whole step... }`
+pattern correctly makes the entire `v2-poc-braille` step's existence
+conditional without crashing graph construction when the dependency
+isn't present. Then `zig build v2-poc-braille` on that same cold cache
+correctly triggered Zig's own lazy-fetch-and-retry cycle and built
+clean on the first try — confirming this is a safe, general pattern for
+future large/speculative dependencies this project doesn't want in its
+default build path at all.
+
+Registers three things, all live-verified against a real HTTPS URL
+(`https://upload.wikimedia.org/wikipedia/en/9/90/Sq3junkyard.JPG`):
+- `braille_from_url_ct(url, width, height) -> VARCHAR` — the whole
+  rendered image as one multi-line string. **CAUTION, by design**: per
+  `comptime_scalar_v2.zig`'s own documented VARCHAR-return convention,
+  the framework boxes the returned slice into a `Value` right after the
+  function returns but never frees it — `brailleFromUrl` returns a fresh
+  heap allocation every call, so this leaks one allocation per call.
+  Accepted as a known POC simplification (the framework has no
+  allocator-aware VARCHAR-return convention to plug into instead);
+  **not** something to carry into a real feature without one.
+- `braille_from_url_table_ct(url) -> TABLE(line VARCHAR)` — one row per
+  line, at a fixed default size (`default_width`/`default_height`;
+  there's no natural place to thread width/height through the
+  replacement-scan path below, so both are fixed rather than half-
+  exposed). `State.init` has no error-return convention available (per
+  `comptime_table_v2.zig`: `state.* = @call(.auto, State.init, args)`,
+  no `try`), so a failed fetch/decode fails soft to zero rows rather
+  than panicking.
+- A **replacement scan demonstrating `FROM 'https://.../*.jpg'` support**
+  — the user's specific ask, beyond just "expose it as a scalar
+  function." Recognizes a table reference that starts with
+  `http://`/`https://` AND ends (case-insensitively) in `.jpg`/`.jpeg`/
+  `.png`, redirecting to `braille_from_url_table_ct(url)` via the same
+  `replacementScanSetFunctionName`/`replacementScanAddArgument`
+  mechanism `init_v2_poc.zig`'s `zig_v2_range_<N>` demo already proved —
+  applied here to a URL-shaped table reference instead of a bare
+  identifier. Live-verified: `SELECT * FROM 'https://.../image.jpg'`
+  produces the same output as calling the table function directly; an
+  unrelated table name and a non-URL/non-image path both correctly fall
+  through to DuckDB's normal "table does not exist" catalog error,
+  untouched.
+
+**One real bug found and fixed**: the entrypoint initially forgot
+`db.initApi(input, "v2.0.0")` (the first line every other v2 entrypoint
+in this project has) — live-verified failure mode was a Zig panic
+("DuckDB v2 Extension API not initialized — call initApi first"),
+crashing the DuckDB CLI outright, not a graceful error. Fixed by adding
+the call; every other registration call succeeded immediately after.

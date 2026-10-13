@@ -101,6 +101,17 @@
             .url = "https://artifacts.duckdb.org/staged/v2.0-cyanoptera/libduckdb-src.zip",
             .hash = "N-V-__8AAL-2EwBI2NUq5ff3_vktqJo_yWCjvSZf2a-ID-p9",
         },
+        // Image decode/resize, needed only by src/lib/braille_image.zig —
+        // a speculative v2-poc-only demo (a scalar + table function, plus
+        // a replacement scan for `FROM 'https://.../*.jpg'`), never wired
+        // into the real zig_ext/zig_ext_v2 extensions. `lazy = true` so a
+        // plain `zig build`/`zig build cross` never fetches it. Same pin
+        // the sibling ../braille_image project already uses.
+        .zignal = .{
+            .url = "git+https://github.com/arrufat/zignal#56586a9ae1537661033c2475185d984da0d88b75",
+            .hash = "zignal-0.11.0-dev-OrZ3s2R2KgBB2VYMukzzVm2viQ8UBwnYIBXVbaTZ7M8M",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
