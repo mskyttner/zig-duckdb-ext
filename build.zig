@@ -28,8 +28,9 @@ fn duckdbPlatformString(resolved_target: std.Build.ResolvedTarget) []const u8 {
         if (arch == .x86_64) return "osx_amd64";
     }
     if (os == .linux) {
-        if (arch == .aarch64) return "linux_arm64";
-        if (arch == .x86_64) return "linux_amd64";
+        const is_musl = resolved_target.result.abi.isMusl();
+        if (arch == .aarch64) return if (is_musl) "linux_arm64_musl" else "linux_arm64";
+        if (arch == .x86_64) return if (is_musl) "linux_amd64_musl" else "linux_amd64";
     }
     if (os == .windows) {
         if (arch == .x86_64) return "windows_amd64";
@@ -102,6 +103,7 @@ fn addDuckdbExtensionMetadata(
 const cross_targets = [_]std.Target.Query{
     .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
     .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu },
+    .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl },
     .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu },
     .{ .cpu_arch = .x86_64, .os_tag = .macos },
     .{ .cpu_arch = .aarch64, .os_tag = .macos },

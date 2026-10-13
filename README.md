@@ -211,7 +211,8 @@ docs/rationale/       Architecture decision records
 | Platform       | Architecture |
 |----------------|--------------|
 | macOS          | arm64, amd64 |
-| Linux          | arm64, amd64 |
+| Linux (glibc)  | arm64, amd64 |
+| Linux (musl)   | amd64        |
 | Windows        | amd64        |
 
 ## Available Tasks
