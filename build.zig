@@ -566,6 +566,10 @@ pub fn build(b: *std.Build) void {
         });
         const docs_step = b.step("docs", "Generate API documentation for the v1 extension");
         docs_step.dependOn(&install_docs.step);
+        // `zig build dist` produces the whole publishable tree (extensions
+        // + docs) in one command, same "testable locally" reasoning as
+        // dist_main.zig itself.
+        dist_step.dependOn(docs_step);
     }
     {
         const install_docs_v2 = b.addInstallDirectory(.{
@@ -575,6 +579,17 @@ pub fn build(b: *std.Build) void {
         });
         const docs_v2_step = b.step("docs-v2", "Generate API documentation for the v2 extension");
         docs_v2_step.dependOn(&install_docs_v2.step);
+        dist_step.dependOn(docs_v2_step);
+    }
+    {
+        // The static GitHub Pages landing page (docs/pages/index.html) —
+        // its own step, same sibling pattern as `docs`/`docs-v2`, so it's
+        // independently buildable/testable rather than only ever
+        // appearing as a side effect of `zig build dist`.
+        const install_docs_index = b.addInstallFile(b.path("docs/pages/index.html"), "index.html");
+        const docs_index_step = b.step("docs-index", "Install the static GitHub Pages landing page");
+        docs_index_step.dependOn(&install_docs_index.step);
+        dist_step.dependOn(docs_index_step);
     }
 
     // ── Unit tests ───────────────────────────────────────────────────────

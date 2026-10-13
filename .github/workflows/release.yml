@@ -68,6 +68,14 @@ jobs:
             -Ddist-version="${DUCKDB_VERSION}"
           find dist -type f
 
+      - name: Assemble the landing page and API docs alongside the extension repository
+        run: |
+          set -euo pipefail
+          cp zig-out/index.html dist/index.html
+          cp -r zig-out/docs dist/docs
+          cp -r zig-out/docs-v2 dist/docs-v2
+          find dist -maxdepth 1
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3

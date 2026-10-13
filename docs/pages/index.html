@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zig-duckdb-ext</title>
+<meta name="description" content="A DuckDB extension written in Zig, demonstrating scalar and table functions over the v1 C extension API, with an experimental parallel port to DuckDB's unreleased v2.0 C API.">
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 50rem;
+    margin: 3rem auto;
+    padding: 0 1.25rem;
+    line-height: 1.6;
+  }
+  h1 { font-size: 1.7rem; margin-bottom: 0.15rem; }
+  .summary { font-size: 1.05rem; color: #666; margin-top: 0.25rem; }
+  .meta { margin: 0.75rem 0 1.5rem; font-size: 0.95em; color: #888; }
+  .meta a { color: inherit; text-decoration: underline; }
+  pre {
+    background: rgba(127,127,127,0.12);
+    padding: 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+  }
+  code { font-size: 0.9em; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid rgba(127,127,127,0.3); padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+  th { background: rgba(127,127,127,0.08); }
+  td code { display: block; white-space: pre-wrap; }
+  td code + code { margin-top: 0.3rem; }
+  h2 { margin-top: 2.5rem; border-bottom: 1px solid rgba(127,127,127,0.2); padding-bottom: 0.3rem; }
+  .cards { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0; }
+  .card {
+    flex: 1 1 13rem;
+    border: 1px solid rgba(127,127,127,0.3);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem;
+  }
+  .card h3 { margin: 0 0 0.3rem; font-size: 1rem; }
+  .card p { margin: 0.3rem 0 0; font-size: 0.95em; }
+  .note {
+    border-left: 3px solid #e8a33d;
+    padding: 0.6rem 1rem;
+    background: rgba(232,163,61,0.1);
+    border-radius: 0 6px 6px 0;
+  }
+  .toc { font-size: 0.95em; }
+  .toc ul { padding-left: 1.2rem; }
+  footer { margin-top: 3rem; color: #888; font-size: 0.9em; }
+  a { color: #4183c4; }
+</style>
+</head>
+<body>
+
+<h1>zig-duckdb-ext</h1>
+<p class="summary">A DuckDB extension written in Zig — scalar and table functions over the stable v1 C extension API, with an experimental, parallel port to DuckDB's staged, unreleased v2.0 C API.</p>
+<p class="meta">
+  Maintained by <a href="https://github.com/mskyttner">mskyttner</a>
+  &middot; <a href="https://github.com/mskyttner/zig-duckdb-ext">GitHub repository</a>
+  &middot; branch <code>duckdb-v2-api</code>
+</p>
+
+<h2 id="installing-and-loading">Installing and Loading</h2>
+<pre><code>duckdb -unsigned
+
+INSTALL zig_ext FROM 'https://mskyttner.github.io/zig-duckdb-ext/';
+LOAD zig_ext;
+</code></pre>
+<p>Not signed, so <code>-unsigned</code> is required — see <a href="https://github.com/mskyttner/zig-duckdb-ext/blob/duckdb-v2-api/docs/rationale/0004_extension-distribution-and-signing.md">ADR-0004</a> for why.</p>
+
+<h2 id="about-zig_ext">About zig_ext</h2>
+<p>Demonstrates building DuckDB scalar and table functions in Zig with direct C-API interop (no C++ ABI coupling to DuckDB internals — see <a href="https://github.com/mskyttner/zig-duckdb-ext/blob/duckdb-v2-api/docs/rationale/0001_zig-over-cpp-for-duckdb-ext.md">ADR-0001</a>), and a <code>comptime</code> framework that generates vectorized callbacks and registration boilerplate from plain per-row Zig functions — see the <a href="docs/">API docs</a> and the project <a href="https://github.com/mskyttner/zig-duckdb-ext#readme">README</a> for the full picture.</p>
+
+<h2 id="added-functions">Added Functions</h2>
+<table>
+<thead><tr><th>function_name</th><th>function_type</th><th>description</th><th>example</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>zig_hello</code></td><td>scalar</td>
+  <td>Returns a greeting string. NULL-propagating.</td>
+  <td><code>zig_hello('Zig')</code> → <code>'Hello, Zig!'</code></td>
+</tr>
+<tr>
+  <td><code>zig_add_numbers</code></td><td>scalar</td>
+  <td>Adds two 64-bit integers, hand-written vectorized callback.</td>
+  <td><code>zig_add_numbers(2, 3)</code> → <code>5</code></td>
+</tr>
+<tr>
+  <td><code>ct_add_numbers</code></td><td>scalar</td>
+  <td>Same as <code>zig_add_numbers</code>, but registered via the <code>comptime</code> scalar framework from a one-line per-row function.</td>
+  <td><code>ct_add_numbers(2, 3)</code> → <code>5</code></td>
+</tr>
+<tr>
+  <td><code>zig_tokenize</code></td><td>table</td>
+  <td>Splits a string by a (possibly multi-character) delimiter, one row per token, 0-based position ordinal. Empty tokens preserved.</td>
+  <td><code>FROM zig_tokenize('a,,b', ',')</code></td>
+</tr>
+<tr>
+  <td><code>ct_tokenize</code></td><td>table</td>
+  <td>Same as <code>zig_tokenize</code>, registered via the <code>comptime</code> table framework.</td>
+  <td><code>FROM ct_tokenize('a,b,c', ',')</code></td>
+</tr>
+<tr>
+  <td><code>tp_bar</code></td><td>scalar</td>
+  <td>Text progress bar. Named parameters <code>on</code>/<code>off</code>/<code>width</code> with defaults, via a SQL macro wrapper.</td>
+  <td><code>tp_bar(0.7, "on" := '█', "off" := '░', width := 15)</code> → <code>'███████████░░░░'</code></td>
+</tr>
+<tr>
+  <td><code>tp_line</code></td><td>scalar</td>
+  <td>Renders a <code>LIST(DOUBLE)</code> as a multi-line ASCII line graph.</td>
+  <td><code>tp_line([1.0, 3.0, 2.0, 4.0, 2.0])</code></td>
+</tr>
+<tr>
+  <td><code>tp_treemap</code></td><td>scalar</td>
+  <td>Renders values/labels as a boustrophedon treemap on a Unicode canvas, area proportional to value.</td>
+  <td><code>tp_treemap([1.0, 2.0, 3.0], ['small', 'medium', 'large'])</code></td>
+</tr>
+<tr>
+  <td><code>tp_snakemap</code></td><td>scalar</td>
+  <td>Two-level hierarchical treemap grouped by a third array, snake-layout panels inside group boxes.</td>
+  <td><code>tp_snakemap(vals, labels, groups, width := 80, height := 24)</code></td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="overloaded-functions">Overloaded Functions</h2>
+<p>This extension adds none.</p>
+
+<h2 id="added-types">Added Types</h2>
+<p>This extension adds none.</p>
+
+<h2 id="added-settings">Added Settings</h2>
+<p>This extension adds none.</p>
+
+<h2 id="v2-api-port">v2 C API port (experimental)</h2>
+<p>A parallel, in-progress port to DuckDB's staged, unreleased v2.0 C API lives on this same branch — not part of the published <code>zig_ext</code> repository above (DuckDB 2.0 hasn't shipped yet). See the <a href="docs-v2/">v2 API docs</a> and <a href="https://github.com/mskyttner/zig-duckdb-ext/blob/duckdb-v2-api/docs/v2-migration-plan.md">the migration plan</a> for what's covered: LIST/ARRAY/STRUCT/DECIMAL/ENUM/VARIANT as scalar and cast types, table/aggregate functions, replacement scans, and more.</p>
+
+<div class="cards">
+  <div class="card"><h3>📖 v1 API docs</h3><p><a href="docs/">Browse →</a></p></div>
+  <div class="card"><h3>🧪 v2 API docs</h3><p><a href="docs-v2/">Browse →</a></p></div>
+  <div class="card"><h3>💻 Source</h3><p><a href="https://github.com/mskyttner/zig-duckdb-ext">GitHub →</a></p></div>
+</div>
+
+<h2 id="platform-support">Platform support</h2>
+<table>
+<tr><th>Platform</th><th>Architecture</th></tr>
+<tr><td>macOS</td><td>arm64, amd64</td></tr>
+<tr><td>Linux (glibc)</td><td>arm64, amd64</td></tr>
+<tr><td>Linux (musl)</td><td>arm64, amd64</td></tr>
+<tr><td>Windows</td><td>amd64</td></tr>
+</table>
+
+<p class="note">This is a research/demonstration project, not an official DuckDB community extension. Install from this custom repository, or clone and build from source.</p>
+
+<h2 id="in-this-article">In this article</h2>
+<nav class="toc">
+<ul>
+  <li><a href="#installing-and-loading">Installing and Loading</a></li>
+  <li><a href="#about-zig_ext">About zig_ext</a></li>
+  <li><a href="#added-functions">Added Functions</a></li>
+  <li><a href="#overloaded-functions">Overloaded Functions</a></li>
+  <li><a href="#added-types">Added Types</a></li>
+  <li><a href="#added-settings">Added Settings</a></li>
+  <li><a href="#v2-api-port">v2 C API port</a></li>
+  <li><a href="#platform-support">Platform support</a></li>
+</ul>
+</nav>
+
+<footer>Built with <a href="https://ziglang.org/">Zig</a>. Published via GitHub Actions on every tagged release.</footer>
+
+</body>
+</html>

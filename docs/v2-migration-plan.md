@@ -1979,3 +1979,42 @@ in this project has) — live-verified failure mode was a Zig panic
 ("DuckDB v2 Extension API not initialized — call initApi first"),
 crashing the DuckDB CLI outright, not a graceful error. Fixed by adding
 the call; every other registration call succeeded immediately after.
+
+## GitHub Pages landing page (done, 2026-10-13)
+
+Closed a real, live gap: the Pages root (`https://mskyttner.github.io/zig-duckdb-ext/`)
+previously 404'd — the published tree only ever had the
+`dist/<version>/<platform>/...` extension-repository layout, no human-
+readable page at all. Added `docs/pages/index.html`, a plain static
+page (no build step of its own — content, not something to "build"),
+styled after DuckDB's own community-extensions pages (fetched and
+inspected `duckdb.org/community_extensions/extensions/textplot` for the
+exact structure to borrow): title/summary/maintainer line, "Installing
+and Loading", "About", an "Added Functions" table (every function the
+real v1 extension actually registers, descriptions pulled directly from
+each function's own doc comment — not just the subset README.md already
+documented), explicit "Overloaded Functions"/"Added Types"/"Added
+Settings: none" sections (the same "make coverage explicit, including
+what's absent" convention that page uses), links to the v1/v2 API docs
+and GitHub source, the platform-support table, and a table-of-contents
+footer.
+
+New `zig build docs-index` step (`b.addInstallFile(b.path("docs/pages/index.html"),
+"index.html")`) installs it to `zig-out/index.html` — its own sibling
+step, same pattern as the pre-existing `docs`/`docs-v2` (Zig autodoc)
+steps, each independently buildable/testable rather than only ever
+appearing as a side effect of something else. All three
+(`docs`/`docs-v2`/`docs-index`) are now `dist_step` dependencies, so one
+`zig build dist` produces the whole set locally — but note `docs`/
+`docs-v2`/`docs-index` install into `zig-out/` (the standard Zig install
+prefix, matching their own pre-existing convention) while `dist_main.zig`
+writes extension artifacts into a separate, repo-root-relative `dist/`
+directory (an intentional, pre-existing split — see that file's own
+module doc comment) — so a final assembly step is still needed to merge
+them into one publishable tree. Added that as a second, explicit step in
+`.github/workflows/release.yml`'s `build` job (plain `cp`/`cp -r` after
+`zig build dist` — no custom Zig code needed for straight directory/file
+copying, unlike the gzip-and-per-platform-matching logic `zig build dist`
+itself replaced bash for). Verified locally: the full assembled tree
+(`index.html` + `docs/` + `docs-v2/` + `v1.5.6/<platform>/...` all under
+one `dist/`) is exactly what the workflow will produce and upload.
