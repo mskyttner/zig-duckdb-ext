@@ -2018,3 +2018,67 @@ copying, unlike the gzip-and-per-platform-matching logic `zig build dist`
 itself replaced bash for). Verified locally: the full assembled tree
 (`index.html` + `docs/` + `docs-v2/` + `v1.5.6/<platform>/...` all under
 one `dist/`) is exactly what the workflow will produce and upload.
+
+## Dynamic landing-page generation from function metadata (planned, not started, 2026-10-13)
+
+Prompted by "could `zt` [lalinsky/zt, a Zig-templates-compile-to-Zig
+library] be used to dynamically build the docs index page based on
+extension metadata?" Investigated both halves — the templating engine
+and the actual metadata source — before deciding whether it's worth
+building, rather than assuming either works.
+
+**`zt` itself (lalinsky/zt, github.com/lalinsky/zt)**: viable, no
+blocker. Compiles HTML-with-embedded-Zig `templ` functions to real
+`.zig` source at build time (zero runtime templating engine, zero
+allocations — output writes straight to a `std.Io.Writer`); explicitly
+supports both Zig 0.16 and 0.17 per its own README, tested in CI for
+both. Data-binding model is ordinary typed Zig params (structs, slices)
+— `pub templ FunctionTable(fns: []const FunctionInfo) { for (fns) |f| {
+@FunctionRow(f) } }` is literally the shape this page's function table
+needs. One caveat before depending on it: young project (created Feb
+2026, 92 stars, actively maintained but pushed-today-fresh), and its own
+README says block-level control-flow syntax is still an open, unsettled
+design question — a breaking change could land.
+
+**The actual metadata source — checked live, not assumed**: ran `SELECT
+function_name, function_type, parameters, parameter_types, return_type,
+description, examples, comment, tags, categories FROM
+duckdb_functions()` against the real, currently-built `zig_ext.duckdb_extension`
+(v1.5.6 CLI). `function_name`/`function_type`/`parameters`/
+`parameter_types`/`return_type` are populated and authoritative for
+every registered function (scalar/table/macro) — can never drift from
+the real implementation, since DuckDB derived them from the actual
+registration. But `description`/`examples`/`comment`/`tags`/`categories`
+are **NULL or empty for every single function**, no exceptions —
+confirming live what was already suspected: there's no DuckDB-side
+source for the prose currently hand-written into `docs/pages/index.html`
+(each function's own Zig doc comment, transcribed by hand), and won't
+be until `function_docs` lands for v2 (PR #26820, tracked separately —
+and even then explicitly excludes comments/tags per that PR's own
+description). Also found: parameter *names* are only real for the
+macro-wrapped functions (`tp_bar`/`tp_line`/etc., via this project's own
+named-parameter-via-SQL-macro convention) — every plain scalar/table
+function, hand-written or `comptime_scalar.zig`-registered (the v1
+framework; `FunctionNamed` was only ever added to the *v2* comptime
+framework this session), reports synthetic `col0`/`col1` placeholders
+instead of real names.
+
+**Design conclusion, not yet built**: a pure `duckdb_functions()`-driven
+page would get the signature columns right with zero maintenance but
+produce a table with no descriptions at all — not an improvement over
+today's hand-written page. The user's own proposed alternative — an
+R-package-`DESCRIPTION`-style metadata file, filled in partly by
+introspecting the Zig sources — is the right shape for the half
+`duckdb_functions()` can't supply. **The likely real design is a
+hybrid**: `duckdb_functions()` supplies the authoritative, auto-derived
+signature (name/type/params/return, never drifts), and a small
+hand-maintained metadata file (keyed by function name) supplies the
+prose (description, example) `duckdb_functions()` has no way to
+provide — merged at build time, then rendered through `zt` (or kept as
+a hand-written HTML table, if the metadata-merge step alone closes the
+"keeps itself accurate" goal without also needing a templating engine).
+Not started — parked here for a future session, along with the actual
+merge-step design (where the metadata file lives, its exact format,
+whether `zig build` drives the `duckdb_functions()` query via the
+already-pinned v1 CLI or a similar lazy-dependency-gated mechanism to
+`v2-poc-braille`'s).
