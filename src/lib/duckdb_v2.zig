@@ -49,6 +49,9 @@ pub const TableFunctionFilterPushdownInfoHandle = c.duckdb_v2_table_function_fil
 pub const TableFunctionProgressInfoHandle = c.duckdb_v2_table_function_progress_info_handle;
 pub const CastFunctionHandle = c.duckdb_v2_cast_function_handle;
 pub const CastFunctionExecInfoHandle = c.duckdb_v2_cast_function_exec_info_handle;
+pub const ReplacementScanHandle = c.duckdb_v2_replacement_scan_handle;
+pub const ReplacementScanInfoHandle = c.duckdb_v2_replacement_scan_info_handle;
+pub const QnameHandle = c.duckdb_v2_qname_handle;
 
 // ─── Re-export enums / structs ────────────────────────────────────────────────
 
@@ -64,6 +67,7 @@ pub const TableFunctionProgressCallback = c.duckdb_v2_table_function_progress_ca
 pub const ExpressionType = c.DUCKDB_V2_EXPRESSION_TYPE;
 pub const CastMode = c.DUCKDB_V2_CAST_MODE;
 pub const CastFunctionExecCallback = c.duckdb_v2_cast_function_exec_callback_fn;
+pub const ReplacementScanCallback = c.duckdb_v2_replacement_scan_callback_fn;
 pub const idx_t = c.idx_t;
 
 // ─── Extension API singleton ─────────────────────────────────────────────────
@@ -519,6 +523,99 @@ pub fn errorInfoSetCode(info: ErrorInfoHandle, code: ErrorCode) ErrorCode {
 
 pub fn errorInfoSetText(info: ErrorInfoHandle, text: *const Str) ErrorCode {
     return getApi().duckdb_v2_error_info_set_text.?(info, text);
+}
+
+// --- Qualified Name ---
+//
+// A borrowed-or-owned {parts} path (catalog.schema.name, up to 3 parts,
+// outermost first) — what a replacement scan's unresolved table
+// reference is handed as, and what a claimed table-function name is
+// built from. Only the slice this project's replacement-scan wrapper
+// actually needs is wrapped: `qname_parse`/`render`/`equals`/`hash` exist
+// in the header too, unused here.
+
+pub fn qnameCreate(parts: []const IdentifierT, out_name: *QnameHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_qname_create.?(parts.ptr, parts.len, out_name, err);
+}
+
+pub fn qnameGetPartCount(name: QnameHandle, out_count: *idx_t, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_qname_get_part_count.?(name, out_count, err);
+}
+
+/// Parts are outermost first — the object name itself is the part at
+/// `qnameGetPartCount() - 1`.
+pub fn qnameGetPart(name: QnameHandle, index: idx_t, out_part: *IdentifierT, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_qname_get_part.?(name, index, out_part, err);
+}
+
+pub fn qnameDestroy(name: *QnameHandle) ErrorCode {
+    return getApi().duckdb_v2_qname_destroy.?(name);
+}
+
+// --- Replacement Scan ---
+//
+// Consulted during query planning for a table reference the catalog
+// couldn't resolve (`FROM <name>`) — the callback can decline (return
+// without claiming) or claim it by naming a table function to call
+// instead (the only claim form wrapped here; `set_collection`/
+// `set_subquery`/`set_alias`/`add_named_argument`/user-data are in the
+// header but unused so far, same posture as the cast-function wrappers).
+
+pub fn replacementScanCreateWithExtension(
+    extension: ExtensionHandle,
+    out_scan: *ReplacementScanHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_replacement_scan_create_with_extension.?(extension, out_scan, err);
+}
+
+pub fn replacementScanDestroy(scan: *ReplacementScanHandle) ErrorCode {
+    return getApi().duckdb_v2_replacement_scan_destroy.?(scan);
+}
+
+pub fn replacementScanSetCallback(
+    scan: ReplacementScanHandle,
+    callback: ReplacementScanCallback,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_replacement_scan_set_callback.?(scan, callback, err);
+}
+
+pub fn replacementScanRegister(scan: ReplacementScanHandle, err: *ErrorInfoHandle) ErrorCode {
+    return getApi().duckdb_v2_replacement_scan_register.?(scan, err);
+}
+
+/// The unresolved name as written in the query — owned by the caller,
+/// destroy via `qnameDestroy`, so (unlike most info accessors here) it
+/// may outlive the callback if ever needed to.
+pub fn replacementScanGetName(
+    info: ReplacementScanInfoHandle,
+    out_name: *QnameHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_replacement_scan_get_name.?(info, out_name, err);
+}
+
+/// Claims the reference: read it via `name` (a table function to call)
+/// instead. Borrowed and copied; mutually exclusive with the
+/// `set_collection`/`set_subquery` claim forms this project doesn't wrap.
+pub fn replacementScanSetFunctionName(
+    info: ReplacementScanInfoHandle,
+    name: QnameHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_replacement_scan_set_function_name.?(info, name, err);
+}
+
+/// Appends one positional argument to the table function claimed via
+/// `replacementScanSetFunctionName` (which must be called first).
+/// Borrowed and copied — the caller may destroy `value` after the call.
+pub fn replacementScanAddArgument(
+    info: ReplacementScanInfoHandle,
+    value: ValueHandle,
+    err: *ErrorInfoHandle,
+) ErrorCode {
+    return getApi().duckdb_v2_replacement_scan_add_argument.?(info, value, err);
 }
 
 // --- Table Function bind/init/exec info ---

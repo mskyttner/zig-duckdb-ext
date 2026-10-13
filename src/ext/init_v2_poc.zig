@@ -37,6 +37,7 @@ export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callcon
     registerFilterPushdownTest(input);
     registerProjectionPushdownTest(input);
     registerComptimeExamples(input);
+    registerReplacementScanTest(input);
 }
 
 fn registerHello(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
@@ -1442,6 +1443,55 @@ fn projectionLastMaskExec(info: db2.ScalarFunctionExecInfoHandle, context: db2.C
     const ptr: [*]i64 = @ptrCast(@alignCast(out_data));
     var row: db2.idx_t = 0;
     while (row < row_count) : (row += 1) ptr[row] = projection_last_mask;
+}
+
+/// Live test for `duckdb_v2.zig`'s replacement-scan wrappers: recognizes
+/// an unresolved table reference of the form `zig_v2_range_<N>` (e.g.
+/// `FROM zig_v2_range_7`) and claims it by redirecting to
+/// `zig_v2_range_ct(N)` — proves both the name-recognition path and
+/// argument-threading (`replacementScanAddArgument`), not just that the
+/// callback fires. Anything else is declined (no claim, no mutation) and
+/// falls through to DuckDB's normal "no such table" error, same as if
+/// this scan weren't registered at all.
+fn registerReplacementScanTest(input: *const db2.ExtensionInput) void {
+    var err: db2.ErrorInfoHandle = undefined;
+
+    var scan: db2.ReplacementScanHandle = undefined;
+    if (db2.replacementScanCreateWithExtension(input.extension, &scan, &err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.replacementScanDestroy(&scan);
+
+    if (db2.replacementScanSetCallback(scan, replacementScanCallback, &err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    _ = db2.replacementScanRegister(scan, &err);
+}
+
+const range_prefix = "zig_v2_range_";
+
+fn replacementScanCallback(info: db2.ReplacementScanInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    var qname: db2.QnameHandle = undefined;
+    if (db2.replacementScanGetName(info, &qname, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.qnameDestroy(&qname);
+
+    var part_count: db2.idx_t = 0;
+    if (db2.qnameGetPartCount(qname, &part_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var object_name: db2.IdentifierT = undefined;
+    if (db2.qnameGetPart(qname, part_count - 1, &object_name, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    // SAFETY: `object_name` borrows from `qname`, valid until it's destroyed above.
+    const name_slice: []const u8 = @as([*]const u8, @ptrCast(object_name.ptr))[0..object_name.len];
+
+    if (!std.mem.startsWith(u8, name_slice, range_prefix)) return; // decline — not our pattern
+    const n = std.fmt.parseInt(i64, name_slice[range_prefix.len..], 10) catch return; // decline — not `..._<N>`
+
+    var target: db2.QnameHandle = undefined;
+    const target_name = db2.str("zig_v2_range_ct");
+    if (db2.qnameCreate((&target_name)[0..1], &target, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.qnameDestroy(&target);
+    if (db2.replacementScanSetFunctionName(info, target, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var n_value: db2.ValueHandle = undefined;
+    if (db2.valueCreateBigintWithContext(context, n, &n_value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.valueDestroy(&n_value);
+    _ = db2.replacementScanAddArgument(info, n_value, err);
 }
 
 // Private test-only decls of duckdb_v2.zig, re-exposed here so this file
