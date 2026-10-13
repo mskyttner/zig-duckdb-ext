@@ -109,6 +109,7 @@ const cross_targets = [_]std.Target.Query{
 fn addCrossBuild(
     b: *std.Build,
     translate_c_dep: *std.Build.Dependency,
+    duckdb_headers_v1_dep: *std.Build.Dependency,
     optimize: std.builtin.OptimizeMode,
     query: std.Target.Query,
 ) std.Build.LazyPath {
@@ -117,12 +118,12 @@ fn addCrossBuild(
 
     const duckdb_c: Translator = .init(translate_c_dep, .{
         .name = b.fmt("duckdb_c_{s}", .{platform}),
-        .c_source_file = b.path("duckdb_capi/duckdb_extension.h"),
+        .c_source_file = duckdb_headers_v1_dep.path("duckdb_extension.h"),
         .target = resolved_target,
         .optimize = optimize,
         .extra_args = &.{"-DDUCKDB_API_EXCLUDE_FUNCTIONS=1"},
     });
-    duckdb_c.addIncludePath(b.path("duckdb_capi"));
+    duckdb_c.addIncludePath(duckdb_headers_v1_dep.path("."));
 
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
@@ -160,9 +161,15 @@ pub fn build(b: *std.Build) void {
     // `#include`s `duckdb.h` itself, so translating just the one file
     // pulls in everything `src/lib/duckdb.zig` needs.
     const translate_c_dep = b.dependency("translate_c", .{});
+    // Version-pinned, content-hashed header sources (see build.zig.zon's
+    // own comments on each): v1.5.6's real tagged release for v1, the
+    // exact alpha commit the staged v2 CLI itself reports for v2 — not
+    // the plain, no-provenance committed files this project used to vendor.
+    const duckdb_headers_v1_dep = b.dependency("duckdb_headers_v1", .{});
+    const duckdb_headers_v2_dep = b.dependency("duckdb_headers_v2", .{});
     const duckdb_c: Translator = .init(translate_c_dep, .{
         .name = "duckdb_c",
-        .c_source_file = b.path("duckdb_capi/duckdb_extension.h"),
+        .c_source_file = duckdb_headers_v1_dep.path("duckdb_extension.h"),
         .target = target,
         .optimize = optimize,
         // Extensions call through the function-pointer vtable, not linked
@@ -171,17 +178,17 @@ pub fn build(b: *std.Build) void {
         // itself. Same define the old @cImport block used.
         .extra_args = &.{"-DDUCKDB_API_EXCLUDE_FUNCTIONS=1"},
     });
-    duckdb_c.addIncludePath(b.path("duckdb_capi"));
+    duckdb_c.addIncludePath(duckdb_headers_v1_dep.path("."));
 
     // ── v2 API translation (in-progress rewrite, not yet wired into the
     // extension build — see src/lib/duckdb_v2.zig) ───────────────────────
     const duckdb_c_v2: Translator = .init(translate_c_dep, .{
         .name = "duckdb_c_v2",
-        .c_source_file = b.path("duckdb_capi/duckdb_extension_v2.h"),
+        .c_source_file = duckdb_headers_v2_dep.path("duckdb_extension_v2.h"),
         .target = target,
         .optimize = optimize,
     });
-    duckdb_c_v2.addIncludePath(b.path("duckdb_capi"));
+    duckdb_c_v2.addIncludePath(duckdb_headers_v2_dep.path("."));
 
     const duckdb_v2_mod = b.createModule(.{
         .root_source_file = b.path("src/lib/duckdb_v2.zig"),
@@ -371,7 +378,7 @@ pub fn build(b: *std.Build) void {
     for (cross_targets) |query| {
         const resolved = b.resolveTargetQuery(query);
         const platform = duckdbPlatformString(resolved);
-        const output = addCrossBuild(b, translate_c_dep, optimize, query);
+        const output = addCrossBuild(b, translate_c_dep, duckdb_headers_v1_dep, optimize, query);
         const install_cross = b.addInstallFile(output, b.fmt("lib/{s}/" ++ extension_name ++ ".duckdb_extension", .{platform}));
         cross_step.dependOn(&install_cross.step);
     }

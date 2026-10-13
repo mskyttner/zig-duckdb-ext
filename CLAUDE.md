@@ -34,9 +34,14 @@ src/
   lib/duckdb.zig    — thin Zig wrappers around the vendored DuckDB C API
   lib/comptime_scalar.zig — comptime framework: generates vectorized callbacks from per-row fns
   lib/comptime_table.zig  — comptime framework: generates table function boilerplate
-duckdb_capi/        — vendored DuckDB C headers (v1.2.0); consumed via @cImport
 build.zig           — builds shared lib + runs post-build metadata appender → .duckdb_extension
 ```
+
+DuckDB's C API headers (`duckdb.h`/`duckdb_extension.h` for v1,
+`duckdb_v2.h`/`duckdb_extension_v2.h` for v2) aren't committed locally —
+they're fetched as content-hash-pinned `build.zig.zon` dependencies
+(v1.5.6's real tagged release; the exact commit the staged v2 alpha CLI
+itself reports) and translated at build time via `b.addTranslateC`.
 
 ### Extension entry point
 

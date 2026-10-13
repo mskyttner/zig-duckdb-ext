@@ -64,6 +64,43 @@
             .hash = "N-V-__8AAIiicQTh1HPr3MiDX9aKnSfL103zk5phspO7cTtP",
             .lazy = true,
         },
+        // Version-pinned, content-hashed vendored DuckDB C API headers —
+        // replaces the plain committed `duckdb_capi/*.h` files, which had
+        // no recorded provenance (confirmed, 2026-10-13: byte-for-byte
+        // identical to neither the v1.2.0 tag their own `const
+        // target_duckdb_version` suggested, nor v1.3.0 through v1.5.6, nor
+        // `main` — origin unknown). Re-vendored from DuckDb's own
+        // `libduckdb-src.zip` release/CI artifact (small — a few hundred KB
+        // to 5MB, not a full source clone — and a format `zig fetch`
+        // recognizes; a bare `.h` file served as `text/plain` is not, so
+        // that was tried first and rejected). Full build + `task
+        // check:all` + `zig build cross` + the 53-block v1 sqllogictest
+        // suite all re-verified passing against these exact fetched files
+        // before switching to them.
+        //
+        // v1: the real, tagged `v1.5.6` release — matches every other v1
+        // version reference already in this project (the GitHub Actions
+        // release workflow's `DUCKDB_VERSION`, the CLI used for manual/
+        // sqllogictest verification throughout this branch). Immutable:
+        // a tagged release's assets never change, so this hash never goes
+        // stale.
+        .duckdb_headers_v1 = .{
+            .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-src.zip",
+            .hash = "N-V-__8AANq4rwEjjrNWz619N1Pu61lS5GAi7o4Qx9cHU7aN",
+        },
+        // v2: confirmed byte-identical to the exact commit
+        // (`b15358c371`) the staged `v2.0.0-alpha46057` ("Cyanoptera")
+        // CLI itself reports via `-version` — not a guess, verified by
+        // diffing against `raw.githubusercontent.com/.../b15358c371/...`
+        // directly. Same staged-artifact caveat as the CLI dependencies
+        // above: this URL tracks whatever's most recently published under
+        // the "cyanoptera" codename, so this hash WILL need re-pinning
+        // (`zig fetch <url>`) whenever that staged build moves forward,
+        // until DuckDB 2.0 ships as a real tagged release.
+        .duckdb_headers_v2 = .{
+            .url = "https://artifacts.duckdb.org/staged/v2.0-cyanoptera/libduckdb-src.zip",
+            .hash = "N-V-__8AAL-2EwBI2NUq5ff3_vktqJo_yWCjvSZf2a-ID-p9",
+        },
     },
     .paths = .{
         "build.zig",

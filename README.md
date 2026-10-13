@@ -190,8 +190,7 @@ src/
   functions/          Function implementations (hand-written and comptime)
   lib/                DuckDB C API bindings + comptime frameworks
 build.zig             Build configuration
-build.zig.zon         Package manifest
-duckdb_capi/          Vendored DuckDB C headers (v1.2.0)
+build.zig.zon         Package manifest — also pins the DuckDB C headers (v1.5.6), fetched at build time rather than committed locally
 test/sql/             End-to-end SQL tests (sqllogictest .test format)
 docs/rationale/       Architecture decision records
 ```
