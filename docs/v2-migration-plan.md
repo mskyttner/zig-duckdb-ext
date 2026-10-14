@@ -2198,3 +2198,48 @@ both 256×256×256 and 64×64×64 — a modest, honest number for this
 single-level register-blocked kernel (no 2D RM×RN tiling, no cache
 blocking, no multi-threading), not the reference's larger multi-GFLOP
 gains, and not oversold as such.
+
+### Follow-up: comptime lane-width dispatch (done, 2026-10-14)
+
+The kernel above shipped with a hardcoded `vec_width = 4`. Prompted by
+"look at SIMD comptime lane-width dispatch" (one of the brainstormed
+Zig-showcase ideas from the same conversation) — replaced it with
+`std.simd.suggestVectorLength(f64) orelse 1`, the stdlib's own direct
+answer to the exact problem tinyblas_cpu.h's `#ifdef __AVX512F__`/
+`#ifdef __AVX2__`/`#ifdef __SSE__`-gated `madd`/`add`/`mul` intrinsic
+overloads solve (confirmed by reading `std/simd.zig`'s actual
+implementation, not assumed from the function name): one function
+querying `cpu.has(.x86, .avx512f)`/`.avx2`/`.sse`/`cpu.has(.arm,
+.neon)`/`cpu.has(.aarch64, .sve)`/etc. at comptime, covering x86, ARM,
+AArch64 SVE, RISC-V V (scaled by the specific `zvl*b` feature present),
+WASM SIMD128, PowerPC, MIPS, s390x, SPARC, Hexagon, and LoongArch — far
+more architectures than tinyblas_cpu.h's hand-written x86/ARM-only
+ladder, in roughly 70 lines total.
+
+**Verified live across three genuinely distinct cases, not assumed from
+reading the stdlib source alone**: compiling the exact same
+`matmul.zig` source (a) for `x86_64-linux-gnu` with no `-Dcpu=`
+override (Zig's conservative baseline for that triple) resolved
+`suggestVectorLength(f64)` to **2** (128-bit SSE2); (b) the identical
+source with `-Dcpu=x86_64_v3` (an AVX2-capable baseline) resolved to
+**4** (256-bit AVX2) — both built and test-run successfully on this
+host (compatible ABI), both passing `matmul.zig`'s own correctness
+tests against the naive kernel at their respective widths; (c)
+`arm-linux-gnueabi` targeting `arm1176jzf_s` (ARMv6, no NEON) resolved
+to `null` (confirmed via a `@compileLog` probe), correctly triggering
+the `orelse 1` scalar fallback — `matmul.zig` compiled clean for that
+target too (`@Vector(1, T)` compiles away to plain scalar code, no
+degenerate-width special-casing needed in the kernel itself). Native
+`zig build`/`zig build v2-poc` (no `-Dtarget=`/`-Dcpu=` override)
+already auto-detects the real host CPU (confirmed: this machine's
+`arrowlake_s` resolves to 4) — the comptime dispatch was a strict
+correctness/portability improvement over the old hardcoded constant,
+not a behavior change on this specific host.
+
+Not wired into `zig build cross`: `matmul.zig`/the `v2-poc` extension
+it feeds have never been part of that step (host-only, same as the rest
+of `v2-poc`'s demo functions) — the dispatch mechanism was verified
+directly via standalone `zig test`/`zig build-obj` invocations against
+explicit `-target`/`-mcpu=` combinations instead, which was sufficient
+to prove the mechanism without needing to extend `cross_targets`'
+scope to a module that was never part of it.

@@ -23,11 +23,29 @@
 ///! this demo targets.
 const std = @import("std");
 
-/// Vector lane width for the SIMD kernel's inner loop. `@Vector`
-/// compiles to the right width/instructions for whatever `-mcpu=`/
-/// target this is built for — no `#ifdef __AVX2__`/`#ifdef __AVX512F__`
-/// branching needed, unlike tinyblas_cpu.h's intrinsics overloads.
-const vec_width = 4;
+/// Vector lane width for the SIMD kernel's inner loop — **picked at
+/// comptime from the build's actual target CPU**, not a fixed guess.
+/// `std.simd.suggestVectorLength(f64)` is the stdlib's own answer to
+/// exactly the `#ifdef __AVX512F__`/`#ifdef __AVX2__`/`#ifdef __SSE__`
+/// ladder tinyblas_cpu.h's `madd`/`add`/`mul` intrinsic overloads use
+/// (lines 225–264 of that file) — one function querying
+/// `cpu.has(.x86, .avx512f)`/`.avx2`/`.sse`/`cpu.has(.arm, .neon)`/
+/// `cpu.has(.aarch64, .sve)`/etc. at comptime, covering far more
+/// architectures (x86, ARM, AArch64 SVE, RISC-V V, WASM SIMD128,
+/// PowerPC, MIPS, s390x, SPARC, Hexagon, LoongArch — see its own
+/// implementation in `std/simd.zig`) than tinyblas_cpu.h's hand-written
+/// x86/ARM-only ladder. `orelse 1` falls back to a 1-wide "vector" (a
+/// genuine scalar loop, `@Vector(1, T)` compiles away to plain scalar
+/// code) on a target with no detected SIMD support at all.
+///
+/// Confirmed live, not assumed: compiling this exact file for
+/// `x86_64-linux-gnu` with no `-Dcpu=` override (Zig's conservative
+/// baseline for that triple) resolves to 2 (128-bit SSE2); the identical
+/// source recompiled with `-Dcpu=x86_64_v3` (an AVX2-capable baseline)
+/// resolves to 4 (256-bit AVX2) — the same `@Vector`-based kernel code,
+/// genuinely picking a different lane width per target, with zero
+/// source-level branching on which ISA is active.
+const vec_width = std.simd.suggestVectorLength(f64) orelse 1;
 const Vec = @Vector(vec_width, f64);
 
 /// Naive O(m·n·k) scalar triple loop — the baseline `matmulSimd` is
