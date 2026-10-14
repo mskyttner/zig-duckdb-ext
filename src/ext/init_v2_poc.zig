@@ -535,7 +535,7 @@ const WeightedAvgCt = comptime_aggregate_v2.Function("zig_v2_weighted_avg_ct", s
 /// `comptime_aggregate_v2.zig`'s module doc comment on `updateBatch` for
 /// the full contract, and `task bench` / this file's own benchmark note
 /// for the live comparison against `WeightedAvgCt`.
-const lanes = std.simd.suggestVectorLength(f64) orelse 2;
+const lanes = std.simd.suggestVectorLength(f64) orelse 1;
 const V = @Vector(lanes, f64);
 
 inline fn simdIsValid(bits: [*]const u64, i: db2.idx_t) bool {
