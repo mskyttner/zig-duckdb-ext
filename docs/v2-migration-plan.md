@@ -1472,21 +1472,132 @@ test (`duckdb_static.zig`'s own test block), not just a compile check.
 **What could NOT be verified, and why this stays a prototype, not a
 feature**: actually calling `duckdb_register_static_extension` and
 opening a live database needs linking against a real `libduckdb`
-shared/static library — confirmed live that this staged v2.0 alpha
-build doesn't publish one anywhere. Checked
-`artifacts.duckdb.org/staged/v2.0-cyanoptera/libduckdb-linux-amd64.zip`
-(and `-arm64`/`-musl` variants): all 302-redirect to
-`duckdb-staging.duckdb.org/.../github_release/libduckdb-linux-amd64.zip`,
-which then 404s — confirmed this isn't a path-naming guess by checking
-that a deliberately bogus filename produces the identical redirect
-pattern (the redirect itself proves nothing; only the final target's
-status does). Only CLI binaries and the header-only `libduckdb-src.zip`
-are actually published at that location. Getting a real `libduckdb` to
-link against would mean building DuckDB from source at the pinned
-commit — a large C++ build this project's whole architecture (ADR-0001:
-pure Zig, no C++ toolchain) deliberately avoids, and well beyond this
-prototype's scope. Revisit once (if ever) a prebuilt `libduckdb`
-artifact is published for this alpha, or DuckDB 2.0 ships for real.
+shared/static library — **this is now outdated, corrected below**: a
+real one does exist, just under a different filename than was checked
+(see the "real link test" follow-up). The original check used the real
+v1.5.6 GitHub-release naming convention
+(`libduckdb-linux-amd64.zip`/`static-libs-linux-amd64.zip`), which
+genuinely does 404 at this staged URL; the staged alpha channel turned
+out to use a different, `duckdb-`-prefixed naming scheme instead.
+
+### Follow-up: a real `libduckdb_static.a` exists, and a real link test confirms `get_api` is always null under static loading (done, 2026-10-14)
+
+Prompted by: "is
+`artifacts.duckdb.org/staged/v2.0-cyanoptera/duckdb-shared-libs-linux-amd64.tar.gz`
+updated now for library version v2.0.0-dev87994" — answer: no, it's
+still `v2.0.0-alpha46057` (confirmed by `strings`-ing the real
+`libduckdb.so` inside it for its embedded version string), the same
+build already pinned. But checking it turned up real artifacts this
+project's docs had wrongly called absent: `duckdb-shared-libs-linux-amd64.tar.gz`
+(a real `libduckdb.so` + full headers) and `duckdb-static-libs-linux-amd64.tar.gz`
+(a real 127MB `libduckdb_static.a` + full headers + per-extension static
+libs), both **200**, both for this exact pinned commit. Pinned the
+static-libs tarball via `build.zig.zon` as
+`.duckdb_static_libs_v2_linux_amd64` (`lazy = true` — ~127MB, fetched
+only by the new step below).
+
+**Built a real link test** (`src/static_embed_poc_main.zig`, wired up
+as the new, isolated, lazy `zig build v2-static-embed-poc` step) that
+statically links this real `libduckdb_static.a`, registers this
+project's REAL, unmodified `zig_ext_v2` entrypoint
+(`root_v2.zig`/`init_v2.zig`'s `zig_ext_v2_init_c_api_v2`) via
+`duckdb_register_static_extension`, opens a real in-memory database via
+the plain host C API (`duckdb_open`/`duckdb_connect`/`duckdb_query` —
+translated fresh from the real `duckdb.h` in the same tarball, a
+separate translate-c target from the extension-only headers this
+project already vendors), and runs a query against a function only this
+extension provides.
+
+**Three real, confirmed build/link bugs found and fixed along the way**,
+each isolated by direct testing rather than guessed:
+1. **Zig's own native ELF linker can't read this specific object file.**
+   `libduckdb_static.a` contains one giant relocatable object
+   (`libduckdb_static.a.lto.o`, confirmed via `file`/`readelf` to be a
+   genuine ELF object, NOT LLVM bitcode despite the `.lto.o` name) with
+   **196,103 section headers** — past the 16-bit `e_shnum` limit,
+   requiring the ELF spec's "extended section numbering" escape
+   (count stored in section `[0]`'s `sh_size` instead).
+   `readelf`/`nm` parse this correctly; Zig's default self-hosted native
+   linker (used for native debug builds) does not — every `duckdb_*`
+   symbol came back "undefined" despite `nm` plainly showing them
+   defined. Fixed by forcing `use_llvm = true, use_lld = true` on the
+   `Compile` step, routing through real LLVM codegen + `ld.lld`, which
+   parses extended section numbering correctly.
+2. **`std.Build.Module.linkSystemLibrary("stdc++", ...)` doesn't link
+   the system's actual GNU libstdc++.** Confirmed by reading
+   `Module.zig`'s own source: it special-cases any libc++-family name
+   via `std.zig.target.isLibCxxLibName` and silently redirects it to
+   `m.link_libcpp = true` — Zig's own bundled LLVM libc++, a different,
+   ABI-incompatible C++ runtime from the GNU libstdc++ this static
+   `libduckdb` was actually built against (confirmed: its unresolved
+   symbols were all classic libstdc++-ABI names,
+   `std::__cxx11::basic_string`, `__once_proxy`, etc.). There is no
+   high-level API to request the real system libstdc++ specifically;
+   fixed by linking its file directly
+   (`addObjectFile(.{.cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13/libstdc++.a"})`),
+   bypassing the name-based redirect entirely.
+3. **libstdc++ itself needs GCC's own unwinder.** `_Unwind_*` symbols
+   (C++ exception-handling primitives) live in a separate archive
+   (`libgcc_eh.a`), not supplied by Zig's own LLVM-based unwinder either
+   — linked the same way, directly by file path.
+
+**With all three fixed, the binary genuinely links and runs** against
+a real live DuckDB engine: `duckdb_register_static_extension` returns
+`0` (success), `duckdb_open`/`duckdb_connect` succeed, and
+`LOAD zig_ext_v2;` itself raises no error. But the query that follows
+fails: `Catalog Error: Scalar Function with name zig_v2_hello does not
+exist!` — a new, different, and far more informative failure than
+"can't even link," and one worth tracing to its root cause rather than
+accepting as an unexplained gap.
+
+**Traced definitively to DuckDB's own C++ source** (fetched directly at
+the pinned commit via `gh api search/code` + raw file fetches, not
+guessed): `linked_extension_registry.cpp` confirms
+`duckdb_register_static_extension` really does register correctly and
+`database.cpp`'s `DatabaseInstance::InitializeInstance` really does call
+`ExtensionHelper::RegisterLinkedExtensions(config)` unconditionally for
+every database opened — so far matching what was hoped. `extension_load.cpp`
+confirms `LOAD <name>;` really does check the linked-extension registry
+first, before any file-based lookup (`ExtensionHelper::LoadExternalExtension`'s
+"static shortcut"), explaining why `LOAD zig_ext_v2;` raised no error.
+But `src/main/capi/v2/capi_v2_extension.cpp` has the actual answer, in
+one line: `input.get_api = statically_linked ? nullptr : ExtensionGetAPIV2;`
+— **for the static-extension path, `get_api` is unconditionally null.**
+This project's real `zig_ext_v2_init_c_api_v2` calls `duckdb_v2.initApi`,
+whose very first line is `const get_api = input.get_api orelse return
+false;` — so under static loading it silently returns having registered
+nothing, every single time, by design on DuckDB's side, not a bug
+anywhere in this project's code.
+
+**This definitively corrects (not just supplements) the migration plan's
+earlier claim**: "This project's existing `init_v2.zig` logic would
+very likely work unchanged under this path" — that was a reasonable
+guess at the time (no real `libduckdb` existed yet to test it against),
+and it is now proven wrong by both a real, reproducible run and the
+exact source line explaining why. The comment inside
+`src/main/capi/v2/capi_v2_extension.cpp` makes the design intent
+explicit: statically linked extensions are meant to bind DuckDB's C API
+symbols **directly, at link time** (plain `@extern`-style calls against
+real exported symbols, the same shape `duckdb_full_c`'s host-side
+`duckdb_open`/`duckdb_connect`/`duckdb_query` calls already use in this
+same prototype) — never through the `get_api`-fetched vtable
+`duckdb_v2.zig`'s entire existing design is built around. This is
+exactly "mechanism 1" from this section's own earlier analysis (the
+`DUCKDB_BUILD_STATIC_EXTENSION` macro branch collapsing the vtable-fetch
+macros to nothing) — confirmed now to be the ONLY real path to a working
+statically-registered extension, not an alternative to mechanism 2;
+mechanism 2 (`duckdb_register_static_extension`) is real and does work,
+but only as the *registration/dispatch* layer, not as a free pass to
+reuse the existing vtable-based function-registration code underneath
+it. Making this project's functions actually register under static
+loading would need a second, non-vtable v2 binding layer calling
+DuckDB's C API directly — a substantial, well-scoped follow-up project
+in its own right, explicitly out of scope for this prototype, whose
+job was to establish precisely where the real boundary is rather than
+build the layer that crosses it. `src/static_embed_poc_main.zig` is kept
+as a real, reproducible, clearly-documented demonstration of exactly
+this boundary (its own doc comment records the full chain above), not
+promoted further.
 
 ### 6a. WASM support (speculative, not started — not currently feasible as a straight port)
 

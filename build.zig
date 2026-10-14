@@ -497,6 +497,86 @@ pub fn build(b: *std.Build) void {
         duckdb_v2_poc_step.dependOn(&run_duckdb_v2_poc.step);
     }
 
+    // ── v2 static-extension registration: real link test (experimental,
+    // isolated — see docs/v2-migration-plan.md's "Static linking"
+    // section) ─────────────────────────────────────────────────────────
+    // Unlike duckdb_static.zig's type-level-only prototype, this actually
+    // links the real pinned `libduckdb_static.a` and drives
+    // `duckdb_register_static_extension` end to end against a live
+    // database — see src/static_embed_poc_main.zig's own doc comment.
+    // `lazy = true` on the dependency means this step alone triggers the
+    // ~127MB fetch; nothing else is affected if it's never built.
+    if (b.lazyDependency("duckdb_static_libs_v2_linux_amd64", .{})) |static_libs_dep| {
+        const duckdb_full_c: Translator = .init(translate_c_dep, .{
+            .name = "duckdb_full_c",
+            .c_source_file = static_libs_dep.path("duckdb.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const static_embed_poc_exe = b.addExecutable(.{
+            .name = "v2_static_embed_poc",
+            .use_llvm = true,
+            .use_lld = true,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/static_embed_poc_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        static_embed_poc_exe.root_module.addImport("duckdb_v2", duckdb_v2_mod);
+        static_embed_poc_exe.root_module.addImport("duckdb_static", duckdb_static_mod);
+        static_embed_poc_exe.root_module.addImport("duckdb_full_c", duckdb_full_c.mod);
+        static_embed_poc_exe.root_module.addImport("root_v2", b.createModule(.{
+            .root_source_file = b.path("src/root_v2.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "duckdb_v2", .module = duckdb_v2_mod },
+                .{ .name = "comptime_scalar_v2", .module = comptime_scalar_v2_mod },
+                .{ .name = "comptime_table_v2", .module = comptime_table_v2_mod },
+            },
+        }));
+        static_embed_poc_exe.root_module.link_libc = true;
+        // NOT `link_libcpp = true` or `linkSystemLibrary("stdc++", .{})`:
+        // confirmed live this static libduckdb was built against GNU
+        // libstdc++ (its unresolved symbols are all classic libstdc++-ABI
+        // names: `std::__cxx11::basic_string`, `__once_proxy`, etc.), but
+        // `linkSystemLibrary("stdc++", ...)` doesn't link the system's
+        // actual libstdc++ — `std.Build.Module.linkSystemLibrary`'s own
+        // source (confirmed by reading it) special-cases any libc++-like
+        // name (`isLibCxxLibName`) and silently redirects it to
+        // `link_libcpp = true`, i.e. Zig's own bundled LLVM libc++ —
+        // identical, ABI-incompatible result either way. The only way to
+        // get the REAL system libstdc++ is to link its file directly,
+        // bypassing that name-based redirect.
+        static_embed_poc_exe.root_module.addObjectFile(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13/libstdc++.a" });
+        // libstdc++ itself needs GCC's own unwinder (`_Unwind_*`, C++
+        // exception-handling primitives) — a separate archive, not part
+        // of libstdc++.a and not supplied by Zig's own LLVM-based
+        // unwinder either (confirmed live: without this, the `_Unwind_*`
+        // symbols libstdc++.a's eh_throw.o/eh_personality.o reference are
+        // undefined).
+        static_embed_poc_exe.root_module.addObjectFile(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13/libgcc_eh.a" });
+        // `addLibraryPath` + `linkSystemLibrary` (not `addObjectFile`): a
+        // plain static archive added via `addObjectFile` ended up ordered
+        // BEFORE the object files that reference its symbols on the
+        // actual link command line (confirmed live via the failing
+        // command's own argv) — classic single-pass-linker archive
+        // ordering problem (a library must come AFTER what needs its
+        // symbols). `linkSystemLibrary` puts it where system libraries
+        // normally go, resolving this.
+        static_embed_poc_exe.root_module.addLibraryPath(static_libs_dep.path("."));
+        static_embed_poc_exe.root_module.linkSystemLibrary("duckdb_static", .{});
+
+        const install_static_embed_poc = b.addInstallArtifact(static_embed_poc_exe, .{});
+        const run_static_embed_poc = b.addRunArtifact(static_embed_poc_exe);
+        run_static_embed_poc.step.dependOn(&install_static_embed_poc.step);
+
+        const static_embed_poc_step = b.step("v2-static-embed-poc", "Build and run the real static-extension-registration link test");
+        static_embed_poc_step.dependOn(&run_static_embed_poc.step);
+    }
+
     // ── v2 proof-of-concept: image-to-braille-art demo (zignal dependency,
     // isolated) ────────────────────────────────────────────────────────────
     // A completely separate extension/step from `v2-poc` above, on purpose:

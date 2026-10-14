@@ -101,6 +101,29 @@
             .url = "https://artifacts.duckdb.org/staged/v2.0-cyanoptera/libduckdb-src.zip",
             .hash = "N-V-__8AAL-2EwBI2NUq5ff3_vktqJo_yWCjvSZf2a-ID-p9",
         },
+        // A real, compiled `libduckdb_static.a` (+ matching full headers)
+        // for the exact same pinned `v2.0.0-alpha46057` commit — contrary
+        // to `docs/v2-migration-plan.md`'s "Static linking" section's
+        // earlier "confirmed absent" finding, which checked the wrong
+        // filename (the real v1.5.6 GitHub-release naming convention,
+        // `libduckdb-linux-amd64.zip`/`static-libs-linux-amd64.zip`, both
+        // genuinely 404 here). The staged alpha channel uses a different,
+        // `duckdb-`-prefixed naming scheme instead
+        // (`duckdb-static-libs-linux-amd64.tar.gz`), confirmed live to
+        // return 200 with a real 127MB static archive — verified it's
+        // really for this exact pinned commit by `strings`-ing the
+        // archive's `libduckdb.so` sibling for its embedded version
+        // string (`v2.0.0-alpha46057`), not just trusting the URL path.
+        // `lazy = true`: only the `v2-static-embed-poc` step (itself
+        // experimental, not part of any default build) ever fetches
+        // this — large and single-purpose. Same staged-artifact
+        // re-pinning caveat as `duckdb_cli_v2_*`/`duckdb_headers_v2`
+        // above.
+        .duckdb_static_libs_v2_linux_amd64 = .{
+            .url = "https://artifacts.duckdb.org/staged/v2.0-cyanoptera/duckdb-static-libs-linux-amd64.tar.gz",
+            .hash = "N-V-__8AABK7-Ap51O97S6GR_NBvztMr80sAma26ZeRToc7f",
+            .lazy = true,
+        },
         // Image decode/resize, needed only by src/lib/braille_image.zig —
         // a speculative v2-poc-only demo (a scalar + table function, plus
         // a replacement scan for `FROM 'https://.../*.jpg'`), never wired
