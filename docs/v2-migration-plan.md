@@ -2507,3 +2507,25 @@ patched fork (the fix is 2 lines, low risk, but patching someone else's
 dependency in-tree is its own maintenance commitment not yet decided
 on). No code from this prototype was added to the real project —
 scratch files cleaned up after extracting the finding.
+
+**Follow-up: corroborated via zigcv and oma's own open PR (2026-10-14)**
+— prompted by a check of whether github.com/mgbilby/zigcv (an OpenCV-like
+Zig library, `minimum_zig_version = "0.17.0"`, same as this project)
+actually uses oma. It does not yet: oma appears only in zigcv's README
+"Works with" table as "a candidate for a later release" — no
+`build.zig.zon` dependency, no import, no usage anywhere in zigcv's
+source (confirmed by cloning and grepping, not assumed from the table
+entry alone). But `gh pr list -R ATTron/oma` turned up a real, currently
+open, unmerged PR (#3, "support zig.0.17-dev", opened 2026-06-27 by a
+third-party contributor, no review comments) whose diff is **character-
+for-character identical** to the two-line fix independently derived
+above (`decl_names` iteration, `f.attrs.@"callconv"`) — strong
+independent confirmation this is exactly the right, minimal fix, and
+that the incompatibility is real, known upstream, and has sat unmerged
+for roughly four months. A separate merged PR (#1, "enable PIC for
+multi-versioned objects when targeting shared libraries") also confirms
+shared-library support was a deliberate, real upstream feature, not
+incidental. Practical implication if this is ever revisited: a
+`build.zig.zon` URL dependency could point at the open PR's branch
+(`github.com/by965738071/oma`, ref `main`) instead of maintaining a
+local patch, until/unless upstream merges it.
