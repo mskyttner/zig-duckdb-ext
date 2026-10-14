@@ -21,6 +21,7 @@ const comptime_table_v2 = @import("comptime_table_v2");
 const comptime_aggregate_v2 = @import("comptime_aggregate_v2");
 const comptime_appender_v2 = @import("comptime_appender_v2");
 const comptime_cast_v2 = @import("comptime_cast_v2");
+const matmul = @import("matmul");
 
 export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callconv(.c) void {
     if (!db2.initApi(input, "v2.0.0")) return;
@@ -818,6 +819,9 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     UnionTagCt.register(input) catch {};
     UnionMakeCt.register(input) catch {};
     UnionMakeNumNumCt.register(input) catch {};
+    MatmulNaiveCt.register(input) catch {};
+    MatmulCt.register(input) catch {};
+    MatmulBenchCt.register(input) catch {};
     RangeCt.register(input) catch {};
     RangeProgressCt.register(input) catch {};
     RepeatCt.register(input) catch {};
@@ -1695,6 +1699,129 @@ fn replacementScanCallback(info: db2.ReplacementScanInfoHandle, context: db2.Con
     defer _ = db2.valueDestroy(&n_value);
     _ = db2.replacementScanAddArgument(info, n_value, err);
 }
+
+/// Thread-local scratch buffer for a LIST(DOUBLE) matmul return. Must be
+/// thread-safe storage (DuckDB may call a scalar function from multiple
+/// worker threads concurrently) that outlives the call (the framework
+/// boxes the returned slice into a `Value` immediately after this
+/// function returns — see `comptime_scalar_v2.zig`'s own CAUTION on
+/// LIST/VARCHAR returns), so neither a shared `var` nor a function-local
+/// stack array would be safe here.
+///
+/// CAUTION, confirmed live (a real bug, since fixed): sizing this to
+/// match `comptime_scalar_v2.zig`'s own `list_return_max_elems` cap
+/// isn't enough on its own — that cap is only checked by the framework
+/// *after* `eval` returns, by inspecting `result.len`. A naive
+/// `matmul_scratch[0 .. mu * nu]` slice panics first, for any `m*n`
+/// bigger than this buffer (confirmed live: a 101×101 result panicked
+/// with "index out of bounds," crashing the CLI, before the framework's
+/// own cap check ever ran). `eval` must bound its own slice to this
+/// buffer's capacity itself, never trusting the framework's cap to run
+/// first.
+threadlocal var matmul_scratch: [4096]f64 = undefined;
+
+/// Clamp `mu * nu` to `matmul_scratch`'s capacity, returning `null` if
+/// the true result wouldn't fit — never slicing past the buffer's own
+/// length. Shared by `MatmulNaiveCt`/`MatmulCt`.
+fn matmulOutputSlice(mu: usize, nu: usize) ?[]f64 {
+    const want = mu * nu;
+    if (want > matmul_scratch.len) return null;
+    return matmul_scratch[0..want];
+}
+
+/// Naive O(m·n·k) triple-loop baseline — what `MatmulCt` (the SIMD
+/// kernel) is checked and benchmarked against. Row-major flat
+/// LIST(DOUBLE) arguments: A is m×k, B is k×n, result is m×n. Returns
+/// an empty list — not a crash, not a truncated/wrong-looking partial
+/// matrix — if `m*n` exceeds the scratch buffer's capacity.
+const MatmulNaiveCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_naive_ct", struct {
+    fn eval(a: []const f64, b: []const f64, m: i64, k: i64, n: i64) []const f64 {
+        const mu: usize = @intCast(@max(m, 0));
+        const ku: usize = @intCast(@max(k, 0));
+        const nu: usize = @intCast(@max(n, 0));
+        const out = matmulOutputSlice(mu, nu) orelse return &.{};
+        matmul.matmulNaive(a, b, out, mu, ku, nu);
+        return out;
+    }
+}.eval, &.{ "a", "b", "m", "k", "n" });
+
+/// Register-blocked SIMD kernel — see `src/lib/matmul.zig`'s own doc
+/// comment for the full llamafile-tinyBLAS-vs-Zig comparison this POC
+/// is built around. Same shape and oversized-input handling as
+/// `MatmulNaiveCt`.
+const MatmulCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_ct", struct {
+    fn eval(a: []const f64, b: []const f64, m: i64, k: i64, n: i64) []const f64 {
+        const mu: usize = @intCast(@max(m, 0));
+        const ku: usize = @intCast(@max(k, 0));
+        const nu: usize = @intCast(@max(n, 0));
+        const out = matmulOutputSlice(mu, nu) orelse return &.{};
+        matmul.matmulSimd(matmul.default_rm, a, b, out, mu, ku, nu);
+        return out;
+    }
+}.eval, &.{ "a", "b", "m", "k", "n" });
+
+/// Benchmarks `matmulNaive` against `matmulSimd` on an m×k × k×n
+/// multiplication, run `iterations` times each, timed via
+/// `std.Io.Clock` (`std.time.Timer` no longer exists in Zig 0.17 — timing
+/// moved under the unified `Io` interface, same `std.Io.Threaded`
+/// construction the braille v2-poc demo already uses to get an `Io`
+/// instance outside of `std.process.Init`). Test data is a fixed
+/// deterministic pattern, not random — this is a throughput comparison,
+/// not a correctness fuzz test (that's `matmul.zig`'s own unit tests).
+const MatmulBenchState = struct {
+    kernel_names: [2][]const u8,
+    elapsed_ms: [2]f64,
+    gflops: [2]f64,
+    idx: usize,
+
+    pub const Row = struct { kernel: []const u8, elapsed_ms: f64, gflops: f64 };
+
+    pub fn init(m: i64, k: i64, n: i64, iterations: i64) @This() {
+        const failed: @This() = .{ .kernel_names = undefined, .elapsed_ms = undefined, .gflops = undefined, .idx = 2 };
+
+        const mu: usize = @intCast(@max(m, 1));
+        const ku: usize = @intCast(@max(k, 1));
+        const nu: usize = @intCast(@max(n, 1));
+        const iters: usize = @intCast(@max(iterations, 1));
+
+        const a = std.heap.c_allocator.alloc(f64, mu * ku) catch return failed;
+        defer std.heap.c_allocator.free(a);
+        const b = std.heap.c_allocator.alloc(f64, ku * nu) catch return failed;
+        defer std.heap.c_allocator.free(b);
+        const c = std.heap.c_allocator.alloc(f64, mu * nu) catch return failed;
+        defer std.heap.c_allocator.free(c);
+        for (a, 0..) |*v, i| v.* = @floatFromInt(i % 13);
+        for (b, 0..) |*v, i| v.* = @floatFromInt((i % 7) + 1);
+
+        var threaded: std.Io.Threaded = .init(std.heap.c_allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const flops: f64 = 2.0 * @as(f64, @floatFromInt(mu)) * @as(f64, @floatFromInt(nu)) * @as(f64, @floatFromInt(ku)) * @as(f64, @floatFromInt(iters));
+
+        const naive_start: std.Io.Clock.Timestamp = .now(io, .awake);
+        for (0..iters) |_| matmul.matmulNaive(a, b, c, mu, ku, nu);
+        const naive_ns: f64 = @floatFromInt(naive_start.durationTo(.now(io, .awake)).raw.nanoseconds);
+
+        const simd_start: std.Io.Clock.Timestamp = .now(io, .awake);
+        for (0..iters) |_| matmul.matmulSimd(matmul.default_rm, a, b, c, mu, ku, nu);
+        const simd_ns: f64 = @floatFromInt(simd_start.durationTo(.now(io, .awake)).raw.nanoseconds);
+
+        return .{
+            .kernel_names = .{ "naive", "simd" },
+            .elapsed_ms = .{ naive_ns / 1e6, simd_ns / 1e6 },
+            .gflops = .{ flops / naive_ns, flops / simd_ns },
+            .idx = 0,
+        };
+    }
+
+    pub fn next(self: *@This()) ?Row {
+        if (self.idx >= 2) return null;
+        defer self.idx += 1;
+        return .{ .kernel = self.kernel_names[self.idx], .elapsed_ms = self.elapsed_ms[self.idx], .gflops = self.gflops[self.idx] };
+    }
+};
+const MatmulBenchCt = comptime_table_v2.FunctionNamed("zig_v2_matmul_bench_ct", MatmulBenchState, &.{ "m", "k", "n", "iterations" });
 
 // Private test-only decls of duckdb_v2.zig, re-exposed here so this file
 // can wire them up without making them a permanent public API of the

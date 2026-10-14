@@ -2120,3 +2120,81 @@ merge-step design (where the metadata file lives, its exact format,
 whether `zig build` drives the `duckdb_functions()` query via the
 already-pinned v1 CLI or a similar lazy-dependency-gated mechanism to
 `v2-poc-braille`'s).
+
+## SIMD matrix multiplication v2-poc demo (done, 2026-10-14)
+
+Prompted by "what would especially interesting POC examples be given
+Zig" → narrowed to SIMD acceleration → the user pointed at llamafile's
+tinyBLAS SGEMM kernels (`github.com/Mozilla-Ocho/llamafile/blob/main/llamafile/tinyblas_cpu.h`/
+`sgemm.cpp`, with `matmul.txt` — Justine Tunney's 2024-03-31 blog post —
+as background context) as the reference to assess a Zig port against.
+**Fetched and read both C++ files in full before committing to a scope,
+not just the blog post** — confirmed the current source has moved past
+the blog's `BEGIN_KERNEL`/`END_KERNEL` macros to a single templated
+`tinyBLAS<CONFIG, KN, D, V, TA, TB, TC>` class with a `gemm<RM, RN>`
+micro-kernel (tile shape as template parameters, not macros), per-ISA
+portability still via `#ifdef __FMA__`/`#ifdef __ARM_FEATURE_FMA`/...
+branches selecting intrinsic overloads (not function multiversioning),
+and a `GemmFuncs` static-constructor dispatcher that picks one whole
+*compiled function* at process startup based on real `cpuid`/`getauxval`
+feature detection — a genuinely different mechanism from this project's
+own per-platform `zig build cross`, confirmed to have no turnkey Zig
+equivalent (no built-in function multiversioning/ifunc).
+
+**Built, scoped deliberately smaller than the reference**: a single
+`comptime`-generic SIMD kernel (`src/lib/matmul.zig`, no DuckDB
+dependency, independently unit-tested), register-blocked over `RM=4`
+rows sharing each `@Vector(4, f64)` load of B — the "unroll the outer
+loop to reuse a B load across multiple FMAs" trick the blog's
+`SLLMM4`/`SLLMM3X4` examples describe — with a scalar fallback for row/
+column remainders rather than the reference's recursive `mnpack`
+edge-tiling. Deliberately NOT ported: the runtime multi-ISA-per-binary
+dispatch (no Zig equivalent, see above — one target per `zig build
+cross` output instead, consistent with this project's existing
+philosophy); the quantized-type kernels (`tinyBLAS_Q0_*`, ~45% of the
+file, depend on integer dot-product intrinsics `@Vector` doesn't expose
+directly either — no easier in Zig than C++, not a good showcase); and
+the Kahan-style hierarchical summation tinyBLAS uses for numerical
+stability over long `k` (accumulates as one running `f64` sum instead,
+a plain documented tradeoff, not assumed equivalent).
+
+Exposed via three functions in `init_v2_poc.zig` (no new build
+isolation needed — unlike the braille demo, this pulls in no new
+dependency): `zig_v2_matmul_naive_ct`/`zig_v2_matmul_ct` (row-major flat
+`LIST(DOUBLE)` arguments — A is m×k, B is k×n — matching BLAS's own flat-
+array-plus-dimensions convention rather than a nested-list matrix type,
+which also sidesteps this project's LIST support being scoped to flat
+leaf elements only, not nested lists) and `zig_v2_matmul_bench_ct(m, k,
+n, iterations) -> TABLE(kernel, elapsed_ms, gflops)`, timed via
+`std.Io.Clock.Timestamp` — **`std.time.Timer` no longer exists in Zig
+0.17 at all** (confirmed by direct grep: `std/time.zig` only has unit
+constants now), timing moved under the unified `Io` interface, same
+`std.Io.Threaded` construction pattern the braille demo already
+established for getting an `Io` instance outside `std.process.Init`.
+
+**A real bug found and fixed, caught by testing past the happy path**:
+the LIST-return scratch buffer (`threadlocal var matmul_scratch:
+[4096]f64`, sized to match `comptime_scalar_v2.zig`'s own
+`list_return_max_elems` cap) panicked on a 101×101 result ("index out
+of bounds"), crashing the CLI outright — the framework's own
+`list_return_max_elems` check only inspects `result.len` *after* `eval`
+returns, so a naive `matmul_scratch[0 .. mu * nu]` slice panics first
+for any oversized request, never reaching that check at all. Fixed by
+having `eval` bound its own slice against the buffer's capacity and
+fail soft to an empty list rather than trust the framework's cap to run
+first — a durable lesson for any future LIST/ARRAY-returning function
+using a fixed-size backing buffer, not specific to matmul.
+
+Live-verified: a hand-computable 2×2 case (`[[1,2],[3,4]] × [[5,6],[7,8]]
+= [[19,22],[43,50]]`); exact equality between the naive and SIMD kernels
+on a non-square, non-tile-aligned 7×5 × 5×11 case (matching
+`matmul.zig`'s own unit test matrix) and at the exact 64×64 scratch-
+buffer boundary; the 1×1 (fully-remainder, no tiles at all) and 3×3
+(smaller than `RM=4`, forcing both row and column remainder paths)
+edge cases; the oversized-input fix with a 101×101 case now returning
+`[]` instead of crashing; and the benchmark table function showing a
+real, repeatable **~2.6–2.7× speedup** of the SIMD kernel over naive at
+both 256×256×256 and 64×64×64 — a modest, honest number for this
+single-level register-blocked kernel (no 2D RM×RN tiling, no cache
+blocking, no multi-threading), not the reference's larger multi-GFLOP
+gains, and not oversold as such.

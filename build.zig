@@ -347,6 +347,16 @@ pub fn build(b: *std.Build) void {
     const comptime_cast_v2_check = b.addTest(.{ .root_module = comptime_cast_v2_mod });
     const run_comptime_cast_v2_check = b.addRunArtifact(comptime_cast_v2_check);
 
+    // No DuckDB dependency at all — a pure, independently testable kernel
+    // module (see its own doc comment), used by the v2-poc matmul demo.
+    const matmul_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/matmul.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const matmul_check = b.addTest(.{ .root_module = matmul_mod });
+    const run_matmul_check = b.addRunArtifact(matmul_check);
+
     const v2_check_step = b.step("v2-check", "Type-check the in-progress duckdb v2 API bindings");
     v2_check_step.dependOn(&run_v2_check.step);
     v2_check_step.dependOn(&run_duckdb_v2_examples_check.step);
@@ -356,6 +366,7 @@ pub fn build(b: *std.Build) void {
     v2_check_step.dependOn(&run_comptime_appender_v2_check.step);
     v2_check_step.dependOn(&run_comptime_cast_v2_check.step);
     v2_check_step.dependOn(&run_duckdb_static_check.step);
+    v2_check_step.dependOn(&run_matmul_check.step);
 
     // ── v2 proof-of-concept extension (real runtime test, not the real
     // extension) — registers one scalar function against a live DuckDB
@@ -376,6 +387,7 @@ pub fn build(b: *std.Build) void {
     v2_poc_lib.root_module.addImport("comptime_aggregate_v2", comptime_aggregate_v2_mod);
     v2_poc_lib.root_module.addImport("comptime_appender_v2", comptime_appender_v2_mod);
     v2_poc_lib.root_module.addImport("comptime_cast_v2", comptime_cast_v2_mod);
+    v2_poc_lib.root_module.addImport("matmul", matmul_mod);
     v2_poc_lib.root_module.link_libc = true;
 
     const v2_poc_output = addDuckdbExtensionMetadata(b, v2_poc_lib, "zig_ext_v2_poc", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
