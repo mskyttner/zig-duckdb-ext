@@ -2314,3 +2314,67 @@ reduction, normalized per core" — a flat "which is faster" comparison
 of the raw wall-clock numbers would have been a real, specific way to
 mislead rather than inform, since it would conflate thread count with
 per-core efficiency.
+
+### Gram-matrix aggregate for grouped matmul/weighted-avg (done, 2026-10-14)
+
+Prompted by: "explain the issue with pushing down matmul or weighted
+average calculations for the `GROUP BY` case" and the follow-up on
+feasibility of `vpconflictd` / extra Zig-side parallelism.
+
+**The issue**: `WeightedAvgSimdCt`'s `updateBatch` fast path (and any
+similar "fold a whole `DataChunk` with one SIMD reduction" kernel, which
+is what a grouped matmul-shaped aggregate would want too) only applies
+to the *ungrouped* case — `comptime_aggregate_v2.zig`'s framework calls
+it exactly when every row's state pointer in the chunk is the same
+(see `allStatesEqual`). A `GROUP BY` query gets a different state
+pointer per row, interleaved in arbitrary order within the chunk (DuckDB
+does not sort/partition by group before calling `update`), which turns
+"fold N doubles into 1 sum" into a scatter-accumulate into K different
+group accumulators — not expressible as a single `@Vector` fold, since
+lanes of one SIMD register may belong to different groups (can't just
+add them) or, worse, to the *same* group (a write-write race unless
+detected).
+
+**`vpconflictd` (AVX-512CD conflict detection)** is the literal hardware
+mechanism for that race, but ruled out for this project: it has no
+portable `@Vector`/LLVM-generic form in Zig (only raw asm/intrinsic
+names, directly against this project's established `suggestVectorLength`
+cross-ISA-without-branching direction); it only pays off when many
+same-chunk lanes collide on the same group, which is the low-cardinality
+case — exactly where a portable chunk-local partition-then-fold
+(bucket rows by state pointer first, reuse the existing single-group
+SIMD fold per bucket) achieves the same thing without any ISA
+dependency; and the per-row outer-product work it would be amortizing
+is already cheap (comptime-unrolled, likely register-resident for small
+K). **Extra Zig-side threading inside a single `update()` call** was
+also ruled out: a `DataChunk` is at most `STANDARD_VECTOR_SIZE` (2048)
+rows, so `std.Thread` spawn/join overhead would dwarf the actual
+per-row work by orders of magnitude. The real cross-thread parallelism
+for a grouped aggregate already comes from DuckDB itself (hash-
+partitioned execution across worker threads, independent partial hash
+tables, merged via `combine()`) — the same mechanism `WeightedAvgSimdCt`
+already relies on for its ~9× thread speedup; there's nothing left for
+the extension to parallelize on top of that.
+
+**Built as a real example**: `zig_v2_gram3_ct(x1, x2, x3) -> VARCHAR`, a
+per-group 3×3 sample-covariance aggregate (`init_v2_poc.zig`, via
+`comptime_aggregate_v2.FunctionNamed`) — each row contributes an outer
+product `row ⊗ row` into its own group's `State.gram` accumulator
+(upper triangle only), `combine` is a plain elementwise add per group
+(unaffected by the GROUP BY issue above — combine always merges
+same-group pairs), `finalize` turns the raw Gram matrix + running sums
+into a sample covariance matrix (`(Σxᵢxⱼ - ΣxᵢΣxⱼ/n)/(n-1)`) and formats
+it as a flat VARCHAR matrix (no native LIST(LIST(DOUBLE)) finalize
+return type exists in the framework — `duckdbV2TypeId` only maps
+scalar/VARCHAR — so extending that was explicitly scoped out of this
+demo). `K=3` is fixed at comptime; no `updateBatch` is declared, since
+this is specifically the grouped case the fast path doesn't apply to.
+
+Live-verified against the real v2.0.0-alpha46057 runtime: every value
+matches DuckDB's own built-in `covar_samp(xᵢ, xⱼ)` exactly, both on a
+small hand-checked 2-group/7-row table and on a 2,000,000-row/5-group
+table (forcing real parallel `combine()` across worker threads); a
+single-row input correctly returns NULL (`n < 2`, matching sample-
+covariance's own undefined-ness there); a NULL-containing input row is
+skipped per standard SQL aggregate semantics, matching every other
+aggregate in this framework. `task check:all` and `v2-poc` both clean.

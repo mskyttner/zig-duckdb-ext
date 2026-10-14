@@ -786,6 +786,75 @@ const Stats1BrcCt = comptime_aggregate_v2.Function("zig_v2_1brc_stats_ct", struc
     }
 });
 
+/// Per-group 3×3 sample-covariance matrix —
+/// `SELECT zig_v2_gram3_ct(x1,x2,x3) FROM t GROUP BY g`. Each row
+/// contributes an outer product `row ⊗ row` into its own group's K×K
+/// accumulator (K=3, fixed at comptime), the matmul-shaped aggregate
+/// discussed as the natural GROUP BY-pushdown analogue of `matmul.zig`'s
+/// kernel — see `docs/v2-migration-plan.md`'s "Gram-matrix aggregate for
+/// grouped matmul/weighted-avg" section for why this does NOT reuse
+/// `WeightedAvgSimdCt`'s single-accumulator `updateBatch` SIMD fold: DuckDB
+/// hands `update` one state pointer per row, and a `GROUP BY` query's
+/// pointers differ row-to-row with no contiguous same-group run to
+/// vectorize over without an explicit partition pass (that section also
+/// covers why `vpconflictd` and extra Zig-side threading were both ruled
+/// out as ways to recover SIMD here). Covariance is formatted as a flat
+/// VARCHAR matrix rather than a native LIST(LIST(DOUBLE)) return, since
+/// `comptime_aggregate_v2.zig`'s `finalize` only supports the scalar/
+/// VARCHAR return types `duckdbV2TypeId` maps — a native matrix return
+/// would need that framework extended, out of scope for this demo.
+const Gram3Ct = comptime_aggregate_v2.FunctionNamed("zig_v2_gram3_ct", struct {
+    n: i64,
+    sum: [3]f64,
+    gram: [3][3]f64, // only the upper triangle (b >= a) is kept up to date
+    buf: [200]u8,
+
+    pub fn init() @This() {
+        return .{
+            .n = 0,
+            .sum = .{ 0, 0, 0 },
+            .gram = .{ .{ 0, 0, 0 }, .{ 0, 0, 0 }, .{ 0, 0, 0 } },
+            .buf = undefined,
+        };
+    }
+    pub fn update(self: *@This(), x1: f64, x2: f64, x3: f64) void {
+        const row = [3]f64{ x1, x2, x3 };
+        self.n += 1;
+        inline for (0..3) |a| {
+            self.sum[a] += row[a];
+            inline for (a..3) |b| self.gram[a][b] += row[a] * row[b];
+        }
+    }
+    pub fn combine(self: *@This(), other: @This()) void {
+        if (other.n == 0) return;
+        self.n += other.n;
+        inline for (0..3) |a| {
+            self.sum[a] += other.sum[a];
+            inline for (a..3) |b| self.gram[a][b] += other.gram[a][b];
+        }
+    }
+    // `self: *@This()`, not by value: `buf` is an inline array, same
+    // dangling-slice hazard `Stats1BrcCt.finalize` documents above.
+    pub fn finalize(self: *@This()) ?[]const u8 {
+        if (self.n < 2) return null; // sample covariance needs n-1 >= 1
+        const n: f64 = @floatFromInt(self.n);
+        var cov: [3][3]f64 = undefined;
+        inline for (0..3) |a| {
+            inline for (a..3) |b| {
+                const c = (self.gram[a][b] - self.sum[a] * self.sum[b] / n) / (n - 1);
+                cov[a][b] = c;
+                cov[b][a] = c;
+            }
+        }
+        const text = std.fmt.bufPrint(
+            &self.buf,
+            "[[{d:.4},{d:.4},{d:.4}],[{d:.4},{d:.4},{d:.4}],[{d:.4},{d:.4},{d:.4}]]",
+            .{ cov[0][0], cov[0][1], cov[0][2], cov[1][0], cov[1][1], cov[1][2], cov[2][0], cov[2][1], cov[2][2] },
+        ) catch return null;
+        return self.buf[0..text.len];
+    }
+}, &.{ "x1", "x2", "x3" });
+
 fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     Triple.register(input) catch {};
     Add.register(input) catch {};
@@ -833,6 +902,7 @@ fn registerComptimeExamples(input: *const db2.ExtensionInput) void {
     StringAggCt.register(input) catch {};
     Stats1BrcCt.register(input) catch {};
     LastSeenCt.register(input) catch {};
+    Gram3Ct.register(input) catch {};
 }
 
 fn registerDouble(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
