@@ -31,6 +31,7 @@ export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callcon
     registerDouble(input, &err);
     registerRange3(input, &err);
     registerAggSum(input, &err);
+    registerWeightedAvgPart(input, &err);
     registerHello(input, &err);
     registerAppenderTest(input, &err);
     registerAppenderNestedTest(input, &err);
@@ -626,6 +627,221 @@ const WeightedAvgSimdCt = comptime_aggregate_v2.Function("zig_v2_weighted_avg_si
         return self.weighted_sum / self.weight_sum;
     }
 });
+
+/// Prototype for the "portable alternative" to `vpconflictd` discussed in
+/// `docs/v2-migration-plan.md`'s "Gram-matrix aggregate" section: for a
+/// `GROUP BY` chunk (state pointers differing row-to-row), bucket the
+/// chunk's rows by state-pointer equality first (a local partition, not a
+/// full sort key beyond that), then run the SAME dense `@Vector` fold
+/// `WeightedAvgSimdCt.updateBatch` uses on each resulting contiguous,
+/// NULL-free run — recovering explicit SIMD for the grouped case without
+/// any ISA-specific scatter/conflict-detection instruction. Hand-written
+/// (not through `comptime_aggregate_v2.Function`) because the framework's
+/// `updateBatch` fast path is deliberately scoped to the single-state
+/// ungrouped case only (see that file's module doc comment) — this needs
+/// its own `update` callback to do the partition step itself. Reuses
+/// `WeightedAvgSimdCt`'s own `lanes`/`V`/`simdIsValid`.
+const WeightedAvgPartState = struct { weighted_sum: f64, weight_sum: f64 };
+
+/// Fixed scratch capacity for one chunk's worth of row indices / gathered
+/// values — generous relative to DuckDB's own vector size, with a scalar
+/// fallback below for the (should-never-happen) case a chunk exceeds it.
+const max_chunk_rows: usize = 4096;
+threadlocal var part_row_idx_scratch: [max_chunk_rows]u32 = undefined;
+threadlocal var part_gather_x_scratch: [max_chunk_rows]f64 = undefined;
+threadlocal var part_gather_w_scratch: [max_chunk_rows]f64 = undefined;
+
+inline fn rowValid2(v1: ?[*]const u64, v2: ?[*]const u64, row: db2.idx_t) bool {
+    if (v1) |b| if (!simdIsValid(b, row)) return false;
+    if (v2) |b| if (!simdIsValid(b, row)) return false;
+    return true;
+}
+
+/// Dense SIMD fold over an already-gathered, NULL-free, single-group run —
+/// identical in shape to `WeightedAvgSimdCt.updateBatch`'s masked fold,
+/// minus the masking: gathering already did the NULL-skip and the
+/// single-group selection, so this is a plain reduction.
+fn weightedAvgPartDenseFold(xs: []const f64, ws: []const f64) struct { wsum: f64, wnum: f64 } {
+    var wsum_acc: V = @splat(0);
+    var w_acc: V = @splat(0);
+    var i: usize = 0;
+    while (i + lanes <= xs.len) : (i += lanes) {
+        const xv: V = xs[i..][0..lanes].*;
+        const wv: V = ws[i..][0..lanes].*;
+        wsum_acc += xv * wv;
+        w_acc += wv;
+    }
+    var wsum: f64 = @reduce(.Add, wsum_acc);
+    var wnum: f64 = @reduce(.Add, w_acc);
+    while (i < xs.len) : (i += 1) {
+        wsum += xs[i] * ws[i];
+        wnum += ws[i];
+    }
+    return .{ .wsum = wsum, .wnum = wnum };
+}
+
+fn weightedAvgPartSize(info: db2.AggregateFunctionSizeInfoHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    _ = db2.aggregateFunctionSizeSetStateSize(info, @sizeOf(WeightedAvgPartState), err);
+}
+
+fn weightedAvgPartInit(info: db2.AggregateFunctionInitInfoHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    var count: db2.idx_t = 0;
+    if (db2.aggregateFunctionInitGetStateCount(info, &count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var states: [*c]?*anyopaque = null;
+    if (db2.aggregateFunctionInitGetStates(info, &states, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var i: db2.idx_t = 0;
+    while (i < count) : (i += 1) {
+        const state: *WeightedAvgPartState = @ptrCast(@alignCast(states[i].?));
+        state.* = .{ .weighted_sum = 0, .weight_sum = 0 };
+    }
+}
+
+fn weightedAvgPartUpdate(info: db2.AggregateFunctionUpdateInfoHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    var row_count: db2.idx_t = 0;
+    if (db2.aggregateFunctionUpdateGetRowCount(info, &row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (row_count == 0) return;
+
+    var x_vec: db2.VectorHandle = undefined;
+    if (db2.aggregateFunctionUpdateGetArg(info, 0, &x_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.vectorFlatten(x_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var x_view: db2.VectorView = undefined;
+    if (db2.vectorGetView(x_vec, &x_view, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var w_vec: db2.VectorHandle = undefined;
+    if (db2.aggregateFunctionUpdateGetArg(info, 1, &w_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.vectorFlatten(w_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var w_view: db2.VectorView = undefined;
+    if (db2.vectorGetView(w_vec, &w_view, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var states: [*c]?*anyopaque = null;
+    if (db2.aggregateFunctionUpdateGetStates(info, &states, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    // SAFETY: this function's signature is registered as (DOUBLE, DOUBLE).
+    const x: [*]const f64 = @ptrCast(@alignCast(x_view.data));
+    const w: [*]const f64 = @ptrCast(@alignCast(w_view.data));
+
+    if (row_count > max_chunk_rows) {
+        var row: db2.idx_t = 0;
+        while (row < row_count) : (row += 1) {
+            if (!rowValid2(x_view.validity, w_view.validity, row)) continue;
+            const state: *WeightedAvgPartState = @ptrCast(@alignCast(states[row].?));
+            state.weighted_sum += x[row] * w[row];
+            state.weight_sum += w[row];
+        }
+        return;
+    }
+
+    const n: usize = @intCast(row_count);
+    for (0..n) |i| part_row_idx_scratch[i] = @intCast(i);
+    const idx = part_row_idx_scratch[0..n];
+
+    // The partition step itself: an in-place sort by state-pointer value,
+    // NOT a full ordering on anything meaningful beyond grouping identical
+    // pointers together — any stable-or-not sort that achieves that would
+    // do equally well.
+    const SortCtx = struct { states: [*c]?*anyopaque };
+    std.sort.pdq(u32, idx, SortCtx{ .states = states }, struct {
+        fn lessThan(ctx: SortCtx, a: u32, b: u32) bool {
+            return @intFromPtr(ctx.states[a]) < @intFromPtr(ctx.states[b]);
+        }
+    }.lessThan);
+
+    var run_start: usize = 0;
+    while (run_start < n) {
+        const run_state_ptr = states[idx[run_start]];
+        var run_end = run_start + 1;
+        while (run_end < n and states[idx[run_end]] == run_state_ptr) : (run_end += 1) {}
+
+        var gathered: usize = 0;
+        for (idx[run_start..run_end]) |row_u32| {
+            const row: db2.idx_t = @intCast(row_u32);
+            if (!rowValid2(x_view.validity, w_view.validity, row)) continue;
+            part_gather_x_scratch[gathered] = x[row];
+            part_gather_w_scratch[gathered] = w[row];
+            gathered += 1;
+        }
+
+        if (gathered > 0) {
+            const state: *WeightedAvgPartState = @ptrCast(@alignCast(run_state_ptr.?));
+            const folded = weightedAvgPartDenseFold(part_gather_x_scratch[0..gathered], part_gather_w_scratch[0..gathered]);
+            state.weighted_sum += folded.wsum;
+            state.weight_sum += folded.wnum;
+        }
+        run_start = run_end;
+    }
+}
+
+fn weightedAvgPartCombine(info: db2.AggregateFunctionCombineInfoHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    var count: db2.idx_t = 0;
+    if (db2.aggregateFunctionCombineGetStateCount(info, &count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var sources: [*c]?*anyopaque = null;
+    if (db2.aggregateFunctionCombineGetSources(info, &sources, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var targets: [*c]?*anyopaque = null;
+    if (db2.aggregateFunctionCombineGetTargets(info, &targets, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var i: db2.idx_t = 0;
+    while (i < count) : (i += 1) {
+        const source: *WeightedAvgPartState = @ptrCast(@alignCast(sources[i].?));
+        const target: *WeightedAvgPartState = @ptrCast(@alignCast(targets[i].?));
+        target.weighted_sum += source.weighted_sum;
+        target.weight_sum += source.weight_sum;
+    }
+}
+
+fn weightedAvgPartFinalize(info: db2.AggregateFunctionFinalizeInfoHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    var count: db2.idx_t = 0;
+    if (db2.aggregateFunctionFinalizeGetStateCount(info, &count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var states: [*c]?*anyopaque = null;
+    if (db2.aggregateFunctionFinalizeGetStates(info, &states, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var result_vec: db2.VectorHandle = undefined;
+    if (db2.aggregateFunctionFinalizeGetResult(info, &result_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var offset: db2.idx_t = 0;
+    if (db2.aggregateFunctionFinalizeGetResultOffset(info, &offset, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var out_data: ?*anyopaque = null;
+    if (db2.vectorGetDataMutable(result_vec, &out_data, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    const out: [*]f64 = @ptrCast(@alignCast(out_data));
+
+    var i: db2.idx_t = 0;
+    while (i < count) : (i += 1) {
+        const state: *WeightedAvgPartState = @ptrCast(@alignCast(states[i].?));
+        if (state.weight_sum == 0) {
+            if (db2.vectorSetNull(result_vec, offset + i, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+        } else {
+            out[offset + i] = state.weighted_sum / state.weight_sum;
+        }
+    }
+}
+
+fn registerWeightedAvgPart(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
+    var function: db2.AggregateFunctionHandle = undefined;
+    if (db2.aggregateFunctionCreateWithExtension(input.extension, &function, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.aggregateFunctionDestroy(&function);
+
+    const fn_name = db2.str("zig_v2_weighted_avg_part_ct");
+    if (db2.aggregateFunctionSetName(function, &fn_name, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var double_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE, &double_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.logicalTypeDestroy(&double_type);
+
+    var sig: db2.FunctionSignatureHandle = undefined;
+    if (db2.aggregateFunctionGetSignature(function, &sig, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    const x_name = db2.str("x");
+    if (db2.functionSignatureAddParameter(sig, &x_name, double_type, null, db2.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    const w_name = db2.str("weight");
+    if (db2.functionSignatureAddParameter(sig, &w_name, double_type, null, db2.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.functionSignatureSetReturnType(sig, double_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    if (db2.aggregateFunctionSetSizeCallback(function, weightedAvgPartSize, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.aggregateFunctionSetInitCallback(function, weightedAvgPartInit, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.aggregateFunctionSetUpdateCallback(function, weightedAvgPartUpdate, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.aggregateFunctionSetCombineCallback(function, weightedAvgPartCombine, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.aggregateFunctionSetFinalizeCallback(function, weightedAvgPartFinalize, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    _ = db2.aggregateFunctionRegister(function, err);
+}
 
 /// Returns the id of the row with the largest value in each group — e.g.
 /// "which leaf dominates this subtree". Unlike sum/weighted_avg, `combine`

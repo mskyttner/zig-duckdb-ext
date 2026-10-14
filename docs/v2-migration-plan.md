@@ -2378,3 +2378,132 @@ single-row input correctly returns NULL (`n < 2`, matching sample-
 covariance's own undefined-ness there); a NULL-containing input row is
 skipped per standard SQL aggregate semantics, matching every other
 aggregate in this framework. `task check:all` and `v2-poc` both clean.
+
+**Follow-up, partition-then-SIMD-fold prototype for the grouped case
+(done, 2026-10-14)** — built `zig_v2_weighted_avg_part_ct(x, weight)`,
+a hand-written aggregate (not through `comptime_aggregate_v2.Function`,
+since its `updateBatch` fast path is deliberately ungrouped-only) that
+implements the "portable alternative to `vpconflictd`" sketched above:
+bucket a chunk's rows by state-pointer equality (`std.sort.pdq` on a
+row-index array, keyed on `@intFromPtr(states[row])`), then run the
+same dense `@Vector` fold `WeightedAvgSimdCt.updateBatch` uses on each
+resulting contiguous, NULL-free run. Correct (0 mismatches against
+`avg()` across small and 3M-row/97-group tests, including NULL
+handling), but **empirically not worth it**: benchmarked against the
+real 1BRC dataset (1B rows, 413 stations, `GROUP BY station`), it ran
+**~6× slower wall-clock and ~8× more total CPU** than the existing
+plain per-row scalar grouped path (`zig_v2_weighted_avg_ct`) — 11.4s
+vs. 1.9s real, 4m24s vs. 33.8s user. Real-world station order is
+effectively random/interleaved, so a 2048-row chunk spread across 413
+groups gives per-chunk run lengths of only ~5 rows — too short to
+amortize the `O(n log n)` partition-sort cost, exactly as the earlier
+feasibility discussion predicted (the vpconflictd analysis's point that
+this technique only pays off at low *effective* group cardinality
+*per chunk*, not low total group count). A follow-up attempt to confirm
+the flip side (pre-sort by station so each chunk's rows are
+contiguous-per-group, which should let the partition cost disappear
+and the SIMD fold dominate) was aborted mid-run — sorting the full
+1B-row table via `CREATE TABLE ... ORDER BY station` exhausted memory
+and triggered an OOM kill (confirmed via `free -h`/swap usage, not
+assumed) — a smaller 50M-row version of that test was in progress when
+explicitly aborted and not restarted. **Net conclusion stands without
+needing that follow-up**: for this project's actual workloads
+(station-like, high-cardinality, randomly-interleaved group keys), the
+plain scalar grouped `update` path already wins over any added
+partitioning machinery — the earlier "not worth building" feasibility
+verdict is now backed by a real, measured number, not just by analysis.
+`zig_v2_weighted_avg_part_ct` is kept as a POC/benchmark artifact
+(registered in `init_v2_poc.zig`), not promoted to a recommended
+pattern.
+
+### `zig-minisign` and `oma`: two external Zig libraries evaluated (2026-10-14)
+
+Prompted by: "see if zigistry.dev/packages/github/jedisct1/zig-minisign
+could be used for future signing of builds and if github.com/ATTron/oma
+is of interest for SIMD calculations of hot functions."
+
+**`zig-minisign`** (github.com/jedisct1/zig-minisign) — a real
+minisign-compatible library *and* CLI (`minizign`: sign/verify/keygen/
+password-change/SSH-pubkey-export/prehashing/WASM cross-compile).
+`build.zig.zon` requires Zig 0.17.0 (matches this project exactly,
+despite the README's stale "requires master" line); usable as a pure
+library with zero extra dependencies via `-Dno-cli` (its one dependency,
+`zig-clap`, is lazy and CLI-only). Actively maintained (pushed
+2026-10-03, 140 stars). **Not a fit for this project's actual signing
+problem**: `docs/rationale/0004_extension-distribution-and-signing.md`
+already established, from a real failed-reproduction attempt against a
+live v2 alpha, that DuckDB's own extension-signing scheme is **RSA**
+(per-chunk SHA256 digests, then an RSA signature over the
+digest-of-digests) — not ed25519/minisign. zig-minisign's signatures
+can't satisfy DuckDB's own loader verification regardless of
+implementation quality; it solves an unrelated signing scheme. That ADR
+already scoped an *optional*, separate "self-signed sidecar signature"
+idea (tamper-evidence only, publishable alongside release assets,
+explicitly NOT a way around `-unsigned`) as a possible later addition —
+zig-minisign would be a clean, low-dependency choice **if and when**
+that specific idea is revisited, but nothing here changes the ADR's
+existing decision to ship unsigned for now. License shows as GitHub
+"Other/NOASSERTION" on the repo listing — would need a manual LICENSE
+check before depending on it either way.
+
+**`oma`** (github.com/ATTron/oma) — not a math/tensor/SIMD-kernel
+library despite the name suggesting otherwise; it's a **runtime
+CPU-microarchitecture function-variant dispatcher**: compiles each
+`pub callconv(.c)` function once per CPU level (x86-64 baseline/v2/v3/
+v4, AArch64 NEON/SVE/SVE2) via repeated `build.zig` compilation passes,
+then picks the best compiled variant at actual runtime via cached CPU
+detection + `@extern` pointer lookup (`resolveFrom`/`resolveForLevel`).
+This is precisely the one mechanism `matmul.zig`'s own doc comment
+already flagged as present in llamafile's tinyBLAS (whole-function
+dispatch between AVX-512+BF16 vs. plain AVX2 compiled variants, chosen
+via `cpuid` at process startup) with **no turnkey Zig equivalent** —
+this project currently sidesteps that gap entirely by picking one fixed
+`@Vector` width per `zig build cross` target instead of true
+multi-ISA-per-binary dispatch. `oma` explicitly supports the
+FFI/shared-library-without-`main` case via `resolveFromNoIo`/
+`detectCpuLevelNoIo` (no `std.Io` instance required) — directly
+relevant, since a `.duckdb_extension` is exactly a shared library with
+no `main`. Requires Zig 0.16.0+ (compatible with this project's 0.17.0),
+`build.zig.zon`-installable, no exotic dependencies. Caveats: v0.0.1,
+11 commits, 18 stars — young and unproven; its one worked README example
+wires `addMultiVersion` into `addExecutable`, not `addSharedLibrary`
+(what this project's build actually produces), so whether it drops into
+a shared-lib build cleanly is **unverified, not yet prototyped**.
+
+**Follow-up: hands-on prototype against a real shared library (done,
+2026-10-14)** — built a standalone scratch project (`addLibrary(.{
+.linkage = .dynamic })`, `pic = true`, `addMultiVersion` wired against
+it) to answer the one open question directly rather than leave it
+unverified. Found a **real, concrete blocker on first try**: oma's
+`exportAll` (`src/root.zig`) uses Zig 0.16-era `@typeInfo` reflection
+(`Type.Struct.decls` with per-decl `.name`, and `Type.Fn.calling_convention`)
+— both renamed in Zig 0.17 (`decl_names: []const [:0]const u8` with no
+per-decl struct, and `Type.Fn.attrs.callconv`). This means **oma as
+currently published does not compile against Zig 0.17.0**, contradicting
+its own README's "Requires Zig 0.16.0+" — not a theoretical concern,
+a real compile failure reproduced directly (`error: no field named
+'decls' in struct 'lang.Type.Struct'`, then after that line's fix,
+`error: no field named 'calling_convention' in struct 'lang.Type.Fn'`).
+Patched both lines in a **local scratch copy only** (2-line fix,
+`decl_names` iteration + `f.attrs.@"callconv"`) to verify the rest of
+the mechanism, which otherwise worked cleanly: the resulting `.so`
+(`nm -D`) contains all four expected exported symbols
+(`x86_64_weightedSum`, `_v2`, `_v3`, `_v4`); a `dlopen`/`dlsym` C
+harness (no `main`, no `std.Io` — the same load shape DuckDB uses for a
+`.duckdb_extension`) correctly reported `x86_64_v3` as this host's
+detected level (consistent with this session's earlier
+`suggestVectorLength(f64) = 4` / AVX2 finding) and computed correct
+results for both a 7-element and a 1000-element dot-product-style
+kernel through `resolveFromNoIo`.
+
+**Revised verdict**: the underlying design is sound and does work for a
+PIC shared library loaded without `main`/`std.Io`, exactly this
+project's situation — but the library is currently **blocked on a
+trivial but real upstream incompatibility with this project's actual
+Zig version (0.17.0)**, not merely "unproven." Not adopting it as a
+dependency as-is; worth revisiting once upstream either fixes the two
+reflection-API call sites or the project is willing to vendor a
+patched fork (the fix is 2 lines, low risk, but patching someone else's
+dependency in-tree is its own maintenance commitment not yet decided
+on). No code from this prototype was added to the real project —
+scratch files cleaned up after extracting the finding.
