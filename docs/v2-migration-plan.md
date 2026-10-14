@@ -2639,3 +2639,47 @@ attempted here, out of the agreed scope for this pass.
 
 `task check:all`, `v2-check`, `ext-v2`, and both sqllogictest suites
 (53 + 6 blocks) all pass.
+
+### Follow-up: real nethogs silently returned 0 rows — a real spawn bug + a silently-swallowed error (done, 2026-10-14)
+
+Real `nethogs` has `cap_net_admin`/`cap_net_raw` already granted on this
+host (confirmed via `getcap`, not assumed), and a direct shell test
+(`nethogs -t -c 3 -d 1`) produced correct tracemode output — so the
+capability story from the main section above was never the blocker
+here. Yet `SELECT * FROM zig_v2_nethogs_trace('nethogs -t -c 5', 5)`
+returned 0 rows with no error.
+
+**Root cause, isolated via a standalone reproduction outside DuckDB**
+(a throwaway scratch Zig program calling `nethogs_trace.readTraceBatch`
+directly): `std.process.spawn` with a bare command name (`"nethogs"`,
+no `/`) fails with `error.FileNotFound`, even though `/usr/sbin` is in
+`$PATH` and `which nethogs` resolves it fine from a shell. `SpawnOptions.Exe.detect`'s
+own doc comment says a slash-free `argv[0]` "is resolved into a file
+path based on PATH from the parent environment" — confirmed, by direct
+side-by-side testing, that this does NOT actually happen for this
+binary in Zig 0.17.0: the identical call with an absolute path
+(`/usr/sbin/nethogs`) spawned and read correctly. Not reported upstream
+or investigated further (out of scope for this pass) — treated as a
+known, confirmed limitation of this Zig version/mechanism, not
+something to work around inside `nethogs_trace.zig` itself.
+
+**The real, worth-fixing bug was in this project's own code**:
+`nethogsTraceBind` caught any `readTraceBatch` error (including this
+exact `FileNotFound`) and silently substituted an empty `TraceBatch`,
+so a real, fixable usage mistake looked identical to "the subprocess
+legitimately produced no traffic." Fixed: the `catch` branch now
+formats the real error (including the original `cmd` string and
+`@errorName`) and reports it via `errorInfoSetCode`/`errorInfoSetText`
+(`DUCKDB_V2_ERROR_API`) — the same error-surfacing convention
+`comptime_cast_v2.zig`/`comptime_scalar_v2.zig` already use — turning a
+silent empty result into a real SQL error:
+`"zig_v2_nethogs_trace: failed to spawn/read 'nethogs -t -c 2':
+FileNotFound (try an absolute path, e.g. /usr/sbin/nethogs)"`. Verified
+live both ways: the bare-name form now raises that exact error instead
+of returning 0 rows, and `'/usr/sbin/nethogs -t -c 3 -d 1'` correctly
+captures real traffic (7 rows across 3 cycles, including this project's
+own `claude` process's traffic, confirming the end-to-end real-nethogs
+path genuinely works, not just the synthetic stand-in). **Practical
+takeaway for the function's own usage going forward**: always pass an
+absolute path for `cmd`, not a bare command name — documented in the
+function's own doc comment and demonstrated above.

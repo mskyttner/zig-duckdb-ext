@@ -1366,11 +1366,20 @@ fn appenderTestRoundTrip(context: db2.ContextHandle, buf: []u8, err: [*c]db2.Err
 /// BIGINT, program VARCHAR, pid BIGINT, uid BIGINT, sent_kbps DOUBLE,
 /// recv_kbps DOUBLE)` — the "appender reads from a subprocess" POC:
 /// `cmd` is a subprocess command line (space-separated, no quoting
-/// support — e.g. `'zig-out/bin/fake_nethogs 5'`, or real `'nethogs -t -c
-/// 5'` once `sudo setcap "cap_net_admin,cap_net_raw+pe" $(which nethogs)`
-/// has been run — nethogs itself needs that capability grant to sniff
-/// packets at all, confirmed live, which this code neither has nor
-/// requests for itself). `src/lib/nethogs_trace.zig` spawns `cmd`, parses
+/// support — e.g. `'zig-out/bin/fake_nethogs 5'`, or real
+/// `'/usr/sbin/nethogs -t -c 5'` once `sudo setcap
+/// "cap_net_admin,cap_net_raw+pe" $(which nethogs)` has been run —
+/// nethogs itself needs that capability grant to sniff packets at all,
+/// confirmed live, which this code neither has nor requests for itself).
+/// **`cmd`'s first token must be an absolute or relative path containing
+/// a `/`, never a bare command name**: confirmed live that
+/// `std.process.spawn` fails with `error.FileNotFound` for a slash-free
+/// `argv[0]` even when it's genuinely on `$PATH` (e.g. `'nethogs -t -c
+/// 5'` fails; `'/usr/sbin/nethogs -t -c 5'` works) — a real Zig 0.17.0
+/// gap versus its own documented PATH-search behavior, not a bug in this
+/// function. A failed spawn now raises a real SQL error naming the
+/// failure, rather than silently returning 0 rows (an earlier, fixed bug
+/// in this function). `src/lib/nethogs_trace.zig` spawns `cmd`, parses
 /// nethogs' own tracemode line format into a columnar `TraceBatch` (the
 /// "Arrow-shaped" structure-of-arrays intermediate), and THIS function's
 /// `bind` pushes that batch through `comptime_appender_v2.Appender` (the
@@ -1454,7 +1463,22 @@ fn nethogsTraceBind(info: db2.FunctionBindInfoHandle, result: db2.TableFunctionB
     var max_cycles: i64 = 0;
     if (db2.valueGetBigint(cycles_value, &max_cycles, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
 
-    var batch = nethogs_trace.readTraceBatch(std.heap.c_allocator, cmd, max_cycles) catch nethogs_trace.TraceBatch{};
+    var batch = nethogs_trace.readTraceBatch(std.heap.c_allocator, cmd, max_cycles) catch |e| {
+        // Report the real failure instead of silently returning 0 rows —
+        // confirmed live this matters: a bare command name (`"nethogs"`,
+        // no `/`) fails to spawn via `std.process.spawn`'s PATH search
+        // (`error.FileNotFound`) even though the same name resolves fine
+        // via a shell's own PATH lookup (`which nethogs`); an absolute
+        // path (`/usr/sbin/nethogs`) spawns correctly. Silently swallowing
+        // that into an empty result (the original version of this code)
+        // made a real, fixable usage error look like "no traffic captured".
+        var buf: [160]u8 = undefined;
+        const msg_text = std.fmt.bufPrint(&buf, "zig_v2_nethogs_trace: failed to spawn/read '{s}': {s} (try an absolute path, e.g. /usr/sbin/nethogs)", .{ cmd, @errorName(e) }) catch "zig_v2_nethogs_trace: failed to spawn/read subprocess";
+        const msg = db2.str(msg_text);
+        _ = db2.errorInfoSetCode(err.*, db2.c.DUCKDB_V2_ERROR_API);
+        _ = db2.errorInfoSetText(err.*, &msg);
+        return;
+    };
     defer batch.deinit(std.heap.c_allocator);
 
     var appender = NethogsAppender.create(context, err) catch return;
