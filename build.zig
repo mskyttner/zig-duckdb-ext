@@ -477,6 +477,26 @@ pub fn build(b: *std.Build) void {
     v2_poc_step.dependOn(&install_v2_poc.step);
     v2_poc_step.dependOn(&install_fake_nethogs.step);
 
+    // ── Interactive session with the v2-poc extension pre-loaded ─────────
+    // Same idea/mechanism as the `duckdb-extension` step above, pointed at
+    // `zig_ext_v2_poc` instead of the real `zig_ext_v2` — e.g. for
+    // `zig_v2_nethogs_trace`, which only exists in this POC extension, not
+    // the real one.
+    {
+        const run_duckdb_v2_poc = if (duckdb_cli_v2) |cli| blk: {
+            const r = std.Build.Step.Run.create(b, "run duckdb (v2-poc, pinned)");
+            r.addFileArg(cli);
+            break :blk r;
+        } else b.addSystemCommand(&.{"duckdb"});
+        run_duckdb_v2_poc.addArgs(&.{ "-unsigned", "-no-init", "-cmd" });
+        run_duckdb_v2_poc.addFileArg2(v2_poc_output, .{ .prefix = "LOAD '", .suffix = "'; select function_name, function_type, parameter_types from duckdb_functions() where extension_name like '%poc%' order by function_name; " });
+        run_duckdb_v2_poc.step.dependOn(&install_fake_nethogs.step);
+        run_duckdb_v2_poc.stdio = .inherit;
+
+        const duckdb_v2_poc_step = b.step("duckdb-extension-v2-poc", "Start an interactive DuckDB session with the v2 proof-of-concept extension loaded");
+        duckdb_v2_poc_step.dependOn(&run_duckdb_v2_poc.step);
+    }
+
     // ── v2 proof-of-concept: image-to-braille-art demo (zignal dependency,
     // isolated) ────────────────────────────────────────────────────────────
     // A completely separate extension/step from `v2-poc` above, on purpose:
