@@ -2243,3 +2243,74 @@ directly via standalone `zig test`/`zig build-obj` invocations against
 explicit `-target`/`-mcpu=` combinations instead, which was sufficient
 to prove the mechanism without needing to extend `cross_targets`'
 scope to a module that was never part of it.
+
+### Follow-up: `matmul_ct` vs. `weighted_avg_simd_ct` at real 1BRC scale (done, 2026-10-14)
+
+Prompted by "can weighted average be seen as a matrix multiplication,
+does it already use comptime lane width, and can matmul performance be
+compared to weighted average for the 1BRC dataset?" — three real
+questions, answered in order:
+
+**1. Weighted average IS a matrix multiplication, in the most degenerate
+case.** `weighted_avg_simd_ct`'s `updateBatch` computes `Σ(x_i · w_i)` —
+a vector dot product, i.e. a 1×k times k×1 GEMM (`m=1, n=1, k=row_count`
+in the notation `matmul.zig`'s own doc comment uses). In BLAS's own
+classification this is the Level-1 (vector-vector) operation GEMM's own
+inner loop (`Cv[j][i] += A[i,l]*B[l,j]`) is built out of — `m×n`
+independent dot products of length `k` — not a coincidental analogy,
+the literal same multiply-accumulate primitive at a different rank.
+
+**2. `weighted_avg_simd_ct` already used `std.simd.suggestVectorLength`
+before `matmul.zig` existed** — found by reading the actual source, not
+assumed: `const lanes = std.simd.suggestVectorLength(f64) orelse 2;`,
+written during the earlier 1BRC aggregate benchmark work. One real
+inconsistency found and fixed: its fallback was `orelse 2` (always
+tries a width-2 vector, even on a target with zero detected SIMD),
+unlike `matmul.zig`'s `orelse 1` (a true scalar fallback, confirmed to
+compile clean for a no-SIMD ARMv6 target). Aligned to `orelse 1`;
+rebuilt and reverified `zig_v2_weighted_avg_simd_ct`'s own NULL-handling
+test still passes.
+
+**3. Benchmarked both against the real 1BRC dataset
+(`/home/markus/repos/1BRC/measurements.txt`, 1,000,000,000 rows,
+13.7GB) — not a synthetic microbenchmark.** Loaded the real CSV into a
+materialized on-disk DuckDB table first (9.7s one-time cost, CSV
+parsing — deliberately excluded from the throughput measurement below,
+since it isn't part of what's being measured), then ran
+`zig_v2_weighted_avg_simd_ct(temperature, 1.0)` directly against the
+1B-row table. Correctness confirmed against DuckDB's own built-in:
+`11.049336526399982` vs. `avg(temperature)`'s `11.04933652639978` —
+matches to float precision.
+
+| | wall-clock | threads (user÷real time) | GFLOPS, wall-clock | GFLOPS, **per core** |
+|---|---|---|---|---|
+| `weighted_avg_simd_ct`, 1B real rows | 1.546s | ~9 (14.1s÷1.546s) | 1.29 | **0.14** |
+| `matmul_ct` (SIMD), 128³/256³/512³ | — | 1 (no DuckDB-level parallelism; a scalar function call) | — | **~1.72–1.76** (stable across all three sizes) |
+
+**`matmul_ct` gets ~12× more FLOPS per core than `weighted_avg_simd_ct`
+— explained by two distinct, separately-confirmed causes, not asserted
+as one vague "SIMD is good" conclusion:**
+- **Arithmetic intensity (the fundamental cause)**: `matmul_ct`'s inner
+  loop loads one `@Vector` of B and reuses it across `RM=4` FMAs before
+  advancing; `weighted_avg_simd_ct` touches each `x`/`w` pair exactly
+  once. The textbook BLAS Level-1-vs-Level-3 throughput gap, confirmed
+  empirically at real billion-row scale rather than only argued from
+  theory.
+- **Threading, a separate axis deliberately not conflated with the
+  above**: `weighted_avg_simd_ct`'s 1.29 GFLOPS *wall-clock* figure
+  already benefits from DuckDB automatically parallelizing the
+  aggregate across ~9 threads (safe because of `combine()`);
+  `matmul_ct`'s benchmark is single-threaded, run inside one function
+  call. Comparing the wall-clock numbers directly would make
+  `weighted_avg_simd_ct` look artificially competitive for the wrong
+  reason (more cores, not more efficient use of each core) — the
+  per-core figure is the one that actually isolates arithmetic
+  intensity as the explanation, confirmed by computing both and
+  checking they tell a consistent story.
+
+**Conclusion**: the two kernels are legitimately comparable, but only
+when framed as "compute-bound dense kernel vs. memory-bound streaming
+reduction, normalized per core" — a flat "which is faster" comparison
+of the raw wall-clock numbers would have been a real, specific way to
+mislead rather than inform, since it would conflate thread count with
+per-core efficiency.
