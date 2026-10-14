@@ -1599,6 +1599,86 @@ as a real, reproducible, clearly-documented demonstration of exactly
 this boundary (its own doc comment records the full chain above), not
 promoted further.
 
+### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
+
+Prompted by a reference recipe
+(github.com/samjewell/zig-cc-lab — `zig c++ -c duckdb.cpp -o duckdb.o`
+against the official amalgamated source, then `zig ar`). The idea: the
+official prebuilt `libduckdb_static.a`'s two real link bugs above (GNU
+libstdc++ ABI vs. Zig's bundled libc++; needing `libgcc_eh.a` for GCC's
+unwinder) both stem from it being built with a *different* toolchain
+than the one doing the final link — building it with `zig c++` instead
+means the same toolchain does both steps, so those two specific
+mismatches shouldn't be able to occur at all.
+
+**Confirmed, concretely — not just in theory**: this project already
+has the real, official amalgamated `duckdb.cpp`/`duckdb.hpp` vendored
+(v1.5.6, via the existing pinned `duckdb_headers_v1` `build.zig.zon`
+dependency — zero extra fetch needed). Compiled it directly:
+```
+zig c++ -std=c++17 -O2 -DNDEBUG -fPIC -w -c duckdb.cpp -o duckdb.o
+```
+Took 6m38s real / 6m17s user (single translation unit, no parallelism
+possible), produced a 486MB object file, confirmed via the live process
+listing to genuinely use Zig's own bundled libc++ headers
+(`-isystem .../lib/libcxx/include`), not any system compiler. `zig ar
+rcs libduckdb.a duckdb.o` archived it. Checked its actual ABI rather
+than assuming: `nm` shows 18,933 libc++-ABI markers (`St3__1`, libc++'s
+mangled inline namespace) and **zero** libstdc++-ABI markers
+(`__cxx11`) — genuinely, verifiably libc++-consistent, unlike the
+official prebuilt archive.
+
+**It still has the exact same >65535-section issue** as the official
+archive (87,345 section headers this time, same ELF extended-numbering
+situation Zig's native linker can't parse) — expected, since that's a
+property of how DuckDB's enormous amalgamation compiles
+(`-ffunction-sections`-style one-section-per-symbol granularity),
+unrelated to which toolchain does the compiling. Still needs
+`use_llvm=true, use_lld=true`.
+
+**Real link test, minimal but conclusive**: a tiny Zig program calling
+`duckdb_library_version()` (an `extern fn`, no header translation
+needed for this one-symbol check), linked via
+```
+zig build-exe -fllvm -flld -lc -lc++ -L. -lduckdb t.zig
+```
+— genuinely linked AND ran, printing `version: v1.5.6` — confirmed
+correct against the real amalgamated source's own version. Crucially,
+**no `addObjectFile` pointed at the system's real `libstdc++.a`/
+`libgcc_eh.a` was needed at all** — plain `-lc++` (Zig's own bundled
+libc++, which `linkSystemLibrary`/`link_libcpp` already give for free)
+was sufficient, because the archive and the final binary now agree on
+which C++ runtime they're using. This directly eliminates real link
+bugs 2 and 3 from the official-prebuilt-archive test above; only link
+bug 1 (`use_llvm`/`use_lld` for the section-count issue) still applies,
+and that's an ordinary build-config flag, not an external-file
+workaround.
+
+**What this does NOT change**: the actual blocking finding from the
+official-archive test (`get_api` is unconditionally null for
+statically-registered extensions, confirmed from DuckDB's own C++
+source) is a property of DuckDB's own static-extension-loading design,
+completely independent of which toolchain built `libduckdb.a` — a
+cleaner-to-link archive does not route around that; `init_v2.zig`
+would still register nothing under static loading even with a
+perfectly libc++-consistent `libduckdb.a`. The real value here is
+narrower but still genuine: IF a non-vtable, direct-C-API v2 binding
+layer is ever built (the follow-up project the previous section
+identified as the actual unblock), building `libduckdb.a` from source
+with `zig c++` would be the cleaner way to get a linkable archive,
+avoiding the official build's ABI mismatches entirely.
+
+**Also unresolved, noted but not chased further**: this test used
+v1.5.6's amalgamation (already vendored, zero cost to try) — not the
+exact pinned `v2.0.0-alpha46057` commit (`b15358c371`) the static-
+extension-registration test actually targets. DuckDB does not publish
+a prebuilt amalgamated source for the staged alpha channel under any
+filename checked. Reproducing this same build against the real pinned
+commit would need a full `git clone`/checkout at `b15358c371` plus
+running DuckDB's own amalgamation-generation tooling — a materially
+bigger step than reusing an already-vendored file, explicitly deferred
+for now (recorded here, not attempted) rather than started speculatively.
+
 ### 6a. WASM support (speculative, not started — not currently feasible as a straight port)
 
 Investigated whether this extension could target `duckdb-wasm` (browser
