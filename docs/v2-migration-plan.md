@@ -2529,3 +2529,113 @@ incidental. Practical implication if this is ever revisited: a
 `build.zig.zon` URL dependency could point at the open PR's branch
 (`github.com/by965738071/oma`, ref `main`) instead of maintaining a
 local patch, until/unless upstream merges it.
+
+### Nethogs-style "accumulate traffic by process" v2-poc demo (done, 2026-10-14)
+
+Prompted by: "a POC example using the appender to read from a subprocess
+for network traffic, convert to arrow and use comptime-generated
+functions for its schema to shape it in a table suitable for display as
+a treemap, similar to how nethogs accumulates network traffic by
+process." Scoped up front (clarifying questions, not guessed silently):
+a synthetic subprocess stand-in rather than real nethogs (which needs
+`cap_net_admin`/`cap_net_raw` — confirmed live, it refuses outright
+without them, a privileged one-time `setcap` grant out of scope to run
+here); "Arrow" as a columnar Zig intermediate feeding the existing
+`comptime_appender_v2.Appender` (not DuckDB's own Arrow C Data
+Interface, untouched by this project); "suitable for display" scoped to
+landing the right table schema first, with the end-to-end render
+investigated afterward rather than assumed necessary.
+
+**Real format, not guessed**: nethogs' tracemode (`-t`) line format was
+confirmed against its own upstream source
+(github.com/raboof/nethogs, `src/cui.cpp`'s `show_trace()`/`Line::log()`,
+fetched and read directly) —
+`"\nRefreshing:\n"` as the batch delimiter, then one
+`"<program>/<pid>/<uid>\t<sent_kbps>\t<recv_kbps>\n"` line per process.
+Confirmed live, separately, that the installed `nethogs` binary refuses
+to run without `cap_net_admin`/`cap_net_raw`, and that the real fix is a
+one-time `sudo setcap "cap_net_admin,cap_net_raw+pe"` grant (the man
+page's own documented procedure), not running nethogs as root
+continuously.
+
+**Built**:
+- `src/lib/nethogs_trace.zig` — spawns an arbitrary command line via
+  `std.process.spawn`/`std.Io.Threaded` (the same "no `main`/`std.Io`
+  available" pattern this project already established for the braille
+  demo and matmul's benchmark), reads its stdout, and parses nethogs'
+  tracemode format into a `TraceBatch`: a columnar, structure-of-arrays
+  intermediate (parallel `ts`/`program`/`pid`/`uid`/`sent_kbps`/
+  `recv_kbps` arrays) — the "Arrow-shaped" step the user specifically
+  asked for, built before anything touches DuckDB's own types.
+- `src/fake_nethogs_main.zig` — a small standalone Zig executable
+  emitting the identical tracemode line format with synthetic,
+  deterministically-seeded traffic numbers for 4 fake programs, no
+  privilege needed. Installed to `zig-out/bin/fake_nethogs` by `zig
+  build v2-poc`. Swapping to real `nethogs -t -c <n>` (nethogs' own `-c`
+  flag bounds its update count so it exits on its own, same as this
+  tool does) is a one-line command-string change with zero parser
+  changes, once/if that one-time `setcap` grant has been made.
+- `zig_v2_nethogs_trace(cmd VARCHAR, max_cycles BIGINT) -> TABLE(ts
+  BIGINT, program VARCHAR, pid BIGINT, uid BIGINT, sent_kbps DOUBLE,
+  recv_kbps DOUBLE)` in `init_v2_poc.zig` — hand-written (not through
+  `comptime_table_v2.Function`, whose `State.init` deliberately has no
+  access to the bind-time `ContextHandle` `Appender.create` needs) bind/
+  exec callbacks: `bind` parses the subprocess output into a
+  `TraceBatch`, pushes each row through `comptime_appender_v2.Appender`
+  (the "comptime-generated function for its schema" — `NethogsTraceRow`'s
+  DuckDB column types are derived automatically from the plain Zig
+  struct, not hand-declared per column, same pattern as every other use
+  of that framework), `finish()`es into a `ColumnDataCollection`, and
+  `exec` scans it back out as the table function's actual output rows —
+  the same build-then-scan pattern `appenderTestRoundTrip` already
+  proved live, now driving a real table function's output chunk instead
+  of a one-off VARCHAR summary.
+
+**A real bug found and fixed via testing past the happy path**: the
+first live run (`zig_v2_nethogs_trace('fake_nethogs 3', 3)`) returned
+only 8 rows (2 cycles), not the expected 12 (3 cycles × 4 programs).
+Root cause: the parser's `cycle < max_cycles` loop condition was
+re-checked immediately after incrementing `cycle` on each `"Refreshing:"`
+line, before that cycle's own data rows had been consumed — so hitting
+exactly `max_cycles` discarded the whole last cycle. Fixed by moving the
+limit check to run after the increment but explicitly before consuming
+that cycle's rows (`if (cycle > max_cycles) break;`), confirmed correct
+both by a new regression unit test (`parseTraceLines(max_cycles)
+includes the Nth cycle's own rows, not just N-1`) and by re-running the
+exact live query (now correctly returns 12 rows, 3 distinct `ts`
+values).
+
+**A separate, independently-confirmed Zig 0.17 stdlib quirk**: an
+earlier version of the parser used `std.Io.Reader.takeDelimiterExclusive`
+against `std.Io.Reader.fixed(...)` (used in the unit test, not the real
+subprocess path) and hung in a genuine infinite busy-loop — confirmed
+live via `/proc/<pid>/status`/`wchan` showing the compiled test binary
+in state `R` (running, not blocked), not a slow build. Isolated with a
+standalone repro: `takeDelimiterExclusive` returns the first line
+correctly, then an endless stream of *empty* slices instead of ever
+advancing or erroring, specifically against a `Reader.fixed`-backed
+reader. `takeDelimiter` (without "Exclusive"), tested the same way,
+reads every line correctly and signals end-of-stream cleanly via
+`null`. Switched to `takeDelimiter` — not reported upstream (out of
+scope here), but worth knowing before reaching for
+`takeDelimiterExclusive` against a fixed-buffer reader again.
+
+**Checkpoint confirmed** (the scope boundary agreed up front): `SELECT
+program, sum(sent_kbps + recv_kbps) AS total FROM
+zig_v2_nethogs_trace(...) GROUP BY program` already has exactly the
+shape `tp_treemap`/`tp_snakemap` expect once aggregated into LISTs.
+Verified by actually calling `tp_treemap((SELECT list(total) FROM
+shaped), (SELECT list(program) FROM shaped))` against the live-captured
+table — not just by comparing the two schemas on paper — and it
+rendered a correct, properly-proportioned treemap. **This also answers
+the "what would an end-to-end render need" follow-up**: nothing further
+at the SQL level — the existing `tp_treemap`/`tp_snakemap` functions
+already accept this shape directly, so a full render is one more query
+away, not a new engineering effort. A genuinely live/continuously-
+refreshing dashboard (as opposed to a one-shot snapshot query) would
+still need the separately-documented `treemap_explorer` live-reload
+viewer wired up to re-run this table function on an interval — not
+attempted here, out of the agreed scope for this pass.
+
+`task check:all`, `v2-check`, `ext-v2`, and both sqllogictest suites
+(53 + 6 blocks) all pass.

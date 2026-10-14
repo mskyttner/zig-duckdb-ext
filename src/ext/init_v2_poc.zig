@@ -22,6 +22,7 @@ const comptime_aggregate_v2 = @import("comptime_aggregate_v2");
 const comptime_appender_v2 = @import("comptime_appender_v2");
 const comptime_cast_v2 = @import("comptime_cast_v2");
 const matmul = @import("matmul");
+const nethogs_trace = @import("nethogs_trace");
 
 export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callconv(.c) void {
     if (!db2.initApi(input, "v2.0.0")) return;
@@ -36,6 +37,7 @@ export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callcon
     registerAppenderTest(input, &err);
     registerAppenderNestedTest(input, &err);
     registerAppenderArrayEnumTest(input, &err);
+    registerNethogsTrace(input, &err);
     registerFilterPushdownTest(input);
     registerProjectionPushdownTest(input);
     registerComptimeExamples(input);
@@ -1358,6 +1360,177 @@ fn appenderTestRoundTrip(context: db2.ContextHandle, buf: []u8, err: [*c]db2.Err
 
     _ = err;
     return buf[0..pos];
+}
+
+/// `zig_v2_nethogs_trace(cmd VARCHAR, max_cycles BIGINT) -> TABLE(ts
+/// BIGINT, program VARCHAR, pid BIGINT, uid BIGINT, sent_kbps DOUBLE,
+/// recv_kbps DOUBLE)` — the "appender reads from a subprocess" POC:
+/// `cmd` is a subprocess command line (space-separated, no quoting
+/// support — e.g. `'zig-out/bin/fake_nethogs 5'`, or real `'nethogs -t -c
+/// 5'` once `sudo setcap "cap_net_admin,cap_net_raw+pe" $(which nethogs)`
+/// has been run — nethogs itself needs that capability grant to sniff
+/// packets at all, confirmed live, which this code neither has nor
+/// requests for itself). `src/lib/nethogs_trace.zig` spawns `cmd`, parses
+/// nethogs' own tracemode line format into a columnar `TraceBatch` (the
+/// "Arrow-shaped" structure-of-arrays intermediate), and THIS function's
+/// `bind` pushes that batch through `comptime_appender_v2.Appender` (the
+/// "comptime-generated function for its schema": the DuckDB column types
+/// for `NethogsTraceRow` are derived automatically from that plain Zig
+/// struct, not hand-declared per column) to build a
+/// `ColumnDataCollection`; `exec` then scans it back out as this table
+/// function's actual output rows — the same build-then-scan pattern
+/// `appenderTestRoundTrip` above already proved live, just driving a
+/// table function's output chunk instead of formatting a VARCHAR summary.
+///
+/// Hand-written rather than through `comptime_table_v2.Function`: that
+/// framework's `State.init` has no access to the bind-time `ContextHandle`
+/// `Appender.create` needs (by design — see its own module doc comment),
+/// so a function that routes through a real `Appender`/
+/// `ColumnDataCollection` (rather than yielding rows one at a time via
+/// `next`) needs its own bind/exec callbacks.
+///
+/// Checkpoint this was built to confirm (see `docs/v2-migration-plan.md`):
+/// `SELECT program, sum(sent_kbps + recv_kbps) AS total FROM
+/// zig_v2_nethogs_trace(...) GROUP BY program` already has the exact shape
+/// `tp_treemap`/`tp_snakemap` expect once aggregated into LISTs —
+/// `tp_treemap(list(total), list(program))` — confirmed by actually
+/// calling it, not just by inspecting the two schemas.
+const NethogsTraceRow = struct {
+    ts: i64,
+    program: []const u8,
+    pid: i64,
+    uid: i64,
+    sent_kbps: f64,
+    recv_kbps: f64,
+};
+const NethogsAppender = comptime_appender_v2.Appender(NethogsTraceRow);
+
+const NethogsBindData = struct {
+    collection: db2.ColumnDataCollectionHandle,
+    shared_state: db2.ColumnDataCollectionSharedScanStateHandle,
+    worker_state: db2.ColumnDataCollectionWorkerScanStateHandle,
+};
+
+fn destroyNethogsBindData(data: ?*anyopaque) callconv(.c) void {
+    const bd: *NethogsBindData = @ptrCast(@alignCast(data.?));
+    _ = db2.columnDataCollectionWorkerScanStateDestroy(&bd.worker_state);
+    _ = db2.columnDataCollectionSharedScanStateDestroy(&bd.shared_state);
+    _ = db2.columnDataCollectionDestroy(&bd.collection);
+    std.heap.c_allocator.destroy(bd);
+}
+
+const nethogs_trace_columns = .{
+    .{ "ts", db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT },
+    .{ "program", db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR },
+    .{ "pid", db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT },
+    .{ "uid", db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT },
+    .{ "sent_kbps", db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE },
+    .{ "recv_kbps", db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE },
+};
+
+fn nethogsTraceBind(info: db2.FunctionBindInfoHandle, result: db2.TableFunctionBindInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    inline for (nethogs_trace_columns) |col| {
+        var col_type: db2.LogicalTypeHandle = undefined;
+        if (db2.contextCreateTypeFromId(context, col[1], &col_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+        defer _ = db2.logicalTypeDestroy(&col_type);
+        const col_name = db2.str(col[0]);
+        if (db2.tableFunctionBindAddResultColumn(result, &col_name, col_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    }
+
+    var cmd_value: db2.ValueHandle = undefined;
+    if (db2.functionBindGetArgValue(info, 0, &cmd_value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.valueDestroy(&cmd_value);
+    var cmd_str: db2.Str = undefined;
+    if (db2.valueGetVarchar(cmd_value, &cmd_str, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    // SAFETY: `cmd_str` borrows from `cmd_value`; used synchronously below,
+    // before `cmd_value`'s `defer valueDestroy` runs — never retained past
+    // this call, so no copy is needed (unlike comptime_table_v2's State,
+    // which must outlive `bind`).
+    const cmd: []const u8 = @as([*]const u8, @ptrCast(cmd_str.ptr))[0..cmd_str.len];
+
+    var cycles_value: db2.ValueHandle = undefined;
+    if (db2.functionBindGetArgValue(info, 1, &cycles_value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.valueDestroy(&cycles_value);
+    var max_cycles: i64 = 0;
+    if (db2.valueGetBigint(cycles_value, &max_cycles, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var batch = nethogs_trace.readTraceBatch(std.heap.c_allocator, cmd, max_cycles) catch nethogs_trace.TraceBatch{};
+    defer batch.deinit(std.heap.c_allocator);
+
+    var appender = NethogsAppender.create(context, err) catch return;
+    defer appender.destroy();
+
+    var i: usize = 0;
+    while (i < batch.len()) : (i += 1) {
+        appender.append(.{
+            .ts = batch.ts.items[i],
+            .program = batch.program.items[i],
+            .pid = batch.pid.items[i],
+            .uid = batch.uid.items[i],
+            .sent_kbps = batch.sent_kbps.items[i],
+            .recv_kbps = batch.recv_kbps.items[i],
+        }, err) catch return;
+    }
+
+    const collection = appender.finish(err) catch return;
+
+    var shared_state: db2.ColumnDataCollectionSharedScanStateHandle = undefined;
+    if (db2.columnDataCollectionSharedScanStateCreate(collection, &shared_state, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var worker_state: db2.ColumnDataCollectionWorkerScanStateHandle = undefined;
+    if (db2.columnDataCollectionWorkerScanStateCreate(collection, &worker_state, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    const bind_data = std.heap.c_allocator.create(NethogsBindData) catch return;
+    bind_data.* = .{ .collection = collection, .shared_state = shared_state, .worker_state = worker_state };
+    var boxed: db2.Opaque = .{ .ptr = bind_data, .destroy = destroyNethogsBindData, .equals = null };
+    _ = db2.functionBindSetBindData(info, &boxed, err);
+    _ = db2.tableFunctionBindSetCardinality(result, @intCast(batch.len()), true, err);
+}
+
+fn nethogsTraceExec(info: db2.TableFunctionExecInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    _ = context;
+    var bind_data_ptr: ?*anyopaque = null;
+    if (db2.tableFunctionExecGetBindData(info, &bind_data_ptr, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    const bd: *NethogsBindData = @ptrCast(@alignCast(bind_data_ptr.?));
+
+    var chunk: db2.DataChunkHandle = undefined;
+    if (db2.tableFunctionExecGetOutputChunk(info, &chunk, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var did_produce = false;
+    if (db2.columnDataCollectionScan(bd.collection, bd.shared_state, bd.worker_state, chunk, &did_produce, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (!did_produce) {
+        var col0: db2.VectorHandle = undefined;
+        if (db2.dataChunkGetVector(chunk, 0, &col0, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+        _ = db2.vectorSetSize(col0, 0, err);
+    }
+}
+
+fn registerNethogsTrace(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
+    var function: db2.TableFunctionHandle = undefined;
+    if (db2.tableFunctionCreateWithExtension(input.extension, &function, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.tableFunctionDestroy(&function);
+
+    const fn_name = db2.str("zig_v2_nethogs_trace");
+    if (db2.tableFunctionSetName(function, &fn_name, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var sig: db2.FunctionSignatureHandle = undefined;
+    if (db2.tableFunctionGetSignature(function, &sig, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var varchar_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.logicalTypeDestroy(&varchar_type);
+    const cmd_name = db2.str("cmd");
+    if (db2.functionSignatureAddParameter(sig, &cmd_name, varchar_type, null, db2.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var bigint_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, &bigint_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.logicalTypeDestroy(&bigint_type);
+    const cycles_name = db2.str("max_cycles");
+    if (db2.functionSignatureAddParameter(sig, &cycles_name, bigint_type, null, db2.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    if (db2.tableFunctionSetBindCallback(function, nethogsTraceBind, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.tableFunctionSetExecCallback(function, nethogsTraceExec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    _ = db2.tableFunctionRegister(function, err);
 }
 
 /// Live round-trip test for `comptime_appender_v2.Appender`'s LIST and
