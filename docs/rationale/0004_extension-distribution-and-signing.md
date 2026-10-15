@@ -132,69 +132,75 @@ live against both runtimes this branch has on hand:
   key, with the fingerprint it reported matching an independent
   `openssl dgst -sha256` of the key file.
 
-  **What did NOT work**: signing the actual extension binary using the
-  v1-documented algorithm from `extension-upload-single.sh`/
-  `compute-extension-hash.sh` (strip the 256-byte signature placeholder,
-  SHA256 each 1MB chunk, SHA256 the concatenation of those digests,
-  RSA-sign that composite hash) and loading it from the trusted
-  repository. DuckDB rejected it: `"its signature is either missing or
-  invalid"`. Isolated the cause before giving up on it: verified the
-  *exact same* signature independently with `openssl pkeyutl -verify`
-  against the public key, and it checks out — **the signature this
-  branch produced is cryptographically valid by the documented v1
-  algorithm; v2's loader is checking something different, or computing
-  the hash differently, and that difference isn't documented anywhere
-  this review found.** Given how actively C-API-V2 is changing right now
-  (see `docs/v2-migration-plan.md`'s "Anticipated upcoming refactoring"
-  section — three PRs touching adjacent machinery merged the day before
-  this review), this reads as a genuine in-flux rough edge in the alpha
-  build, not a mistake in this branch's signing math — left as an
-  **open question, not a blocker**, to revisit once 2.0 ships with (one
-  hopes) a documented v2 signing procedure or a working example to copy.
+  **Earlier attempts to sign the actual extension binary using the
+  v1-documented algorithm failed** — `"its signature is either missing
+  or invalid"` — even after independently confirming the signature was
+  cryptographically valid against the key (`openssl pkeyutl -verify`)
+  and, on 2026-10-15, after explicitly ruling out
+  `allow_extension_repositories` not being `'allowed'` at `LOAD` time
+  as the cause. That left a real, open question: was v2's loader
+  actually computing or checking something different?
 
-  **Re-verified from scratch, 2026-10-15, specifically to rule out a
-  real confound**: was `allow_extension_repositories` actually
-  `'allowed'` at the moment `LOAD` was attempted, in the same session,
-  not just at repository-creation time? Redid the whole flow in one
-  unambiguous sequence to check: fresh RSA keypair, signed
-  `zig_ext_v2.duckdb_extension` with the same v1 algorithm, `SET
-  allow_extension_repositories='allowed'; CREATE EXTENSION REPOSITORY
-  myrepo WITH PREFIX '<local file:// path>' USING PUBLIC KEY
-  '<pem>';`, confirmed via `duckdb_extension_repositories()` that
-  `myrepo` was listed with `type='USER_PROVIDED'` and the right
-  fingerprint, **then, still in the same session**, attempted `LOAD`
-  (both by the direct install path and by bare name after a successful
-  `INSTALL ... FROM myrepo`) with `allow_extension_repositories` still
-  `'allowed'` and *no* `-unsigned` flag. **Identical failure both ways**:
-  `"could not be loaded because its signature is either missing or
-  invalid and unsigned extensions are disabled by configuration"` —
-  confirming this is a real signature-verification rejection, not an
-  artifact of the repository not being trusted at `LOAD` time. (As a
-  sanity control, the same file loaded and worked correctly with
-  `-unsigned`, confirming the signing process didn't corrupt the binary
-  itself — the rejection is specific to signature verification.)
+  **Resolved, 2026-10-15, by reading the actual verification code**
+  (`src/main/extension/extension_load.cpp`,
+  `third_party/mbedtls/mbedtls_wrapper.cpp` at the pinned commit): the
+  hash algorithm (1MiB chunks hashed via an incremental SHA256 state,
+  the raw 32-byte digests concatenated and SHA256'd once more — exactly
+  the documented v1 algorithm, confirmed byte-for-byte against
+  `FOOTER_SIZE=512`/`SIGNATURE_SIZE=256`) and the signature scheme
+  (`mbedtls_pk_verify` with `MBEDTLS_MD_SHA256`, the same standard
+  PKCS#1v1.5-with-SHA256-OID scheme `openssl pkeyutl -pkeyopt
+  digest:sha256` already uses) are both exactly as documented — **the
+  crypto was never the problem**. The actual cause, found in
+  `ExtensionHelper::TryInitialLoad`'s own comments: a **bare** `LOAD
+  <name>` (no `FROM <repo>`) — "which is also how autoloading loads —
+  trusts only the fixed core/community keys, never a user-provided
+  repository's own keys", by deliberate design, regardless of what a
+  `.info` sidecar says the extension's real origin was. A **direct
+  file-path** `LOAD '<path>'` is worse still: "extensions that are
+  loaded directly have no install info: those are verified against the
+  core keys" — a custom repository's key is never even considered.
+  Every earlier test (in this session and the one that produced this
+  ADR's first draft) used one of those two forms — neither was ever
+  going to work, independent of whether the signature was correct.
 
-  **A separate, smaller gap found during this re-verification, worth
-  noting but not conflating with the signature question**: `INSTALL
-  <name> FROM <repo>` caches the file under
-  `~/.duckdb/extensions/<version>/<platform>/repositories/<repo-name>/<name>.duckdb_extension`,
-  but a plain `LOAD <name>;` (bare name, no `FROM`) only searches
-  `~/.duckdb/extensions/<version>/<platform>/<name>.duckdb_extension`
-  directly — it does not look inside `repositories/<repo-name>/`. Worked
-  around by loading the direct path instead to isolate the actual
-  signature question; whether this is intended (some other syntax is
-  meant to resolve a repo-qualified name) or itself a rough edge wasn't
-  investigated further here.
+  **Confirmed working, reproduced twice from a clean state with two
+  different self-generated keys**: `LOAD <name> FROM <repo-name>;` —
+  the explicit-origin form — succeeds and correctly registers real
+  functions, with *no* `-unsigned` flag:
+  ```sql
+  SET allow_extension_repositories='allowed';
+  CREATE EXTENSION REPOSITORY myrepo WITH PREFIX 'file:///path/to/repo'
+      USING PUBLIC KEY '-----BEGIN PUBLIC KEY----- ...';
+  INSTALL zig_ext_v2 FROM myrepo;
+  LOAD zig_ext_v2 FROM myrepo;
+  SELECT zig_hello('reproduced'), zig_add_numbers(2, 3);
+  -- Hello, reproduced! | 5
+  ```
+  (A plain `LOAD <name>;` after this still won't trust `myrepo`'s key —
+  that's the deliberate security behavior quoted above, not a bug: a
+  repository merely redeploying a core-signed extension should still
+  load, but one signed only by the repository's own key should not,
+  unless the caller explicitly says which repository it trusts via
+  `FROM`.) The `repositories/<repo-name>/` subdirectory `INSTALL FROM`
+  caches into (noted as an unexplained gap in the 2026-10-15
+  re-verification above) is also now explained by the same code: it's
+  exactly where `ComputeLocalExtensionPath` looks when
+  `expect_user_repo` is true, i.e. precisely when `FROM <user-repo>` is
+  given — not a gap at all, just the other half of the same mechanism.
 
-**What this changes for the actual decision below**: nothing for *today*
-— the real, currently-releasable v1 extension still can't use this
-mechanism at all (confirmed: parser error), so the unsigned/GitHub-Pages
-path remains the right choice for distributing it now. But it changes
-the **future** story materially: once DuckDB 2.0 ships and this
-extension's v2 port is the one being distributed, self-hosted signing
-with a project-owned key — no community-extensions submission, no
-compiled-in DuckDB keys — looks like a real, intended, documented path,
-not a dead end. Worth a deliberate revisit at that point, not before.
+**What this changes for the actual decision below**: still nothing for
+*today* — the real, currently-releasable v1 extension still can't use
+this mechanism at all (confirmed: parser error), so the unsigned/GitHub-
+Pages path remains right for distributing it now. But the future story
+is now a confirmed, working mechanism, not an open question: once
+DuckDB 2.0 ships and this extension's v2 port is the one being
+distributed, self-hosted signing with a project-owned RSA key plus
+`CREATE EXTENSION REPOSITORY ... USING PUBLIC KEY` genuinely lets users
+`INSTALL`/`LOAD ... FROM <repo>` without `-unsigned` and without the
+official community-extensions submission process — reproduced live,
+end to end, with this project's own real `zig_ext_v2` binary. Worth
+building for real once v2 ships, not before.
 
 ## Decision
 
@@ -229,11 +235,15 @@ build doesn't need. Instead:
    startup-only option, same as `allow_extension_repositories` below) —
    exactly the flag this project's own test files and manual testing
    already rely on throughout this branch, so nothing new to explain.
-   Self-signing with a project-generated RSA key is a **later, optional**
-   addition purely for tamper-evidence (a security-conscious user could
-   verify the signature against a published public key before loading),
-   not a way to avoid `-unsigned` — don't build or document it as if it
-   were.
+   Self-signing with a project-generated RSA key remains a **later,
+   optional** addition for *this v1 extension specifically* — v1 has no
+   `CREATE EXTENSION REPOSITORY` mechanism at all (confirmed: parser
+   error), so for v1 today a self-signature really is tamper-evidence
+   only, not a way to avoid `-unsigned`. That is no longer true as a
+   general statement about this project's future v2 port, though: see
+   the confirmed, reproduced, working `LOAD ... FROM <repo>` mechanism
+   above — a real, documented way to avoid `-unsigned` entirely once v2
+   ships, worth building then.
 5. **Treat the official community-extensions program as a separate,
    later decision, not part of this one.** Submitting there would
    require wiring into the Make/CMake build contract this ADR just
