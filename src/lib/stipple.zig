@@ -208,11 +208,25 @@ fn cellStats(points: []const Point, cell_x: usize, cell_y: usize, cell_w: usize,
 
 /// Renders `points` (in pixel coordinates over a `width x height` field)
 /// as a `cell_cols x cell_rows` grid of `CellGlyph`s. Each cell's pixel
-/// footprint is `width/cell_cols` wide by `height/cell_rows` tall.
-/// Quantization is relative to the single busiest cell in the image (its
-/// count maps to the top of the top bin) — a density field with no
-/// points anywhere renders every cell as the emptiest Braille glyph
-/// (U+2800, no dots), not an error.
+/// footprint is `width/cell_cols` wide by `height/cell_rows` tall. A
+/// density field with no points anywhere renders every cell as the
+/// emptiest Braille glyph (U+2800, no dots), not an error.
+///
+/// Nonzero counts are min-max normalized against the *actual observed
+/// range* of nonzero counts in this image (not against 0..max_count) —
+/// so the single sparsest nonzero cell always maps to the bottom of the
+/// range (Braille) and the single busiest cell always maps to the top
+/// (`'█'`), regardless of the image's absolute density scale. Scaling
+/// against 0..max_count instead (an earlier version of this function
+/// did) breaks down whenever points are sparse relative to the number
+/// of cells: `max_count` itself can end up as low as 1-3, at which
+/// point even a single point per cell already lands past the bottom
+/// bin's cutoff and Braille is never selected anywhere in the image.
+/// Min-max normalization can't suffer that failure mode, by
+/// construction: the minimum observed count *is* the bottom of the
+/// range it's compared against. When every nonzero cell has the exact
+/// same count (no variation to normalize against), they all render as
+/// Braille — there's nothing for a shade gradient to express.
 pub fn renderCells(
     allocator: std.mem.Allocator,
     points: []const Point,
@@ -227,38 +241,31 @@ pub fn renderCells(
     const stats = try allocator.alloc(CellStats, cell_cols * cell_rows);
     defer allocator.free(stats);
 
+    var min_count: usize = std.math.maxInt(usize);
     var max_count: usize = 0;
     for (0..cell_rows) |cy| {
         for (0..cell_cols) |cx| {
             const s = cellStats(points, cx, cy, cell_w, cell_h);
             stats[cy * cell_cols + cx] = s;
+            if (s.count > 0 and s.count < min_count) min_count = s.count;
             if (s.count > max_count) max_count = s.count;
         }
     }
 
-    // Braille has 8 independently addressable sub-cell positions, so a
-    // cell can only ever *show* up to 8 distinct point positions through
-    // it — the natural, absolute boundary between "few enough points
-    // that Braille's sub-cell detail is informative" and "dense enough
-    // that an aggregate fill level says more than any dot pattern could".
-    // Earlier this was instead 5 bins scaled relative to `max_count`,
-    // which broke down whenever points were sparse relative to the
-    // number of cells (e.g. a wide/tall canvas with a modest point
-    // count): `max_count` itself could end up as low as 1-3, so even a
-    // single point per cell already saturated bin 4 (`'█'`) and Braille
-    // was never selected at all.
-    const braille_capacity = 8;
-
     const out = try allocator.alloc(CellGlyph, cell_cols * cell_rows);
     for (stats, 0..) |s, i| {
-        if (s.count == 0) {
-            out[i] = .{ .braille = braille_base };
-        } else if (s.count < braille_capacity) {
+        if (s.count == 0 or max_count == min_count) {
+            out[i] = if (s.count == 0) .{ .braille = braille_base } else .{ .braille = braille_base | s.braille_bits };
+            continue;
+        }
+        // 5 equal-width bins of [min_count, max_count]: bin 0 (sparsest)
+        // renders via Braille; bins 1-4 render via the 4 shade characters.
+        const normalized = @as(f32, @floatFromInt(s.count - min_count)) / @as(f32, @floatFromInt(max_count - min_count));
+        const bin: usize = @min(4, @as(usize, @intFromFloat(normalized * 5)));
+        if (bin == 0) {
             out[i] = .{ .braille = braille_base | s.braille_bits };
         } else {
-            const normalized = @as(f32, @floatFromInt(s.count)) / @as(f32, @floatFromInt(max_count));
-            const level: usize = @min(3, @as(usize, @intFromFloat(normalized * 4)));
-            out[i] = .{ .shade = shade_chars[level] };
+            out[i] = .{ .shade = shade_chars[bin - 1] };
         }
     }
     return out;
@@ -312,25 +319,39 @@ test "relax splits two points between two separated density blobs" {
     try std.testing.expect(near_low and near_high);
 }
 
-test "renderCells still picks Braille for sparse points when max_count is tiny" {
+test "renderCells still picks Braille for the sparsest cells when max_count is tiny" {
     const allocator = std.testing.allocator;
-    // 2 cells, each 2x4 px; cell 0 gets 1 point, cell 1 gets 2 — max_count
-    // is only 2, so the old max_count-relative binning would have put
-    // both cells past bin 0 and rendered only shade characters, never
-    // Braille (the bug a wide/tall canvas with few points triggered).
+    // 3 cells, each 2x4 px: cells 0 and 1 get 1 point each (the image's
+    // minimum nonzero count), cell 2 gets 3 (its maximum). max_count=3 is
+    // tiny in absolute terms — scaling against [0, max_count] (an
+    // earlier version of this function did) would already push a
+    // single-point cell past the bottom bin's cutoff, rendering shade
+    // everywhere and never Braille (the bug a wide/tall canvas with few
+    // points triggered). Min-max normalization against the *observed*
+    // range guarantees the minimum always lands at the bottom (Braille).
     const points = [_]Point{
         .{ .x = 0, .y = 0 },
         .{ .x = 2, .y = 0 },
-        .{ .x = 3, .y = 0 },
+        .{ .x = 4, .y = 0 },
+        .{ .x = 5, .y = 0 },
+        .{ .x = 5, .y = 1 },
     };
-    const glyphs = try renderCells(allocator, &points, 4, 4, 2, 1);
+    const glyphs = try renderCells(allocator, &points, 6, 4, 3, 1);
     defer allocator.free(glyphs);
 
-    try std.testing.expectEqual(@as(usize, 2), glyphs.len);
-    for (glyphs) |g| switch (g) {
+    try std.testing.expectEqual(@as(usize, 3), glyphs.len);
+    switch (glyphs[0]) {
         .braille => |cp| try std.testing.expect(cp != braille_base),
         .shade => return error.TestUnexpectedResult,
-    };
+    }
+    switch (glyphs[1]) {
+        .braille => |cp| try std.testing.expect(cp != braille_base),
+        .shade => return error.TestUnexpectedResult,
+    }
+    switch (glyphs[2]) {
+        .shade => |cp| try std.testing.expectEqual(@as(u21, '█'), cp),
+        .braille => return error.TestUnexpectedResult,
+    }
 }
 
 test "renderCells picks a Braille glyph for the sparsest bin and shade characters for denser bins" {

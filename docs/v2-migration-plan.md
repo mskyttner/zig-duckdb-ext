@@ -3054,31 +3054,49 @@ step. Parameters are configurable: `-Dstipple-url=`/`-Dstipple-width=`/
 demo:stipple -- -D...` passes these through).
 
 **A real rendering bug surfaced by exercising it against a different
-image/canvas size, and fixed**: `renderCells`'s original 5-bin
-quantization scaled each cell's point count *relative to the single
-busiest cell in the whole image* (`count / max_count`). That breaks
-down whenever points are sparse relative to the number of cells (a
-wider/taller canvas at the same point count, or just a less clustered
-image): `max_count` itself can end up as low as 1-3, at which point even
-a single point per cell already saturates past bin 0's `< 0.2` cutoff
-and renders as the densest shade character — Braille is never selected
-at all, for *any* cell in the image, confirmed live via `zig build
-demo-stipple -Dstipple-url=ziggy.png -Dstipple-width=160 -Dstipple-height=50`
-(a local 1024x1280 PNG), which rendered entirely in `▒`/`█` with no
-Braille whatsoever. Fixed by switching to an absolute boundary instead
-of a max_count-relative one: Braille has exactly 8 independently
-addressable sub-cell positions, so a cell renders as Braille whenever
-`count < 8` (positions can still show real detail) and as a shade
-character only once `count >= 8` (genuinely saturates what Braille can
-distinguish) — a boundary that no longer depends on how dense the rest
-of the image happens to be. Confirmed the fix against the reported case
-(Braille now renders throughout) and that the shade path still works
-when it should (`-Dstipple-points=20000` on the default canvas still
-produces `░▒▓█`). One side effect, not a regression: at the original
-default parameters (80x40, 2000 points), per-cell counts rarely reach
-8 anywhere, so that render is now almost entirely Braille rather than
-mixing in shade blocks — an accurate reflection of the image genuinely
-not being locally dense enough anywhere to need block aggregation, not
-a loss of information. Added a regression unit test
-(`renderCells still picks Braille for sparse points when max_count is tiny`)
-reproducing the original relative-binning failure mode directly.
+image/canvas size, and fixed in two passes**: `renderCells`'s original
+5-bin quantization scaled each cell's point count *relative to the
+single busiest cell in the whole image* (`count / max_count`, i.e.
+against the range `[0, max_count]`). That breaks down whenever points
+are sparse relative to the number of cells (a wider/taller canvas at
+the same point count, or just a less clustered image): `max_count`
+itself can end up as low as 1-3, at which point even a single point per
+cell already saturates past bin 0's `< 0.2` cutoff and renders as the
+densest shade character — Braille is never selected at all, for *any*
+cell in the image, confirmed live via `zig build demo-stipple
+-Dstipple-url=ziggy.png -Dstipple-width=160 -Dstipple-height=50` (a
+local 1024x1280 PNG), which rendered entirely in `▒`/`█` with no
+Braille whatsoever.
+
+First pass fixed this with an absolute boundary (Braille whenever
+`count < 8`, the number of Braille's independently addressable sub-cell
+positions; shade only once `count >= 8`) — correct, but came with a
+real cost pointed out directly: it discarded the actual *intensity
+signal* the project had been carrying for free. At the original default
+parameters (80x40, 2000 points), per-cell counts rarely reach 8
+anywhere, so that render came out almost entirely Braille, losing the
+`░▒▓` gradation the image's own density variation could have shown.
+
+**Second pass (the one actually kept)**: normalize against the
+*observed* range of nonzero counts in the image — `[min_nonzero_count,
+max_nonzero_count]` — instead of `[0, max_count]`. This can't reproduce
+the original bug *by construction*: the single sparsest nonzero cell's
+count **is** the bottom of the range it's compared against, so it
+always normalizes to exactly 0 and lands in bin 0 (Braille), no matter
+how small the absolute counts are anywhere in the image. When every
+nonzero cell happens to carry the same count (no variation to
+normalize against), they all render as Braille — there's nothing for a
+shade gradient to express. This is the same instinct as min-max
+feature-scaling anywhere else: normalize against the data's own actual
+range, not an arbitrary fixed one. Confirmed by actually counting
+glyphs rather than eyeballing: the `ziggy.png` case now contains ~2000
+real (nonblank) Braille codepoints; the original default-parameters
+leaves demo again shows a genuine `░▒▓█` mix (9 `█`, 36 `▓`, 105 `▒`,
+407 `░`) instead of collapsing to all-Braille; a denser run
+(`-Dstipple-points=20000`) still grades smoothly across all four shade
+levels. Updated the regression test
+(`renderCells still picks Braille for the sparsest cells when max_count
+is tiny`) to assert the actual invariant this fix guarantees — the
+minimum-count cells render as Braille, the maximum-count cell renders
+as `'█'` — rather than "every cell in a sparse image is Braille", which
+doesn't hold (and shouldn't) once real density variation exists.
