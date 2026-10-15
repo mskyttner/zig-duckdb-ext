@@ -85,6 +85,11 @@ tasks:
             WHERE length(t.token) > 3;
         "
 
+  demo:stipple:
+    desc: "Demo the v2-poc weighted-Voronoi-stippling extension against the example leaves image"
+    cmds:
+      - zig build demo-stipple
+
   bench:
     desc: "Benchmark scalar/table functions over 10M rows (ADR-0002)"
     deps: [build:release]

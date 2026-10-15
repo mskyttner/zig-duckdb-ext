@@ -663,6 +663,26 @@ pub fn build(b: *std.Build) void {
 
             const v2_poc_stipple_step = b.step("v2-poc-stipple", "Build the weighted-Voronoi-stippling v2 proof-of-concept .duckdb_extension file");
             v2_poc_stipple_step.dependOn(&install_v2_poc_stipple.step);
+
+            // ── Demo: run stipple_from_url_ct against the example image,
+            // printing the rendered result to stdout. Same pinned-CLI
+            // mechanism as `duckdb-extension-v2-poc` above.
+            {
+                const run_stipple_demo = if (duckdb_cli_v2) |cli| blk: {
+                    const r = std.Build.Step.Run.create(b, "run duckdb (v2-poc-stipple demo)");
+                    r.addFileArg(cli);
+                    break :blk r;
+                } else b.addSystemCommand(&.{"duckdb"});
+                run_stipple_demo.addArgs(&.{ "-unsigned", "-no-init", "-list", "-c" });
+                run_stipple_demo.addFileArg2(v2_poc_stipple_output, .{
+                    .prefix = "LOAD '",
+                    .suffix = "'; SELECT stipple_from_url_ct('https://dahtah.github.io/imager/images/stippling_leaves.png', 80, 40, 2000, 20);",
+                });
+                run_stipple_demo.stdio = .inherit;
+
+                const stipple_demo_step = b.step("demo-stipple", "Run stipple_from_url_ct against the example leaves image, printing the rendered result to stdout");
+                stipple_demo_step.dependOn(&run_stipple_demo.step);
+            }
         }
     }
 
