@@ -53,7 +53,30 @@ pub fn stippleFromUrl(
 
     var image = try zignal.Image(u8).init(allocator, @intCast(h), @intCast(w));
     defer image.deinit(allocator);
-    source.resize(io, allocator, image, .bilinear);
+
+    // Fit the source into the w x h box preserving its own aspect ratio
+    // (letterboxed), instead of force-stretching to exactly w x h.
+    // Confirmed live: stretching a perfectly square source image (e.g.
+    // `500circle.jpg`) into a w:h box that doesn't itself happen to be
+    // square (e.g. `-Dstipple-width=80 -Dstipple-height=50` -> a
+    // 160x200, 4:5 box) turns a circle into a visibly elongated oval.
+    // zignal's own `Image.letterbox` does this resize-preserving-aspect
+    // + centering, but pads with black (zero) — the wrong color for
+    // this project's "dark pixel -> high density" convention, since
+    // padding should mean "no ink here" (bright/low-density), not
+    // maximum density. So this does the same fit-and-center computation
+    // manually, filling the padding with white (255) first instead.
+    image.fill(255);
+    const src_cols: f32 = @floatFromInt(source.cols);
+    const src_rows: f32 = @floatFromInt(source.rows);
+    const fit_scale = @min(@as(f32, @floatFromInt(w)) / src_cols, @as(f32, @floatFromInt(h)) / src_rows);
+    const fit_w: u32 = @max(1, @as(u32, @intFromFloat(@round(src_cols * fit_scale))));
+    const fit_h: u32 = @max(1, @as(u32, @intFromFloat(@round(src_rows * fit_scale))));
+    const off_x: u32 = (@as(u32, @intCast(w)) - fit_w) / 2;
+    const off_y: u32 = (@as(u32, @intCast(h)) - fit_h) / 2;
+    const fit_rect: zignal.Rectangle(u32) = .init(off_x, off_y, off_x + fit_w, off_y + fit_h);
+    const fit_view = image.view(fit_rect);
+    source.resize(io, allocator, fit_view, .bilinear);
 
     const pixels = image.data[0 .. w * h];
 

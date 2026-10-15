@@ -3184,3 +3184,49 @@ expected values, confirming the grid-acceleration change alone didn't
 shift any numeric outcome). `task check:all` and `zig build v2-check`
 pass; live-verified the default leaves demo and the `ziggy.png` case
 both still render correctly and quickly (~1.6s) after both changes.
+
+### A real aspect-ratio bug: source images were force-stretched, not fit (fixed, 2026-10-15)
+
+Prompted by a question about whether the 2px-wide x 4px-tall per-
+character sampling block itself needed widening for aspect correctness
+(it doesn't — that block already matches a typical ~1:2 width:height
+monospace terminal cell, same convention `braille_image.zig` already
+uses), then a concrete repro: `zig build demo-stipple
+-Dstipple-url=500circle.jpg -Dstipple-width=80 -Dstipple-height=50`
+(the reference tool's own sample circle image, a perfectly square
+500x500 JPEG) rendered as a visibly **elongated oval**, not a circle.
+
+Root cause was different from (and more basic than) the per-character
+block shape: `stippleFromUrl` resized the loaded source image to
+*exactly* `width*2 x height*4` pixels via `source.resize(...)`,
+regardless of the source image's own aspect ratio — force-stretching a
+square image into whatever box shape the caller's `width`/`height`
+happened to imply. For `-Dstipple-width=80 -Dstipple-height=50`, that
+box is 160x200 (4:5), so a square source got squashed to a 4:5
+rectangle: an oval, exactly as observed. The existing demo defaults
+(80x40, close to a 1:2 box) only looked right by accident, because the
+leaves/ziggy source images both happen to be close to square too — the
+bug was latent until a caller picked dimensions and a source image that
+didn't coincidentally line up. The same latent bug exists in
+`braille_image.zig`, which uses the identical unconditional-stretch
+resize — not touched here, out of scope for this fix.
+
+**Fixed** by fitting the source into the `width*2 x height*4` box while
+preserving its own aspect ratio (letterboxed) instead of stretching to
+fill it: compute the largest scale that fits the source's `cols x rows`
+inside the box, resize into a centered sub-rectangle of that size, and
+fill everything else with white padding first. zignal's `Image.letterbox`
+already does the fit-and-center computation, but pads with black
+(zero) — wrong for this project's "dark pixel → high density"
+convention, since padding should mean *no ink here* (bright, zero
+density), not maximum density; using it as-is would frame every
+stipple in a border of fake maximum-density points. So the fit/center
+math is done manually in `stipple_image.zig` instead (`image.fill(255)`
+first, then resize into a computed centered `zignal.Rectangle` view),
+rather than patching `letterbox`'s output to re-flip its padding color.
+Confirmed live: the same `500circle.jpg`/`-Dstipple-width=80
+-Dstipple-height=50` command now renders a round, centered stipple with
+blank letterbox padding above and below, and the pre-existing
+leaves/ziggy regression cases (already close to the box's own aspect
+ratio, so only minimally affected) still render correctly. `task
+check:all` and `zig build v2-check` pass.
