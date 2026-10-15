@@ -617,6 +617,55 @@ pub fn build(b: *std.Build) void {
         v2_poc_braille_step.dependOn(&install_v2_poc_braille.step);
     }
 
+    // ── v2 proof-of-concept: weighted-Voronoi-stippling demo (zignal +
+    // zigcv dependencies, isolated) ───────────────────────────────────────
+    // Same full-isolation reasoning as the braille demo above, for both
+    // dependencies at once: the only place in the project pulling in
+    // `zigcv`, and a second (independent) place pulling in `zignal`. See
+    // src/ext/init_v2_poc_stipple.zig's own doc comment for what it
+    // registers and src/lib/stipple.zig's for the algorithm itself.
+    if (b.lazyDependency("zignal", .{ .target = target, .optimize = optimize })) |zignal_dep_2| {
+        if (b.lazyDependency("zigcv", .{ .target = target, .optimize = optimize })) |zigcv_dep| {
+            const stipple_mod = b.createModule(.{
+                .root_source_file = b.path("src/lib/stipple.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            const stipple_check = b.addTest(.{ .root_module = stipple_mod });
+            const run_stipple_check = b.addRunArtifact(stipple_check);
+            v2_check_step.dependOn(&run_stipple_check.step);
+
+            const stipple_image_mod = b.createModule(.{
+                .root_source_file = b.path("src/lib/stipple_image.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            stipple_image_mod.addImport("zignal", zignal_dep_2.module("zignal"));
+            stipple_image_mod.addImport("zigcv", zigcv_dep.module("zigcv"));
+            stipple_image_mod.addImport("stipple", stipple_mod);
+
+            const v2_poc_stipple_lib = b.addLibrary(.{
+                .linkage = .dynamic,
+                .name = "zig_ext_v2_poc_stipple",
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("src/ext/init_v2_poc_stipple.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                }),
+            });
+            v2_poc_stipple_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
+            v2_poc_stipple_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
+            v2_poc_stipple_lib.root_module.addImport("stipple_image", stipple_image_mod);
+            v2_poc_stipple_lib.root_module.link_libc = true;
+
+            const v2_poc_stipple_output = addDuckdbExtensionMetadata(b, v2_poc_stipple_lib, "zig_ext_v2_poc_stipple", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
+            const install_v2_poc_stipple = b.addInstallFile(v2_poc_stipple_output, "lib/zig_ext_v2_poc_stipple.duckdb_extension");
+
+            const v2_poc_stipple_step = b.step("v2-poc-stipple", "Build the weighted-Voronoi-stippling v2 proof-of-concept .duckdb_extension file");
+            v2_poc_stipple_step.dependOn(&install_v2_poc_stipple.step);
+        }
+    }
+
     // ── Shared library (the DuckDB extension) ────────────────────────────
     const lib = b.addLibrary(.{
         .linkage = .dynamic,

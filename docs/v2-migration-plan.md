@@ -2874,3 +2874,99 @@ path genuinely works, not just the synthetic stand-in). **Practical
 takeaway for the function's own usage going forward**: always pass an
 absolute path for `cmd`, not a bare command name — documented in the
 function's own doc comment and demonstrated above.
+
+### Weighted-Voronoi-stippling v2-poc demo (done, 2026-10-15)
+
+Prompted by: a suggestion to combine `github.com/guanchzhou/zig-planar`
+(Delaunay/Voronoi) with `github.com/mgbilby/zigcv` (compatible with
+`zignal`) to stipple an image per Secord's 2002 "Weighted Voronoi
+Stippling" paper, rendered as Unicode block-shade characters with
+Braille for the sparsest regions.
+
+**Investigated `zig-planar` first and found it doesn't apply at all**:
+read its full 2,677-line source — it's a pure graph-theory library
+(planarity testing, Kuratowski certificates, graph coloring, multi-
+source shortest paths on abstract `(n, edge-list)` graphs), zero
+mentions of "delaunay"/"voronoi" anywhere in the code. "Delaunay
+triangulation" appears only in its README as an example *input* graph
+for benchmarking planarity/coloring — not something the library
+produces. Searched GitHub broadly for a Zig Delaunay/Voronoi
+alternative and found none credible (every hit was an unstarred hobby
+project, one literally self-described as "a failed biome generator").
+
+**Resolved by realizing no Delaunay/Voronoi library is actually needed**:
+Lloyd relaxation (the core of weighted Voronoi stippling) only needs,
+per iteration, "which seed is each sample nearest to" and "the weighted
+centroid of each such group" — a **rasterized nearest-seed assignment**
+over the density field's own pixel grid gives exactly that, with no
+explicit Voronoi polygon construction at all. A standard, not a
+makeshift, way to implement discretized Lloyd relaxation; removes the
+library dependency question entirely.
+
+**Built**:
+- `src/lib/stipple.zig` — the pure algorithm core, no image/zignal/zigcv
+  dependency at all: `throwDarts` (weighted dart-throwing, rejection
+  sampling against a density field), `relaxOnce`/`relax` (the Lloyd
+  relaxation loop), `renderCells` (quantizes point density per output
+  character cell into 5 levels — the sparsest renders as a real Braille
+  codepoint with sub-cell dot positions set from which of the 8 (2-wide
+  x 4-tall) sub-regions contain a point, identical dot/bit-weight
+  mapping to `braille_image.zig`'s own; the 4 denser levels render as
+  one of `░▒▓█`). 4 unit tests: dart-throwing only samples where density
+  is nonzero, relaxation pulls a point toward an asymmetric density's
+  true weighted centroid, relaxation splits two points between two
+  separated density blobs, and `renderCells` picks the right glyph kind
+  per bin.
+- `src/lib/stipple_image.zig` — the image-I/O glue, mirroring
+  `braille_image.zig`'s own `loadGray`/URL-or-path shape: loads
+  grayscale via `zignal`, Gaussian-blurs via `zigcv` (pre-smooths the
+  density field before dart-throwing so points don't clump on single-
+  pixel noise), derives the density field (dark pixels → high density,
+  normalized against the blurred image's own min/max), then calls
+  `stipple.zig`'s pure core and formats the result as `height` lines of
+  `width` mixed Braille/shade characters.
+- `zig_v2_stipple_from_url_ct(url, width, height, n_points, iterations) -> VARCHAR`
+  in a new, fully isolated `init_v2_poc_stipple.zig`/`zig build
+  v2-poc-stipple` extension (same "completely separate extension, lazy
+  dependencies, nothing else affected if it breaks" pattern
+  `init_v2_poc_braille.zig` already established) — the only place in the
+  project pulling in `zigcv`, and a second, independent place pulling in
+  `zignal`.
+
+**A real pinning bug found and fixed**: `zigcv` was initially pinned via
+`https://github.com/mgbilby/zigcv/archive/refs/tags/v0.18.0.tar.gz` (a
+GitHub auto-generated tag-tarball URL) — `zig fetch` of that exact URL
+on two separate occasions returned **two different content hashes**,
+and building against either one produced `error: unable to find module
+"zigcv"` (confirmed, via a direct debug dump of the dependency's own
+module table, that its `build()` genuinely registered zero modules —
+not a lookup-name typo). Isolated via a minimal standalone reproduction
+outside this project entirely, confirming it wasn't anything specific
+to this project's own build graph. Root cause: GitHub's `archive/refs/
+tags/*.tar.gz` endpoints are **not guaranteed byte-reproducible across
+separate downloads** (no stable embedded timestamps/ordering) — a real,
+documented class of gotcha, not a zigcv-specific problem. Fixed by
+switching to `git+https://github.com/mgbilby/zigcv#<exact-commit>`
+(content-addressed by git itself, reproducible), the exact same pinning
+convention this project's own `zignal` dependency already uses — now
+resolves to the same module every time, confirmed via repeated `zig
+fetch`.
+
+**A real runtime bug found and fixed**: `zigcv.gaussianBlur`'s default
+`Params{}` has `kx=ky=0` *and* `sigma_x=sigma_y=0` — "derive kernel size
+from sigma" and "derive sigma from kernel size" are each individually
+valid lazy-default conventions, but supplying *both* as zero at once
+gives `zigcv`'s own `resolve()` nothing to derive a valid odd kernel
+size from, hitting `assert(kx % 2 == 1 and ky % 2 == 1)` — confirmed
+live, this crashed the whole DuckDB process (a real panic, caught via a
+full native stack trace through DuckDB's own C++ expression evaluator).
+Fixed by passing an explicit `.{ .kx = 5, .ky = 5 }`.
+
+**Live-verified against the real pinned v2.0.0-alpha46057 runtime** with
+the real test image the user supplied
+(`https://dahtah.github.io/imager/images/stippling_leaves.png`): the
+rendered output is a genuinely recognizable leaf-and-stem silhouette —
+sparse Braille detail at the edges, denser `░▒▓` shading toward the
+interior, `█` at the single densest spot — not just "it didn't crash."
+`task check:all`, `v2-check`, `ext-v2`, and both sqllogictest suites all
+pass.

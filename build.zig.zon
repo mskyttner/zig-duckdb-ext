@@ -135,6 +135,32 @@
             .hash = "zignal-0.11.0-dev-OrZ3s2R2KgBB2VYMukzzVm2viQ8UBwnYIBXVbaTZ7M8M",
             .lazy = true,
         },
+        // OpenCV-bit-exact kernels, needed only by the weighted-Voronoi-
+        // stippling v2-poc demo (src/lib/stipple_image.zig) for its
+        // Gaussian-blur pre-smoothing step — a separate, isolated demo
+        // from the braille one above, so its own dependency stays lazy
+        // and doesn't affect anything else. `blurU8`/`blurF32` take raw
+        // slices (no zigcv-specific image type), directly compatible
+        // with a `zignal.Image(u8)`'s own `.data` field — confirmed via
+        // zigcv's own README ("decode to an 8-bit grey or RGB slice and
+        // hand it to zigcv") and `src/gauss.zig`'s actual signatures.
+        //
+        // Pinned via `git+...#<commit>` (tag v0.18.0's exact commit),
+        // NOT the `archive/refs/tags/*.tar.gz` URL this was originally
+        // pinned with — confirmed live that GitHub's auto-generated tag
+        // tarballs are not reliably byte-reproducible across separate
+        // downloads (repeated `zig fetch` of the identical tag URL
+        // produced two different content hashes, which then made
+        // `b.dependency(...).module("zigcv")` fail with "unable to find
+        // module" — the fetched package's `build()` never ran against
+        // the hash this manifest expected). `git+...#<commit>` is
+        // content-addressed by git itself and reproducible, same
+        // convention already used for `zignal` above.
+        .zigcv = .{
+            .url = "git+https://github.com/mgbilby/zigcv#44a4306dfdc061d11ba99b9f517fe1f9e5a18ebd",
+            .hash = "zigcv-0.18.0-rNqqFhl8BABuG4b4Ve8vmxxUOmy9KlXiBTVZYliWYo3v",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
