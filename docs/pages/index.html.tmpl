@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zig-duckdb-ext</title>
-<meta name="description" content="A DuckDB extension written in Zig, demonstrating scalar and table functions over the v1 C extension API, with an experimental parallel port to DuckDB's unreleased v2.0 C API.">
+<meta name="description" content="{{DESCRIPTION}}">
 <style>
   :root { color-scheme: light dark; }
   body {
@@ -55,23 +55,25 @@
 <body>
 
 <h1>zig-duckdb-ext</h1>
-<p class="summary">A DuckDB extension written in Zig — scalar and table functions over the stable v1 C extension API, with an experimental, parallel port to DuckDB's staged, unreleased v2.0 C API.</p>
+<p class="summary">{{DESCRIPTION}}</p>
 <p class="meta">
-  Maintained by <a href="https://github.com/mskyttner">mskyttner</a>
-  &middot; <a href="https://github.com/mskyttner/zig-duckdb-ext">GitHub repository</a>
-  &middot; branch <code>duckdb-v2-api</code>
+  Maintained by {{MAINTAINERS_HTML}}
+  &middot; <a href="{{REPO_URL}}">GitHub repository</a>
+  &middot; branch <code>{{REPO_REF}}</code>
+  &middot; v{{VERSION}}
+  &middot; {{LICENSE}} license
 </p>
 
 <h2 id="installing-and-loading">Installing and Loading</h2>
 <pre><code>duckdb -unsigned
 
-INSTALL zig_ext FROM 'https://mskyttner.github.io/zig-duckdb-ext/';
-LOAD zig_ext;
-</code></pre>
+{{HELLO_WORLD_HTML}}</code></pre>
 <p>Not signed, so <code>-unsigned</code> is required — see <a href="https://github.com/mskyttner/zig-duckdb-ext/blob/duckdb-v2-api/docs/rationale/0004_extension-distribution-and-signing.md">ADR-0004</a> for why.</p>
 
-<h2 id="about-zig_ext">About zig_ext</h2>
-<p>Demonstrates building DuckDB scalar and table functions in Zig with direct C-API interop (no C++ ABI coupling to DuckDB internals — see <a href="https://github.com/mskyttner/zig-duckdb-ext/blob/duckdb-v2-api/docs/rationale/0001_zig-over-cpp-for-duckdb-ext.md">ADR-0001</a>), and a <code>comptime</code> framework that generates vectorized callbacks and registration boilerplate from plain per-row Zig functions — see the <a href="docs/">API docs</a> and the project <a href="https://github.com/mskyttner/zig-duckdb-ext#readme">README</a> for the full picture.</p>
+<h2 id="about-zig_ext">About {{NAME}}</h2>
+<p>{{EXTENDED_DESCRIPTION}}</p>
+<p>See <a href="https://github.com/mskyttner/zig-duckdb-ext/blob/duckdb-v2-api/docs/rationale/0001_zig-over-cpp-for-duckdb-ext.md">ADR-0001</a> for why no C++ ABI coupling to DuckDB internals, the <a href="docs/">API docs</a> for the full function reference, and the project <a href="https://github.com/mskyttner/zig-duckdb-ext#readme">README</a> for the full picture.</p>
+<p><em>This section (summary, maintainers, version, license, install example, extended description) is generated from <a href="https://github.com/mskyttner/zig-duckdb-ext/blob/main/description.yml"><code>description.yml</code></a>, in the schema <a href="https://duckdb.org/community_extensions/documentation#yaml-descriptor">DuckDB's official community-extensions program</a> uses — this project isn't submitted there (see ADR-0004), but keeps its own metadata in that same real, standardized shape rather than an invented one.</em></p>
 
 <h2 id="added-functions">Added Functions</h2>
 <table>

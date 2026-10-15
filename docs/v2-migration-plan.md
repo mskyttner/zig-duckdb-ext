@@ -2312,6 +2312,80 @@ whether `zig build` drives the `duckdb_functions()` query via the
 already-pinned v1 CLI or a similar lazy-dependency-gated mechanism to
 `v2-poc-braille`'s).
 
+**Update, 2026-10-15**: the "small hand-maintained metadata file" half
+of this hybrid is now built — see "description.yml alignment" below.
+The `duckdb_functions()`-driven signature half remains unbuilt; the
+Added Functions table is still hand-maintained directly in the
+template, by design (see that section for why the two stayed separate).
+
+## description.yml alignment with DuckDB's community-extensions schema (done, 2026-10-15)
+
+Prompted by "align the way the community-extensions
+[YAML descriptor](https://duckdb.org/community_extensions/documentation#yaml-descriptor)
+expects documentation to be generated/distributed, with an eye on this
+project's own custom-repository distribution." Checked both the
+descriptor docs and the extension-repositories docs directly before
+building anything, which corrected the premise: **`description.yml`
+belongs to the *official* community-extensions program's own CI
+(CMake-based build/test/deploy, submitted via PR to
+`duckdb/community-extensions`)** — the exact pipeline this project
+already opted out of (ADR-0004 §1). The `CREATE EXTENSION REPOSITORY`
+mechanism this project actually uses has **no connection** to
+`description.yml` at all — confirmed on the extension-repositories docs
+page itself: a custom repo is just a name, a URL prefix, and RSA public
+keys, no GitHub-specific or descriptor-shaped mechanism anywhere.
+
+Adopted `description.yml` anyway, as this project's own canonical
+metadata source, in the real schema (not an invented one):
+`extension.{name,description,version,language,build,license,
+maintainers}`, `repo.{github,ref}`, `docs.{hello_world,
+extended_description}`. This is exactly the "small hand-maintained
+metadata file" the parked design above wanted, now in a real,
+standardized shape instead of a bespoke one — and it keeps a future
+official submission cheap if ever pursued later (a separate decision,
+ADR-0004 §5). One deliberate, documented deviation: `extension.build:
+zig`, not `cmake` (the schema's docs say only `cmake` is officially
+supported right now) — stated as an honest gap, not disguised.
+
+Added `LICENSE` (MIT) at the repo root — required by
+`extension.license`, and the project had none before.
+
+Built and wired end to end, not just drafted:
+- `src/lib/description_yaml.zig` — a narrow, purpose-built parser for
+  exactly this file's own shape (3 top-level maps, 2-space-indented
+  keys/lists, `>-` folded and `|` literal block scalars), explicitly
+  not a general YAML parser. One unit test, plus a scratch-verified
+  round-trip against the real file. Two real bugs caught while writing
+  it: block-scalar content lines are indented 4 spaces (one level
+  deeper than the 2-space key), not 6 as first assumed; and
+  `std.mem.trimRight`/`trimLeft` were renamed to `trimEnd`/`trimStart`
+  in Zig 0.17.
+- `src/gen_docs_index_main.zig` (`zig build docs-index`) — generates
+  `docs/pages/index.html` from `docs/pages/index.html.tmpl` +
+  `description.yml` via plain `{{TOKEN}}` substitution. Deliberately
+  narrow: only the fields `description.yml` actually covers (summary,
+  maintainers, version, license, install example, extended
+  description) are generated; the Added Functions table, platform
+  support, and v2-port sections stay hand-maintained in the template —
+  matching the real schema's own scope ("documentation for functions
+  ... is auto-detected rather than declared in the file").
+- `docs/pages/index.html` (the old static file) converted to
+  `docs/pages/index.html.tmpl`, with the old file removed from git —
+  keeping one source of truth instead of two files that could drift.
+- `build.zig`'s `docs-index` step rewired: `description_yaml` module
+  (test wired into `v2_check_step`) → `gen_docs_index_exe` →
+  `addRunArtifact` writing straight into the same
+  `addInstallFile(..., "index.html")` the release workflow already
+  copies from (`zig-out/index.html` unchanged, `.github/workflows/release.yml`
+  unaffected).
+
+**Verified, not just built**: `zig build docs-index` generates a clean
+`zig-out/index.html` with every token substituted correctly (meta line
+shows "branch main · v0.1.0 · MIT license", install block shows the
+real hello_world SQL, About section shows the generated
+extended_description). `task check:all`, `zig build v2-check`, and
+`zig build dist` (all 7 platforms) all pass with the new step wired in.
+
 ## SIMD matrix multiplication v2-poc demo (done, 2026-10-14)
 
 Prompted by "what would especially interesting POC examples be given

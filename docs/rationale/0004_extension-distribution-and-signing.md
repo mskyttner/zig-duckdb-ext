@@ -341,6 +341,63 @@ build doesn't need. Instead:
   else in this project) correctly ran `zig_add_numbers`/`tp_bar` end to
   end, from the actual published URL.
 
+### Follow-up: `description.yml` as the project's own metadata source (done, 2026-10-15)
+
+Prompted by a request to align with DuckDB's official community-
+extensions [YAML descriptor](https://duckdb.org/community_extensions/documentation#yaml-descriptor)
+format, with an eye toward this project's own custom-repository
+distribution path above. Checked both the descriptor docs and the
+extension-repositories docs directly (not from memory) to correct a
+premise first: **`description.yml` is specific to the *official*
+community-extensions program's own CMake-based build/test/deploy CI —
+the exact Make/CMake/S3 pipeline this ADR's "Decision" §1 already opted
+out of.** The `CREATE EXTENSION REPOSITORY` mechanism (this project's
+own real distribution path) has no connection to `description.yml` at
+all — confirmed directly on the extension-repositories docs page, which
+describes a custom repository as nothing more than a name, a URL
+prefix (any host DuckDB can read), and RSA public keys; no GitHub-
+specific or `description.yml`-shaped mechanism exists there.
+
+Adopted anyway, as this project's own canonical metadata source —
+`description.yml` at the repo root, in the real schema (confirmed
+field-by-field against the docs: `extension.{name,description,version,
+language,build,license,maintainers}`, `repo.{github,ref}`,
+`docs.{hello_world,extended_description}`) rather than an invented ad
+hoc one. Two reasons, not one: it resolves the "Dynamic landing-page
+generation from function metadata" idea `docs/v2-migration-plan.md`
+parked on 2026-10-13 (the "small hand-maintained metadata file" that
+design wanted now has a real, standardized shape instead of a bespoke
+one), and it keeps a future official submission cheap if that's ever
+separately decided (this ADR's "Decision" §5). One field deviates
+honestly from the official schema: `extension.build: zig`, not `cmake`
+— the schema's own docs say "at the moment only `cmake` is supported"
+for the official program's CI, which this project's Zig-native build
+deliberately doesn't use; a real submission would need to resolve that
+gap first, and this file doesn't pretend otherwise in the meantime.
+
+Also added a real `LICENSE` (MIT) — this project had none before,
+despite `description.yml`'s own `extension.license` field needing one.
+
+**Wired, not just drafted**: `src/lib/description_yaml.zig` is a
+narrow, purpose-built parser for exactly this file's own shape (3
+top-level maps, 2-space-indented scalars/lists, `>-` folded and `|`
+literal block scalars) — explicitly not a general YAML parser, since
+Zig's stdlib has none and a general one is unneeded scope for a file
+this project authors itself. `src/gen_docs_index_main.zig` (`zig build
+docs-index`) now *generates* `docs/pages/index.html` from
+`docs/pages/index.html.tmpl` + `description.yml` via plain
+`{{TOKEN}}` substitution, replacing what was a static hand-written
+file. Deliberately narrow scope: only the fields `description.yml`
+actually covers (summary, maintainers, version, license, install
+example, extended description) are generated; the Added Functions
+table, platform support, and v2-port sections stay hand-maintained
+directly in the template — matching the real schema's own scope
+("documentation for functions ... is auto-detected rather than
+declared in the file"), not something this change tries to also solve.
+`zig build dist`/the release workflow's merge step are unaffected
+(same output path, `zig-out/index.html`, now populated by generation
+instead of a copy).
+
 ## Consequences
 
 - Distribution becomes achievable with a GitHub Actions workflow this

@@ -770,12 +770,39 @@ pub fn build(b: *std.Build) void {
         dist_step.dependOn(docs_v2_step);
     }
     {
-        // The static GitHub Pages landing page (docs/pages/index.html) —
-        // its own step, same sibling pattern as `docs`/`docs-v2`, so it's
-        // independently buildable/testable rather than only ever
-        // appearing as a side effect of `zig build dist`.
-        const install_docs_index = b.addInstallFile(b.path("docs/pages/index.html"), "index.html");
-        const docs_index_step = b.step("docs-index", "Install the static GitHub Pages landing page");
+        // The GitHub Pages landing page: generated from
+        // docs/pages/index.html.tmpl + description.yml (see
+        // src/gen_docs_index_main.zig and src/lib/description_yaml.zig's
+        // own doc comments) rather than a static file — its own step,
+        // same sibling pattern as `docs`/`docs-v2`, so it's independently
+        // buildable/testable rather than only ever appearing as a side
+        // effect of `zig build dist`.
+        const description_yaml_mod = b.createModule(.{
+            .root_source_file = b.path("src/lib/description_yaml.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const description_yaml_check = b.addTest(.{ .root_module = description_yaml_mod });
+        const run_description_yaml_check = b.addRunArtifact(description_yaml_check);
+        v2_check_step.dependOn(&run_description_yaml_check.step);
+
+        const gen_docs_index_exe = b.addExecutable(.{
+            .name = "gen_docs_index",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/gen_docs_index_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        gen_docs_index_exe.root_module.addImport("description_yaml", description_yaml_mod);
+
+        const run_gen_docs_index = b.addRunArtifact(gen_docs_index_exe);
+        run_gen_docs_index.addFileArg(b.path("description.yml"));
+        run_gen_docs_index.addFileArg(b.path("docs/pages/index.html.tmpl"));
+        const generated_index = run_gen_docs_index.addOutputFileArg("index.html");
+
+        const install_docs_index = b.addInstallFile(generated_index, "index.html");
+        const docs_index_step = b.step("docs-index", "Generate and install the GitHub Pages landing page");
         docs_index_step.dependOn(&install_docs_index.step);
         dist_step.dependOn(docs_index_step);
     }
