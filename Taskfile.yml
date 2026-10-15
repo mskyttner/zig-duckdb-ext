@@ -86,9 +86,9 @@ tasks:
         "
 
   demo:stipple:
-    desc: "Demo the v2-poc weighted-Voronoi-stippling extension against the example leaves image"
+    desc: "Demo the v2-poc weighted-Voronoi-stippling extension (override with -- -Dstipple-url=... -Dstipple-width=... -Dstipple-height=... -Dstipple-points=... -Dstipple-iterations=...)"
     cmds:
-      - zig build demo-stipple
+      - zig build demo-stipple {{.CLI_ARGS}}
 
   bench:
     desc: "Benchmark scalar/table functions over 10M rows (ADR-0002)"

@@ -60,6 +60,13 @@ fn duckdbV2CliLazyPath(b: *std.Build) ?std.Build.LazyPath {
     return dep.path("duckdb");
 }
 
+/// Escape a string for embedding as a single-quoted SQL string literal
+/// (doubles any embedded single quotes). Used for `-D`-supplied values
+/// substituted into a `-c` command string handed to the DuckDB CLI.
+fn sqlQuoteLiteral(b: *std.Build, s: []const u8) []const u8 {
+    return std.mem.replaceOwned(u8, b.allocator, s, "'", "''") catch @panic("OOM");
+}
+
 /// Append DuckDB extension metadata to an already-configured shared
 /// library, producing a `.duckdb_extension` file. Factors out the
 /// metadata-tool-executable + run-command + four-args + output-arg
@@ -206,6 +213,17 @@ pub fn build(b: *std.Build) void {
         "dist-version",
         "DuckDB client version directory for `dist` packaging (default: v1.5.6)",
     ) orelse "v1.5.6";
+
+    // `demo-stipple` step parameters — see its definition below.
+    const stipple_demo_url = b.option(
+        []const u8,
+        "stipple-url",
+        "Image URL for `demo-stipple` (default: the example leaves image)",
+    ) orelse "https://dahtah.github.io/imager/images/stippling_leaves.png";
+    const stipple_demo_width = b.option(u32, "stipple-width", "Canvas width (chars) for `demo-stipple` (default: 80)") orelse 80;
+    const stipple_demo_height = b.option(u32, "stipple-height", "Canvas height (chars) for `demo-stipple` (default: 40)") orelse 40;
+    const stipple_demo_points = b.option(u32, "stipple-points", "Number of stipple points for `demo-stipple` (default: 2000)") orelse 2000;
+    const stipple_demo_iterations = b.option(u32, "stipple-iterations", "Lloyd relaxation iterations for `demo-stipple` (default: 20)") orelse 20;
 
     // `-Dname=`/`-Dapi-version=` must also reach `src/ext/init.zig`'s
     // actual exported entry point, not just the metadata footer —
@@ -676,11 +694,17 @@ pub fn build(b: *std.Build) void {
                 run_stipple_demo.addArgs(&.{ "-unsigned", "-no-init", "-list", "-c" });
                 run_stipple_demo.addFileArg2(v2_poc_stipple_output, .{
                     .prefix = "LOAD '",
-                    .suffix = "'; SELECT stipple_from_url_ct('https://dahtah.github.io/imager/images/stippling_leaves.png', 80, 40, 2000, 20);",
+                    .suffix = b.fmt("'; SELECT stipple_from_url_ct('{s}', {d}, {d}, {d}, {d});", .{
+                        sqlQuoteLiteral(b, stipple_demo_url),
+                        stipple_demo_width,
+                        stipple_demo_height,
+                        stipple_demo_points,
+                        stipple_demo_iterations,
+                    }),
                 });
                 run_stipple_demo.stdio = .inherit;
 
-                const stipple_demo_step = b.step("demo-stipple", "Run stipple_from_url_ct against the example leaves image, printing the rendered result to stdout");
+                const stipple_demo_step = b.step("demo-stipple", "Run stipple_from_url_ct against an image (default: the example leaves image), printing the rendered result to stdout. Override with -Dstipple-url=, -Dstipple-width=, -Dstipple-height=, -Dstipple-points=, -Dstipple-iterations=");
                 stipple_demo_step.dependOn(&run_stipple_demo.step);
             }
         }
