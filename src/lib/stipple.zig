@@ -71,22 +71,158 @@ pub fn throwDarts(
     return points.toOwnedSlice(allocator);
 }
 
+/// A uniform spatial grid over `points`, built once per `relaxOnce` call,
+/// answering "which point is nearest to this pixel" without scanning
+/// every point for every pixel.
+///
+/// The reference C++ implementation this POC is checked against
+/// (`Weighted-Voronoi-Stippling`, using OpenCV's `Subdiv2D`) gets this
+/// for free from a real Delaunay/Voronoi diagram: `O(n log n)` to build,
+/// then each pixel is visited once via per-cell rasterization. This
+/// project deliberately doesn't depend on a Delaunay/Voronoi library
+/// (see this file's own top doc comment) — a uniform grid gets the same
+/// practical speedup a different way: bucket points into cells sized so
+/// each holds ~1 point on average, then a pixel only needs to search its
+/// own cell and a small, correctness-guaranteed ring around it, not
+/// every point in the image. This turns the brute-force scan's
+/// `O(points.len)` per pixel into an amortized `O(1)`.
+const PointGrid = struct {
+    cell_size: usize,
+    cols: usize,
+    rows: usize,
+    /// `cell_start[c]..cell_start[c+1]` indexes into `bucket` for the
+    /// points in cell `c` (classic counting-sort bucketing, length
+    /// `cols*rows + 1`).
+    cell_start: []usize,
+    /// Point indices grouped by cell, length `points.len`.
+    bucket: []usize,
+
+    fn init(allocator: std.mem.Allocator, points: []const Point, width: usize, height: usize) !PointGrid {
+        // Size cells so each holds ~1 point on average: too small wastes
+        // time visiting many near-empty cells, too large degenerates
+        // back toward a brute-force scan of the whole cell.
+        const area: f32 = @floatFromInt(width * height);
+        const avg_area_per_point = area / @as(f32, @floatFromInt(points.len));
+        const cell_size: usize = @max(1, @as(usize, @intFromFloat(@sqrt(avg_area_per_point))));
+
+        const cols = @max(1, (width + cell_size - 1) / cell_size);
+        const rows = @max(1, (height + cell_size - 1) / cell_size);
+        const n_cells = cols * rows;
+
+        const cell_of_point = try allocator.alloc(usize, points.len);
+        defer allocator.free(cell_of_point);
+        const cell_start = try allocator.alloc(usize, n_cells + 1);
+        @memset(cell_start, 0);
+
+        for (points, 0..) |p, i| {
+            const cx = @min(cols - 1, @as(usize, @intFromFloat(@max(0, p.x))) / cell_size);
+            const cy = @min(rows - 1, @as(usize, @intFromFloat(@max(0, p.y))) / cell_size);
+            const cell = cy * cols + cx;
+            cell_of_point[i] = cell;
+            cell_start[cell + 1] += 1;
+        }
+        for (1..cell_start.len) |i| cell_start[i] += cell_start[i - 1];
+
+        const bucket = try allocator.alloc(usize, points.len);
+        const cursor = try allocator.alloc(usize, n_cells);
+        defer allocator.free(cursor);
+        @memcpy(cursor, cell_start[0..n_cells]);
+        for (0..points.len) |i| {
+            const cell = cell_of_point[i];
+            bucket[cursor[cell]] = i;
+            cursor[cell] += 1;
+        }
+
+        return .{ .cell_size = cell_size, .cols = cols, .rows = rows, .cell_start = cell_start, .bucket = bucket };
+    }
+
+    fn deinit(self: *PointGrid, allocator: std.mem.Allocator) void {
+        allocator.free(self.cell_start);
+        allocator.free(self.bucket);
+    }
+
+    /// Finds the true nearest point to `(fx, fy)` — expands a square ring
+    /// of cells around the pixel's own cell, stopping only once the next
+    /// ring's closest possible point is already farther than the best
+    /// match found so far, so the result is exact, not approximate.
+    fn nearest(self: *const PointGrid, points: []const Point, fx: f32, fy: f32) usize {
+        const pcx = @min(self.cols - 1, @as(usize, @intFromFloat(@max(0, fx))) / self.cell_size);
+        const pcy = @min(self.rows - 1, @as(usize, @intFromFloat(@max(0, fy))) / self.cell_size);
+
+        var best: usize = 0;
+        var best_dist: f32 = std.math.inf(f32);
+        var found = false;
+
+        var radius: usize = 0;
+        while (true) : (radius += 1) {
+            if (found) {
+                const min_possible = @as(f32, @floatFromInt(radius - 1)) * @as(f32, @floatFromInt(self.cell_size));
+                if (min_possible > 0 and min_possible * min_possible > best_dist) break;
+            }
+
+            const cx_min = if (pcx >= radius) pcx - radius else 0;
+            const cx_max = @min(self.cols - 1, pcx + radius);
+            const cy_min = if (pcy >= radius) pcy - radius else 0;
+            const cy_max = @min(self.rows - 1, pcy + radius);
+
+            var cy = cy_min;
+            while (cy <= cy_max) : (cy += 1) {
+                var cx = cx_min;
+                while (cx <= cx_max) : (cx += 1) {
+                    // Only the newly-added ring border at this radius —
+                    // smaller radii already scanned the interior.
+                    const on_border = radius == 0 or cx == cx_min or cx == cx_max or cy == cy_min or cy == cy_max;
+                    if (!on_border) continue;
+
+                    const cell = cy * self.cols + cx;
+                    const start = self.cell_start[cell];
+                    const end = self.cell_start[cell + 1];
+                    for (self.bucket[start..end]) |pi| {
+                        const p = points[pi];
+                        const dx = p.x - fx;
+                        const dy = p.y - fy;
+                        const dist = dx * dx + dy * dy;
+                        if (dist < best_dist) {
+                            best_dist = dist;
+                            best = pi;
+                            found = true;
+                        }
+                    }
+                }
+            }
+
+            if (cx_min == 0 and cy_min == 0 and cx_max == self.cols - 1 and cy_max == self.rows - 1) break;
+        }
+
+        return best;
+    }
+};
+
 /// One Lloyd-relaxation step, in place: rasterizes the density field by
-/// assigning each nonzero-density pixel to its nearest point (brute
-/// force — O(points.len) per pixel; fine at the pixel counts a terminal-
-/// sized render needs, not optimized for large point sets), accumulates
-/// each point's density-weighted centroid, and moves every point there.
-/// A point that captures zero pixels this step (every pixel in the
-/// field ended up nearer some other point) is left where it is rather
-/// than reseeded — a deliberate simplification; Secord's own algorithm
-/// handles this case with Delaunay-neighbor-aware splitting, out of
-/// scope for this POC.
+/// assigning each nonzero-density pixel to its nearest point via a
+/// `PointGrid` (amortized `O(1)` per pixel, not `O(points.len)`),
+/// accumulates each point's density-weighted centroid, and moves every
+/// point there. A point that captures zero pixels this step (every
+/// pixel in the field ended up nearer some other point) is left where
+/// it is rather than reseeded — a deliberate simplification; Secord's
+/// own algorithm handles this case with Delaunay-neighbor-aware
+/// splitting, out of scope for this POC.
+///
+/// `contrast_gamma` raises each pixel's density to this power *only* for
+/// the weighted-centroid sum (not for `throwDarts`'s initial placement
+/// probabilities) — matching the reference C++ tool's own contrast
+/// boost (it raises its density crop to the 8th power before computing
+/// `cv::moments`). `1.0` reproduces the original, uncontrasted weighting;
+/// higher values pull each cell's centroid more tightly onto its single
+/// darkest sub-region instead of spreading across the whole cell,
+/// producing the tool's crisper, edge-hugging look.
 pub fn relaxOnce(
     allocator: std.mem.Allocator,
     points: []Point,
     density: []const f32,
     width: usize,
     height: usize,
+    contrast_gamma: f32,
 ) !void {
     if (points.len == 0) return;
 
@@ -100,28 +236,22 @@ pub fn relaxOnce(
     @memset(sum_y, 0);
     @memset(sum_w, 0);
 
+    var grid = try PointGrid.init(allocator, points, width, height);
+    defer grid.deinit(allocator);
+
     for (0..height) |py| {
         for (0..width) |px| {
-            const w = density[py * width + px];
-            if (w <= 0) continue;
+            const d = density[py * width + px];
+            if (d <= 0) continue;
+            const w = std.math.pow(f32, d, contrast_gamma);
 
-            var nearest: usize = 0;
-            var nearest_dist: f32 = std.math.inf(f32);
             const fx: f32 = @floatFromInt(px);
             const fy: f32 = @floatFromInt(py);
-            for (points, 0..) |p, i| {
-                const dx = p.x - fx;
-                const dy = p.y - fy;
-                const dist = dx * dx + dy * dy;
-                if (dist < nearest_dist) {
-                    nearest_dist = dist;
-                    nearest = i;
-                }
-            }
+            const nearest_idx = grid.nearest(points, fx, fy);
 
-            sum_x[nearest] += @as(f64, fx) * w;
-            sum_y[nearest] += @as(f64, fy) * w;
-            sum_w[nearest] += w;
+            sum_x[nearest_idx] += @as(f64, fx) * w;
+            sum_y[nearest_idx] += @as(f64, fy) * w;
+            sum_w[nearest_idx] += w;
         }
     }
 
@@ -133,7 +263,8 @@ pub fn relaxOnce(
     }
 }
 
-/// Runs `relaxOnce` `iterations` times.
+/// Runs `relaxOnce` `iterations` times. See `relaxOnce`'s own doc
+/// comment for `contrast_gamma`.
 pub fn relax(
     allocator: std.mem.Allocator,
     points: []Point,
@@ -141,9 +272,10 @@ pub fn relax(
     width: usize,
     height: usize,
     iterations: usize,
+    contrast_gamma: f32,
 ) !void {
     for (0..iterations) |_| {
-        try relaxOnce(allocator, points, density, width, height);
+        try relaxOnce(allocator, points, density, width, height, contrast_gamma);
     }
 }
 
@@ -295,7 +427,7 @@ test "relax pulls a single point toward the weighted centroid of an asymmetric d
     density[9] = 1.0; // all the weight is at the far right
 
     var points = [_]Point{.{ .x = 0, .y = 0 }}; // starts at the far left
-    try relax(allocator, &points, &density, width, height, 1);
+    try relax(allocator, &points, &density, width, height, 1, 1.0);
 
     try std.testing.expectApproxEqAbs(@as(f32, 9), points[0].x, 0.01);
 }
@@ -309,7 +441,7 @@ test "relax splits two points between two separated density blobs" {
     density[17] = 1.0;
 
     var points = [_]Point{ .{ .x = 9, .y = 0 }, .{ .x = 10, .y = 0 } };
-    try relax(allocator, &points, &density, width, height, 5);
+    try relax(allocator, &points, &density, width, height, 5, 1.0);
 
     // One point should settle near x=2, the other near x=17 (order not
     // guaranteed, since both start equidistant from each blob).
@@ -352,6 +484,65 @@ test "renderCells still picks Braille for the sparsest cells when max_count is t
         .shade => |cp| try std.testing.expectEqual(@as(u21, '█'), cp),
         .braille => return error.TestUnexpectedResult,
     }
+}
+
+fn bruteForceNearest(points: []const Point, fx: f32, fy: f32) usize {
+    var nearest: usize = 0;
+    var nearest_dist: f32 = std.math.inf(f32);
+    for (points, 0..) |p, i| {
+        const dx = p.x - fx;
+        const dy = p.y - fy;
+        const dist = dx * dx + dy * dy;
+        if (dist < nearest_dist) {
+            nearest_dist = dist;
+            nearest = i;
+        }
+    }
+    return nearest;
+}
+
+test "PointGrid.nearest matches brute force over a random point set" {
+    const allocator = std.testing.allocator;
+    const width = 40;
+    const height = 40;
+
+    var prng = std.Random.DefaultPrng.init(1234);
+    const rng = prng.random();
+
+    var points: [15]Point = undefined;
+    for (&points) |*p| p.* = .{ .x = rng.float(f32) * width, .y = rng.float(f32) * height };
+
+    var grid = try PointGrid.init(allocator, &points, width, height);
+    defer grid.deinit(allocator);
+
+    var py: usize = 0;
+    while (py < height) : (py += 3) {
+        var px: usize = 0;
+        while (px < width) : (px += 3) {
+            const fx: f32 = @floatFromInt(px);
+            const fy: f32 = @floatFromInt(py);
+            try std.testing.expectEqual(bruteForceNearest(&points, fx, fy), grid.nearest(&points, fx, fy));
+        }
+    }
+}
+
+test "relaxOnce's higher contrast_gamma pulls the centroid closer to the denser sub-region" {
+    const allocator = std.testing.allocator;
+    const width = 10;
+    const height = 1;
+    // A broad, moderately dense region (0.4) with one brighter spike (1.0)
+    // near the far end — density is nonzero everywhere so every pixel
+    // contributes, but the spike should dominate more as gamma increases.
+    var density: [width]f32 = @splat(0.4);
+    density[8] = 1.0;
+
+    var points_linear = [_]Point{.{ .x = 0, .y = 0 }};
+    try relaxOnce(allocator, &points_linear, &density, width, height, 1.0);
+
+    var points_contrasted = [_]Point{.{ .x = 0, .y = 0 }};
+    try relaxOnce(allocator, &points_contrasted, &density, width, height, 4.0);
+
+    try std.testing.expect(points_contrasted[0].x > points_linear[0].x);
 }
 
 test "renderCells picks a Braille glyph for the sparsest bin and shade characters for denser bins" {

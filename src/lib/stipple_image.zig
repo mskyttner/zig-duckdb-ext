@@ -9,6 +9,18 @@ const zignal = @import("zignal");
 const zigcv = @import("zigcv");
 const stipple = @import("stipple.zig");
 
+/// Contrast boost applied to density during Lloyd relaxation's weighted-
+/// centroid sum (see `stipple.relaxOnce`'s own doc comment) — matches
+/// the reference `Weighted-Voronoi-Stippling` C++ tool (OpenCV's
+/// `Subdiv2D` + `cv::moments`), which raises its own density crop to the
+/// 8th power before computing each cell's weighted centroid. `4.0` here
+/// is a deliberately milder version of that: enough to visibly sharpen
+/// points onto edges/veins instead of spreading diffusely across a
+/// cell, without the instability an 8th-power boost could cause on
+/// lower-resolution/lower-iteration POC-sized renders (vs. the
+/// reference tool's full-image-resolution, 100-iteration default).
+const contrast_gamma: f32 = 4.0;
+
 /// Converts the image at `url` (http(s) URL or local path) into a
 /// weighted-Voronoi stipple rendering, as `height` lines of `width`
 /// characters (mixed Braille/shade glyphs per `stipple.CellGlyph`),
@@ -84,7 +96,7 @@ pub fn stippleFromUrl(
     const points = try stipple.throwDarts(allocator, density, w, h, n_points, prng.random(), n_points * 2000);
     defer allocator.free(points);
 
-    try stipple.relax(allocator, points, density, w, h, iterations);
+    try stipple.relax(allocator, points, density, w, h, iterations, contrast_gamma);
 
     const glyphs = try stipple.renderCells(allocator, points, w, h, width, height);
     defer allocator.free(glyphs);

@@ -3100,3 +3100,87 @@ is tiny`) to assert the actual invariant this fix guarantees — the
 minimum-count cells render as Braille, the maximum-count cell renders
 as `'█'` — rather than "every cell in a sparse image is Braille", which
 doesn't hold (and shouldn't) once real density variation exists.
+
+### Matching the reference C++ tool's speed and quality (done, 2026-10-15)
+
+Prompted by actually building and running the reference implementation
+this POC is checked against — `../Weighted-Voronoi-Stippling`
+(`cmake`+`make`, needed `libopencv-dev` installed; confirmed working by
+patching `waitKey(0)`→`waitKey(1)` to avoid blocking on an interactive
+window, running it against the same `leaves.png`, then reverting via
+`git checkout`) — then asked directly: how can this project's own POC
+match that tool's speed and visual quality, given it also depends on
+`zigcv`/OpenCV already (for Gaussian blur)?
+
+Read `CVT.h`/`ROI.h`/`Clipping.h` from the reference tool rather than
+guessing. Two concrete, fixable gaps explained both the speed and the
+quality difference:
+
+**Speed**: the reference builds a *true* Voronoi diagram via
+`cv::Subdiv2D` (Delaunay triangulation, `O(n log n)`), then for each
+cell crops the density image to just that cell's bounding box
+(`ROI::crop` + `fillConvexPoly` mask) and runs `cv::moments` on the
+masked crop. Total cost scales with image pixels once, each roughly
+visited once. This project's `relaxOnce` instead did a brute-force "for
+every pixel, scan every point" nearest-seed search —
+`O(points.len × pixels)` per iteration, the dominant reason it got slow
+as canvas/point count grew (confirmed by timing the exact same
+160x80-char/30000-point/30-iteration render before and after this fix:
+**50s brute-force vs 3.2s grid-accelerated, ~15x**, and the gap widens
+with scale).
+
+**Quality**: before computing each cell's weighted centroid, the
+reference raises the cropped density to the 8th power
+(`cropped² → ⁴ → ⁸`) — a strong contrast boost that pulls the centroid
+tightly onto the single darkest sub-region (the vein/edge) instead of
+the cell's overall average, producing `save.png`'s crisp, edge-hugging
+look. This project's density was used linearly, so points spread more
+diffusely across each cell.
+
+Checked first whether `zigcv` (already a dependency) could supply
+`Subdiv2D`/`moments`/`fillPoly` directly, which would have let this
+project mirror the reference tool's exact approach for free — it
+can't: read all ~6,014 lines across its 13 source files and confirmed
+it's a narrow, low-level pixel-filter wrapper (blur, resize, color,
+morph, warp, threshold, arith, PNG/TIFF I/O) with no geometry/contour
+API at all. Pulling in real OpenCV's C++ geometry layer would mean a
+much heavier new dependency — against this project's own earlier,
+deliberate decision not to need a Delaunay/Voronoi library (this file's
+own "Weighted-Voronoi-stippling v2-poc demo" entry above) — so both
+fixes stayed pure Zig instead:
+
+**Fixed (speed)**: added `PointGrid` to `src/lib/stipple.zig` — a
+uniform spatial grid built fresh each `relaxOnce` call (bucket points
+into cells sized so each holds ~1 point on average via counting-sort,
+no per-cell dynamic allocation), with a `nearest()` query that expands
+a square ring of cells around a pixel's own cell and stops once the
+next ring's *closest possible* point is already farther than the best
+match found so far — an exact (not approximate) nearest-neighbor
+result, verified by a new test asserting it matches brute force exactly
+over a random point set. Turns the brute-force scan's
+`O(points.len)`-per-pixel cost into an amortized `O(1)`, the same
+practical speedup the reference tool gets from its Voronoi diagram,
+without needing one.
+
+**Fixed (quality)**: added a `contrast_gamma` parameter to
+`relaxOnce`/`relax`, applied only to the weighted-centroid sum's weight
+(`density^contrast_gamma`, not to `throwDarts`'s initial placement
+probabilities — raising those too would collapse dart-throwing's
+acceptance probability toward zero almost everywhere and likely starve
+it of its `n_points` budget). `stipple_image.zig` hardcodes `4.0` — a
+deliberately milder echo of the reference's `^8`, since this POC's
+lower-resolution/lower-iteration-count renders (vs. the reference's
+full-image-resolution, 100-iteration default) have less budget to
+recover from an overly aggressive contrast curve. A new unit test
+confirms higher gamma pulls the centroid measurably closer to a
+density spike than `gamma=1.0` (the original, uncontrasted behavior)
+under identical conditions. Not exposed through
+`stipple_from_url_ct`'s own SQL signature — an internal rendering
+constant, not something a caller needs to tune.
+
+Existing tests needed `relax`/`relaxOnce`'s new `contrast_gamma`
+parameter threaded through (`1.0` preserves their original exact
+expected values, confirming the grid-acceleration change alone didn't
+shift any numeric outcome). `task check:all` and `zig build v2-check`
+pass; live-verified the default leaves demo and the `ziggy.png` case
+both still render correctly and quickly (~1.6s) after both changes.
