@@ -152,6 +152,40 @@ live against both runtimes this branch has on hand:
   **open question, not a blocker**, to revisit once 2.0 ships with (one
   hopes) a documented v2 signing procedure or a working example to copy.
 
+  **Re-verified from scratch, 2026-10-15, specifically to rule out a
+  real confound**: was `allow_extension_repositories` actually
+  `'allowed'` at the moment `LOAD` was attempted, in the same session,
+  not just at repository-creation time? Redid the whole flow in one
+  unambiguous sequence to check: fresh RSA keypair, signed
+  `zig_ext_v2.duckdb_extension` with the same v1 algorithm, `SET
+  allow_extension_repositories='allowed'; CREATE EXTENSION REPOSITORY
+  myrepo WITH PREFIX '<local file:// path>' USING PUBLIC KEY
+  '<pem>';`, confirmed via `duckdb_extension_repositories()` that
+  `myrepo` was listed with `type='USER_PROVIDED'` and the right
+  fingerprint, **then, still in the same session**, attempted `LOAD`
+  (both by the direct install path and by bare name after a successful
+  `INSTALL ... FROM myrepo`) with `allow_extension_repositories` still
+  `'allowed'` and *no* `-unsigned` flag. **Identical failure both ways**:
+  `"could not be loaded because its signature is either missing or
+  invalid and unsigned extensions are disabled by configuration"` —
+  confirming this is a real signature-verification rejection, not an
+  artifact of the repository not being trusted at `LOAD` time. (As a
+  sanity control, the same file loaded and worked correctly with
+  `-unsigned`, confirming the signing process didn't corrupt the binary
+  itself — the rejection is specific to signature verification.)
+
+  **A separate, smaller gap found during this re-verification, worth
+  noting but not conflating with the signature question**: `INSTALL
+  <name> FROM <repo>` caches the file under
+  `~/.duckdb/extensions/<version>/<platform>/repositories/<repo-name>/<name>.duckdb_extension`,
+  but a plain `LOAD <name>;` (bare name, no `FROM`) only searches
+  `~/.duckdb/extensions/<version>/<platform>/<name>.duckdb_extension`
+  directly — it does not look inside `repositories/<repo-name>/`. Worked
+  around by loading the direct path instead to isolate the actual
+  signature question; whether this is intended (some other syntax is
+  meant to resolve a repo-qualified name) or itself a rough edge wasn't
+  investigated further here.
+
 **What this changes for the actual decision below**: nothing for *today*
 — the real, currently-releasable v1 extension still can't use this
 mechanism at all (confirmed: parser error), so the unsigned/GitHub-Pages
