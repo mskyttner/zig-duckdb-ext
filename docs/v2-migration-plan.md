@@ -3044,3 +3044,41 @@ sparse Braille detail at the edges, denser `░▒▓` shading toward the
 interior, `█` at the single densest spot — not just "it didn't crash."
 `task check:all`, `v2-check`, `ext-v2`, and both sqllogictest suites all
 pass.
+
+**Follow-up, 2026-10-15: a `demo-stipple` task (`zig build demo-stipple`,
+also `task demo:stipple`) was added**, running `stipple_from_url_ct`
+against the example leaves image via the pinned v2 alpha CLI and
+printing the result to stdout — same mechanism as the `duckdb-extension-v2-poc`
+step. Parameters are configurable: `-Dstipple-url=`/`-Dstipple-width=`/
+`-Dstipple-height=`/`-Dstipple-points=`/`-Dstipple-iterations=` (`task
+demo:stipple -- -D...` passes these through).
+
+**A real rendering bug surfaced by exercising it against a different
+image/canvas size, and fixed**: `renderCells`'s original 5-bin
+quantization scaled each cell's point count *relative to the single
+busiest cell in the whole image* (`count / max_count`). That breaks
+down whenever points are sparse relative to the number of cells (a
+wider/taller canvas at the same point count, or just a less clustered
+image): `max_count` itself can end up as low as 1-3, at which point even
+a single point per cell already saturates past bin 0's `< 0.2` cutoff
+and renders as the densest shade character — Braille is never selected
+at all, for *any* cell in the image, confirmed live via `zig build
+demo-stipple -Dstipple-url=ziggy.png -Dstipple-width=160 -Dstipple-height=50`
+(a local 1024x1280 PNG), which rendered entirely in `▒`/`█` with no
+Braille whatsoever. Fixed by switching to an absolute boundary instead
+of a max_count-relative one: Braille has exactly 8 independently
+addressable sub-cell positions, so a cell renders as Braille whenever
+`count < 8` (positions can still show real detail) and as a shade
+character only once `count >= 8` (genuinely saturates what Braille can
+distinguish) — a boundary that no longer depends on how dense the rest
+of the image happens to be. Confirmed the fix against the reported case
+(Braille now renders throughout) and that the shade path still works
+when it should (`-Dstipple-points=20000` on the default canvas still
+produces `░▒▓█`). One side effect, not a regression: at the original
+default parameters (80x40, 2000 points), per-cell counts rarely reach
+8 anywhere, so that render is now almost entirely Braille rather than
+mixing in shade blocks — an accurate reflection of the image genuinely
+not being locally dense enough anywhere to need block aggregation, not
+a loss of information. Added a regression unit test
+(`renderCells still picks Braille for sparse points when max_count is tiny`)
+reproducing the original relative-binning failure mode directly.
