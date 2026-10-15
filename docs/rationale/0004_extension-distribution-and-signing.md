@@ -111,6 +111,19 @@ live against both runtimes this branch has on hand:
   -- (one or more PEM keys, enabling rotation). The pinned repo + keys are
   -- stored locally (~/.duckdb/extension_repositories/myrepo.duckdb_extension.repo.json)
   -- and SELECT * FROM duckdb_extension_repositories() lists the fingerprints.
+
+  -- Alternative, also confirmed live: skip the network fetch entirely by
+  -- supplying the PEM (or its base64-encoded body) directly —
+  -- CREATE EXTENSION REPOSITORY myrepo WITH PREFIX 'https://example.com/repo'
+  --     USING PUBLIC KEY '-----BEGIN PUBLIC KEY----- ...';
+  -- verified this succeeds even against a prefix URL that serves nothing
+  -- at all (no .well-known fetch attempted when a key is supplied inline).
+  -- duckdb_extension_repositories()'s real columns (confirmed via
+  -- DESCRIBE, not assumed): repository_name, prefix, type, key_fingerprints
+  -- (VARCHAR[], formatted "sha256:<hex>", NULL for DuckDB's own built-in
+  -- repos), public_keys. `type` is 'CORE'/'COMMUNITY' for the three
+  -- built-in repos (core, core_nightly, community) and 'USER_PROVIDED'
+  -- for anything added via CREATE EXTENSION REPOSITORY.
   ```
   Reproduced the whole flow end to end: generated an RSA keypair
   (`openssl genrsa`/`openssl rsa -pubout`), published a `.well-known/
