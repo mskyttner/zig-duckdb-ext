@@ -745,8 +745,36 @@ pub fn build(b: *std.Build) void {
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
+    // Pure, dependency-free hash-computation logic (no DuckDB import at
+    // all) — worth its own test step despite no other `*_main.zig` tool
+    // having one: a wrong composite hash here means a silently-wrong
+    // extension signature, not a build failure.
+    const sign_extension_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sign_extension_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_sign_extension_tests = b.addRunArtifact(sign_extension_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
+    test_step.dependOn(&run_sign_extension_tests.step);
+
+    // Installs the signing tool itself — see src/sign_extension_main.zig's
+    // own doc comment for usage.
+    const sign_extension_exe = b.addExecutable(.{
+        .name = "sign_extension",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sign_extension_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const install_sign_extension = b.addInstallArtifact(sign_extension_exe, .{});
+    const sign_extension_step = b.step("sign-extension-tool", "Build the extension-signing tool (zig-out/bin/sign_extension)");
+    sign_extension_step.dependOn(&install_sign_extension.step);
 
     // ── SQL logic tests against the real v1 AND v2 extensions ─────────────
     // DuckDB's own native .test format (require/statement/query blocks),

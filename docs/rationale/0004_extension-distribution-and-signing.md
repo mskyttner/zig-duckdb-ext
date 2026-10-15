@@ -189,6 +189,53 @@ live against both runtimes this branch has on hand:
   `expect_user_repo` is true, i.e. precisely when `FROM <user-repo>` is
   given — not a gap at all, just the other half of the same mechanism.
 
+  **A real signing tool now exists (done, 2026-10-15)**:
+  `src/sign_extension_main.zig` (`zig build sign-extension-tool` →
+  `zig-out/bin/sign_extension <input> <private_key.pem> <output>
+  [openssl_path]`). Surveyed `ExtensionHelper`/`ExtensionRepositoryManager`'s
+  full public API first to check for anything to call directly — there
+  is nothing: DuckDB's own code only *verifies* signatures
+  (`CheckExtensionSignature` et al.); signing has always been an
+  external, upload-time concern, never part of the engine, so there was
+  nothing to wrap, only the algorithm to reproduce. Checked two
+  candidate pure-Zig RSA options before deciding against both: a
+  mojoauth.com guide (not pure Zig at all — wraps OpenSSL's `libcrypto`
+  via `@cImport`, and only covers encryption, not signing) and
+  `github.com/Mayne-X/Cryptographic-Algorithms-for-Ziglang`'s `RSA.zig`
+  (genuinely pure Zig, but its `sign()` is raw `modPow(hash, d, n)` with
+  **no PKCS#1v1.5 padding or SHA-256 DigestInfo prefix at all** — would
+  produce signatures DuckDB rejects outright — plus toy textbook primes
+  for key generation and an unverified, almost certainly non-constant-
+  time from-scratch bignum). Also considered
+  `github.com/kassane/openssl-zig` (a fork of OpenSSL's real 854-file
+  C source with a `build.zig` wrapper) — rejected as disproportionate to
+  signing being the only operation actually needed, with the same
+  "states 0.16.0+, unconfirmed on 0.17" risk category `oma` already
+  taught this project to check for before trusting.
+
+  So: the hash computation (the whole composite-hash algorithm,
+  including the exact chunking and the two-level SHA256) is pure Zig,
+  `std.crypto.hash.sha2.Sha256`, with 2 unit tests (single-chunk and a
+  real chunk-boundary case) — only the final RSA private-key operation
+  shells out to `openssl pkeyutl -sign`, the one piece with no usable
+  pure-Zig alternative found. Takes an explicit `openssl_path` (defaults
+  to `/usr/bin/openssl`) that must contain a `/`, for the same reason
+  `nethogs_trace.zig` already documents: confirmed live that
+  `std.process.spawn`'s PATH search doesn't actually resolve a bare
+  command name.
+
+  **Verified end to end against the real build**: signed the real
+  `zig_ext_v2.duckdb_extension` with a fresh RSA key via this tool,
+  independently re-verified the written signature with a from-scratch
+  `openssl pkeyutl -verify`, then loaded it through the real
+  `CREATE EXTENSION REPOSITORY ... USING PUBLIC KEY` /
+  `LOAD ... FROM <repo>` flow with no `-unsigned` flag — succeeded,
+  `zig_hello`/`zig_add_numbers` both callable and correct. Not yet
+  wired into any release workflow (v1, the only extension actually
+  released today, has no use for this mechanism at all — see above);
+  kept as a standalone, tested, documented tool ready for when the v2
+  port is the one being distributed.
+
 **What this changes for the actual decision below**: still nothing for
 *today* — the real, currently-releasable v1 extension still can't use
 this mechanism at all (confirmed: parser error), so the unsigned/GitHub-
