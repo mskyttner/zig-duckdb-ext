@@ -3230,3 +3230,36 @@ blank letterbox padding above and below, and the pre-existing
 leaves/ziggy regression cases (already close to the box's own aspect
 ratio, so only minimally affected) still render correctly. `task
 check:all` and `zig build v2-check` pass.
+
+## DuckDB 2.0 release date and community-extensions deploy changes (2026-10-16)
+
+Release date confirmed: **2026-10-21** — the trigger condition this
+plan has repeatedly deferred the real v1→v2 cutover decision on
+("gated on DuckDB 2.0 actually shipping, not just staged-alpha").
+
+A DuckDB-side announcement the same day described changes to the
+*official* community-extensions deploy pipeline (this project doesn't
+submit there — ADR-0004 §1/§5 — so nothing here is directly actionable
+yet, but it's relevant context for that decision going forward): new
+PRs build against v2.0.0 using `description.yml`'s `ref` field;
+binaries deploy against `v2.0.0-alpha44357` until the real release,
+then redeploy for `v2.0.0` proper once it ships; `ref_next` is retired
+(folded into `ref`); a new `variegata` field takes a commit SHA for
+last-minute v1.5.x-only changes (requires contacting the DuckDB team
+directly).
+
+One real, if currently inconsequential, discrepancy worth noting: this
+project's own pinned dev CLI (`v2.0.0-alpha46057`, `duckdbV2CliLazyPath`
+in `build.zig`) is a *later* alpha build number than the `alpha44357`
+the community-extensions pipeline currently deploys against — both
+converge on the same `v2.0.0` once it actually ships, so this doesn't
+need fixing now, but is worth remembering if any live compatibility
+testing against the official pipeline's own deployed binary ever comes
+up before the 10-21 release.
+
+Not yet acted on. Two things worth revisiting once the release lands:
+re-pinning this project's dev CLI/build.zig.zon from the staged alpha to
+the real `v2.0.0`, and reconsidering (separately, per ADR-0004 §5)
+whether an actual community-extensions submission is worth pursuing now
+that both the metadata schema (`description.yml`, already adopted here)
+and a firm release date exist.
