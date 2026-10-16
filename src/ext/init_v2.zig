@@ -9,8 +9,8 @@
 ///!
 ///! Registers all 9 functions ported off v1 — the full set. Most are written against the
 ///! hand-written `duckdb_v2.zig`; `hello` is the first on the generated bindings
-///! (`duckdb_v2_dynamic`), which keep their own copy of the function table, so both are
-///! initialised below.
+///! (`duckdb_v2_dynamic`), which keep their own copy of the function table; `db.initApi` fills
+///! both from its single `get_api` call.
 const db = @import("duckdb_v2");
 const v2 = @import("duckdb_v2_dynamic");
 const add_numbers = @import("../functions/add_numbers_v2.zig");
@@ -28,7 +28,6 @@ export fn zig_ext_v2_init_c_api_v2(input: *const db.ExtensionInput) callconv(.c)
     // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
     // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
     const gen_input: *const v2.duckdb_v2_extension_input = @ptrCast(input);
-    if (!v2.init(gen_input, v2.api_version)) return;
 
     add_numbers.register(gen_input) catch return;
     ct_add_numbers.register(input) catch return;

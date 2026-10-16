@@ -13,6 +13,7 @@
 ///! yet — see the `v2-check` build step, which only type-checks this file.
 const std = @import("std");
 pub const c = @import("duckdb_c_v2");
+const generated = @import("duckdb_v2_dynamic");
 
 // ─── Re-export opaque handle types ───────────────────────────────────────────
 
@@ -92,6 +93,9 @@ pub fn initApi(input: *const ExtensionInput, minimum_api_version: [*:0]const u8)
     const res: *const ExtApiV2 = @ptrCast(@alignCast(raw));
     api_storage = res.*;
     api_initialized = true;
+    // `get_api` may only be called once, so the generated bindings, which code written against them
+    // (`duckdb_v2_dynamic`) calls through, take their copy of the table from this call too.
+    generated.setTable(raw.?);
     return true;
 }
 

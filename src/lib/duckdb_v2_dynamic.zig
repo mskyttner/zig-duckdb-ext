@@ -920,16 +920,22 @@ pub const Api = extern struct {
 /// entrypoint returns.
 pub var api: Api = std.mem.zeroes(Api);
 
+/// Installs the table that `get_api` returned, by copying it. For a program that calls `get_api`
+/// itself — `get_api` may only be called once — and shares the table with other code; `init` does both.
+pub fn setTable(table: *const anyopaque) void {
+    // SAFETY: for the version asked for, `get_api` returns a pointer to the table that `Api` lays out;
+    // its member order is the ABI both sides were generated from.
+    const typed: *const Api = @ptrCast(@alignCast(table));
+    api = typed.*;
+}
+
 /// Fetches the function table. Call it first in the extension entrypoint: nothing else may be called
 /// before it succeeds. On failure return from the entrypoint without touching the error slot, since
 /// DuckDB has already recorded why `get_api` refused.
 pub fn init(input: *const duckdb_v2_extension_input, minimum_api_version: [*:0]const u8) bool {
     const get_api = input.get_api orelse return false;
     const table = get_api(input.extension, minimum_api_version) orelse return false;
-    // SAFETY: for the version asked for, `get_api` returns a pointer to the table that `Api` lays out;
-    // its member order is the ABI both sides were generated from.
-    const typed: *const Api = @ptrCast(@alignCast(table));
-    api = typed.*;
+    setTable(table);
     return true;
 }
 

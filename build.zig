@@ -450,6 +450,9 @@ pub fn build(b: *std.Build) void {
         gen_v2_bindings_step.dependOn(&b.addFail("gen-v2-bindings needs -Dv2-api-spec=<duckdb checkout>/api_spec/v2").step);
     }
 
+    // The hand-written layer shares its single `get_api` call with the generated bindings.
+    duckdb_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+
     // Helpers over the generated types that several function modules share.
     const v2_helpers_check = b.addTest(.{
         .root_module = b.createModule(.{

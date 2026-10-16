@@ -84,7 +84,8 @@ test "the dynamic and the static backend agree" {
     const dynamic_decls = comptime std.meta.declarations(dyn);
     inline for (dynamic_decls) |name| {
         if (!@hasDecl(stat, name) and !std.mem.eql(u8, name, "Api") and !std.mem.eql(u8, name, "api") and
-            !std.mem.eql(u8, name, "init") and !std.mem.eql(u8, name, "api_version"))
+            !std.mem.eql(u8, name, "init") and !std.mem.eql(u8, name, "setTable") and
+            !std.mem.eql(u8, name, "api_version"))
         {
             fail("{s}: in the dynamic backend, not in the static one", .{name});
         }
@@ -162,6 +163,23 @@ test "init copies the table and the wrappers call through it" {
     try std.testing.expectEqual(dyn.DUCKDB_V2_ERROR.ERROR_NONE, dyn.duckdb_v2_arena_allocate(arena, 42, &out, null));
     try std.testing.expectEqual(@as(usize, 1), arena_calls);
     try std.testing.expectEqual(@as(u64, 42), arena_last_len);
+
+    dyn.api = std.mem.zeroes(dyn.Api);
+}
+
+test "setTable installs a copy of the table it is given" {
+    dyn.api = std.mem.zeroes(dyn.Api);
+    var table = std.mem.zeroes(dyn.Api);
+    table.duckdb_v2_arena_allocate = &fakeArenaAllocate;
+    arena_calls = 0;
+
+    dyn.setTable(&table);
+    table = std.mem.zeroes(dyn.Api);
+
+    var out: *u8 = undefined;
+    const arena: dyn.duckdb_v2_arena_handle = @ptrFromInt(0x10);
+    try std.testing.expectEqual(dyn.DUCKDB_V2_ERROR.ERROR_NONE, dyn.duckdb_v2_arena_allocate(arena, 7, &out, null));
+    try std.testing.expectEqual(@as(usize, 1), arena_calls);
 
     dyn.api = std.mem.zeroes(dyn.Api);
 }
