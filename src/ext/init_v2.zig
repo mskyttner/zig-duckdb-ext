@@ -30,7 +30,7 @@ export fn zig_ext_v2_init_c_api_v2(input: *const db.ExtensionInput) callconv(.c)
     const gen_input: *const v2.duckdb_v2_extension_input = @ptrCast(input);
     if (!v2.init(gen_input, v2.api_version)) return;
 
-    add_numbers.register(input) catch return;
+    add_numbers.register(gen_input) catch return;
     ct_add_numbers.register(input) catch return;
     hello.register(gen_input) catch return;
     tp_bar.register(input) catch return;

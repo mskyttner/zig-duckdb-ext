@@ -1833,9 +1833,11 @@ global switch exists yet.
   with `.?`: calling a function the served table lacks is safety-checked
   illegal behavior, not an error; `init` relies on `get_api` refusing a
   version it cannot serve and does not check the table's size.
-- **First function module moved: `hello_v2.zig`** (`zig_hello`, hand-written,
-  105 lines) now uses `duckdb_v2_dynamic` instead of `duckdb_v2.zig`; the
-  other eight still use the hand-written layer. `zig_ext_v2` initialises
+- **Function modules moved: `hello_v2.zig`, then `add_numbers_v2.zig`**
+  (`zig_hello` and `zig_add_numbers`, both hand-written, ~105 lines each) use
+  `duckdb_v2_dynamic` instead of `duckdb_v2.zig`; the other seven still use
+  the hand-written layer. What both need to read vectors lives in
+  `src/lib/v2_helpers.zig` (`isValid`, `bytesSlice`, with unit tests). `zig_ext_v2` initialises
   both function tables in `init_v2.zig` (each binding layer keeps its own
   copy; the generated input struct is a `@ptrCast` of the translate-c'd
   one, its layout covered by the static parity test). The v2 SQL test had
@@ -1851,7 +1853,14 @@ global switch exists yet.
   — struct fields that point to a scalar are `[*]`, not `*`. A failed
   registration now passes the entrypoint's error slot (`input.err`) rather
   than a throwaway local, so the load reports why.
-- **Not done:** the other eight function modules and the comptime
+- **Pre-existing bug found while porting `zig_add_numbers`, kept as is:**
+  `a + b` on `i64` traps on overflow in safe builds, so
+  `SELECT zig_add_numbers(9223372036854775807, 1)` aborts the whole DuckDB
+  process with a panic and stack trace, where DuckDB's own `+` raises "Out of
+  Range Error: Overflow in addition of INT64". The port is faithful to this
+  (verified before and after). Fixing it means reporting an error through
+  the callback's `err` instead of trapping; not done here.
+- **Not done:** the other seven function modules and the comptime
   frameworks (`comptime_scalar_v2`, ...), which still take the hand-written
   `duckdb_v2.zig` layer — those are where a shared bytes/validity helper
   and a decision about the double table initialisation would come in; a
