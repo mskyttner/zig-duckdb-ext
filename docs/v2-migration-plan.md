@@ -1599,6 +1599,70 @@ as a real, reproducible, clearly-documented demonstration of exactly
 this boundary (its own doc comment records the full chain above), not
 promoted further.
 
+**Follow-up, 2026-10-16: cross-checked against DuckDB's own official
+docs, and a real improvement found.** Read both
+`github.com/duckdb/duckdb/blob/main/extension/README.md#linking-the-static-archives-by-hand`
+and the newer, more authoritative
+`duckdb.org/docs/preview/dev/building/linking_extensions` page (the
+real v2.0 reference — client migration status table confirms this is
+genuinely fresh: Python/Rust migrated, Node.js in progress, Go/Wasm not
+started). Both describe the same `duckdb_extension_<name>_describe` /
+`duckdb_static_extension_descriptor` / `duckdb_register_static_extension`
+/ generated `static_extension_loader.c` mechanism already covered
+above, and both **explicitly sanction** a program skipping the
+generated loader and calling `duckdb_register_static_extension`
+directly on its own describe function — exactly what
+`src/static_embed_poc_main.zig` already does, confirming it's the
+documented minimal path, not an ad hoc shortcut. One new, concrete
+detail: if C++ auto-registration (`static_extension_autoregister.cpp`)
+ends up archived rather than compiled directly into the program, the
+linker needs to be told to keep the symbol with
+`-Wl,-u,duckdb_register_static_extensions`, or it gets dropped as
+unreferenced — worth remembering if a future non-POC static-linking
+attempt needs it. Neither page mentions `get_api`/the vtable-fetch
+mechanism at all, which **reinforces rather than contradicts** this
+section's conclusion: official static linking is only designed for
+extensions that bind DuckDB's API directly at compile time (no vtable
+indirection anywhere in the described mechanism), consistent with
+`capi_v2_extension.cpp`'s `get_api = statically_linked ? nullptr : ...`
+being a deliberate design choice, not a gap these docs would have
+mentioned a workaround for if one existed.
+
+The preview page also mentions `duckdb/duckdb-install-scripts`
+(`curl install.duckdb.org | sh`) as the new official installer for
+static/shared libraries on DuckDB 2.0+. **Investigated whether this
+project should adopt it** — concretely useful, but not as a direct Zig
+dependency: `install.sh` is a shell script with side effects on
+`$HOME` (installs into `~/.duckdb/lib/<version>/...`), not a single
+fetchable+hashable artifact, so it doesn't fit `build.zig.zon`'s
+`url`+`hash` dependency model at all (that needs one stable blob per
+entry, which is what the existing `lazyDependency` tarball pins already
+are). But reading `install.sh`'s own source turned up a **real, concrete
+improvement**: for a `DUCKDB_STAGED=<commit>/<version>` install, it
+fetches from
+`https://duckdb-staging.duckdb.org/<commit>/<version>/duckdb/duckdb/github_release/<artifact>` —
+and testing this project's 4 existing `artifacts.duckdb.org/staged/
+v2.0-cyanoptera/...` pins against it found they're **nothing but a 302
+redirect** to exactly that commit+version-keyed URL (confirmed via
+`curl -I`, not assumed). `zig fetch` against the new direct URL for all
+4 artifacts (`duckdb-cli-linux-{amd64,arm64}.tar.gz`,
+`libduckdb-src.zip`, `duckdb-static-libs-linux-amd64.tar.gz`) returned
+**byte-identical hashes** to what was already pinned — a zero-risk,
+drop-in swap. **Made the swap** in `build.zig.zon`: all 4 entries now
+point at the immutable `duckdb-staging.duckdb.org/b15358c371/
+v2.0.0-alpha46057/duckdb/duckdb/github_release/...` path directly,
+removing the dependency on the "cyanoptera" floating alias staying
+pointed at this exact commit — a real risk the project's own prior
+comments had already flagged ("this URL tracks whatever's most recently
+published ... WILL need re-pinning whenever that staged build moves
+forward"), now eliminated rather than just documented. `task check:all`
+and `zig build v2-check`/`ext-v2` all still pass against the new URLs
+(same bytes, verified). Re-pinning to a new commit/version (or
+switching to the real `github.com/duckdb/duckdb/releases/download/...`
+pattern) is still needed once DuckDB 2.0 ships as an actual tagged
+release — the immutable URL doesn't make that step go away, it just
+stops the *current* pin from silently going stale before then.
+
 ### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
 
 Prompted by a reference recipe
