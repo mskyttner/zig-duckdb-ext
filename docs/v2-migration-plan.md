@@ -1759,49 +1759,83 @@ pattern) is still needed once DuckDB 2.0 ships as an actual tagged
 release — the immutable URL doesn't make that step go away, it just
 stops the *current* pin from silently going stale before then.
 
-### Follow-up: generated static (direct-link) bindings for the whole v2 C API (done, 2026-10-16)
+### Follow-up: generated bindings for the whole v2 C API — static (direct-link) and dynamic (`get_api`) backends (done, 2026-10-16)
 
 The direct-link PoC above declared the handful of `duckdb_v2_*` calls it
-needed through a translate-c of `duckdb_v2.h`. `src/lib/duckdb_v2_static.zig`
-now declares **all** of them — 587 `pub extern fn duckdb_v2_*`, plus the
-enums, handles, structs, callbacks, aliases and the one constant — generated
-from DuckDB's own YAML API spec (`api_spec/v2` in the DuckDB checkout at the
-commit `duckdb_headers_v2` pins, `b15358c371`) by `tools/gen_v2_static.zig`.
-Declaration names are the C names, so code written against it reads like
-the C API, and a future vtable-backed (`get_api`) module can expose the same
-names behind a build option.
+needed through a translate-c of `duckdb_v2.h`, and `duckdb_v2.zig` is a
+hand-written, vtable-only layer. `tools/gen_v2_bindings.zig` now generates
+bindings for **all** of the API from DuckDB's own YAML spec (`api_spec/v2` in
+the DuckDB checkout at the commit `duckdb_headers_v2` pins, `b15358c371`),
+in three committed files under `src/lib/`:
 
-- **Generated file is committed.** `zig build gen-v2-static
-  -Dv2-api-spec=<duckdb checkout>/api_spec/v2` rewrites it (formatted with
-  `std.zig.Ast`, so `zig fmt` leaves it alone and regeneration is
+- `duckdb_v2_types.zig` — constants, 18 enums, 77 handles, 9 structs,
+  aliases, 39 callback types, the Arrow C data structs.
+- `duckdb_v2_static.zig` — the types (re-exported), plus 587
+  `pub extern fn duckdb_v2_*`, resolved at link time. This is the
+  `DUCKDB_BUILD_STATIC_EXTENSION` mode.
+- `duckdb_v2_dynamic.zig` — the types (re-exported), plus `Api` (the
+  `duckdb_ext_api_v2` function-pointer table), `init(input, version)` that
+  fetches it through `get_api` and copies it (DuckDB may free the original
+  once the entrypoint returns), and an `inline` wrapper per function that
+  calls through it.
+
+Both backends use the C names and re-export the one `duckdb_v2_types`
+module, so code written against an import name `duckdb_v2_api` builds
+against either: `src/lib/gen_hello.zig` is one `gen_hello()` source built
+both ways (`build.zig` binds `duckdb_v2_api` to one backend per
+instantiation). Which backend a consumer uses is its own build decision; no
+global switch exists yet.
+
+- **Generated files are committed.** `zig build gen-v2-bindings
+  -Dv2-api-spec=<duckdb checkout>/api_spec/v2` rewrites them (formatted with
+  `std.zig.Ast`, so `zig fmt` leaves them alone and regeneration is
   idempotent). A normal build needs neither the tool nor zig-yaml: the
   `yaml` entry in `build.zig.zon` is a `lazy` path dependency on the sibling
   `../zig-yaml` checkout, resolved only by that step (verified: `zig build
   test` passes with that path missing). That checkout carries parser changes
   the spec needs — block scalars (`|`, `>`), flow maps (`{a: 1}`), plain
   scalars containing quotes/brackets — that upstream zig-yaml lacks.
-- **Parity test, part of `zig build test` and `v2-check`.**
-  `src/lib/duckdb_v2_static_parity.zig` compares the file with the pinned
-  `duckdb_v2.h` (translate-c): every function's arity and per-parameter ABI
-  shape, every enum value, struct size/field offsets, handle/alias/callback
-  shapes, the constant — and that no `duckdb_v2_*` function of the header is
-  missing. 587 functions, 153 types, 1 constant, 0 problems. It also
-  confirmed the spec's function names equal, in both directions, the
-  `duckdb_v2_*` symbols exported by the pinned `libduckdb_static.a`.
-- **Link-and-run: `zig build v2-static-embed-poc-gen`** registers `gen_hello()`
-  through the generated declarations only and calls it from SQL (same slice
-  as `v2-static-embed-poc-direct`).
-- **Known weakness: nullability.** The spec has no machine-readable
+- **The table's member order is the ABI, and the spec does not state it.**
+  `api_spec/v2/extension/duckdb_extension_v2.h.in` has an empty struct; the
+  header generator fills it. Reverse-engineered from the generated header:
+  unstable functions come last (they sit under `#if
+  DUCKDB_V2_API_ALLOW_UNSTABLE`, so the stable prefix is the same whether or
+  not a consumer defines the macro), everything else is ordered by the date
+  of its first lifecycle entry, then by name — so a new function appends.
+  That rule reproduces all 587 members of the pinned header, but it is an
+  inference: `duckdb_v2_dynamic_parity.zig` compares `Api` with the
+  translate-c'd `duckdb_ext_api_v2` member by member (name, offset,
+  signature) and is what will catch it going wrong when the pin moves.
+- **Parity tests, part of `zig build test` and `v2-check`.**
+  `duckdb_v2_static_parity.zig` compares the static file with the pinned
+  `duckdb_v2.h`: every function's arity and per-parameter ABI shape, every
+  enum value, struct size/field offsets, handle/alias/callback shapes, the
+  constant, and that no `duckdb_v2_*` function of the header is missing (587
+  functions, 153 types, 1 constant, 0 problems). The spec's function names
+  also equal, in both directions, the `duckdb_v2_*` symbols exported by the
+  pinned `libduckdb_static.a`. `duckdb_v2_dynamic_parity.zig` additionally
+  checks that both backends declare the same functions with the same
+  signatures over the same types, and runs `init` and the wrappers against a
+  fake `get_api` (null `get_api`, refusing `get_api`, table copied so that
+  freeing the original is safe).
+- **Link-and-run: `zig build v2-static-embed-poc-gen`** registers
+  `gen_hello()` through the static declarations only and calls it from SQL.
+  **`zig build v2-gen-poc`** builds the same source against the dynamic
+  backend as a real `.duckdb_extension`, loads it in the pinned v2 CLI and
+  checks that `SELECT gen_hello()` prints the expected string.
+- **Known weaknesses.** (1) Nullability: the spec has no machine-readable
   nullability. A pointer parameter becomes `?*T` when its description starts
   with "Optional" or says "Pass NULL"/"may be NULL"; otherwise `*T`. The
-  parity test compares ABI shape only and cannot see this, nor the
-  difference between a pointer to one value and to an array (`char *` is
-  `[*]` everywhere, other pointers are single-item). A `nullable: true` key
-  in the spec would replace the heuristic.
-- **Not done:** the dynamic (`get_api` vtable) backend. Its member order is
-  the ABI and comes from `api_spec/v2/extension/duckdb_extension_v2.h.in`,
-  not from the module YAML order, so it has to be derived from that
-  template and checked against the translate-c'd `duckdb_ext_api_v2`.
+  parity tests compare ABI shape only and cannot see this, nor the difference
+  between a pointer to one value and to an array (`char *` is `[*]`
+  everywhere, other pointers are single-item). A `nullable: true` key in the
+  spec would replace the heuristic. (2) A wrapper unwraps its table member
+  with `.?`: calling a function the served table lacks is safety-checked
+  illegal behavior, not an error; `init` relies on `get_api` refusing a
+  version it cannot serve and does not check the table's size.
+- **Not done:** moving the real extension (`zig_ext_v2`) and the comptime
+  frameworks off the hand-written `duckdb_v2.zig` onto these modules; a
+  build option that binds `duckdb_v2_api` for them.
 
 ### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
 

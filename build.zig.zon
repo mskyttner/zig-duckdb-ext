@@ -141,12 +141,12 @@
             .hash = "N-V-__8AABK7-Ap51O97S6GR_NBvztMr80sAma26ZeRToc7f",
             .lazy = true,
         },
-        // YAML parser, needed only by tools/gen_v2_static.zig, which
-        // regenerates src/lib/duckdb_v2_static.zig from DuckDB's API spec
-        // (`zig build gen-v2-static`). The spec uses block scalars and flow
+        // YAML parser, needed only by tools/gen_v2_bindings.zig, which
+        // regenerates src/lib/duckdb_v2_{types,static,dynamic}.zig from the API spec
+        // (`zig build gen-v2-bindings`). The spec uses block scalars and flow
         // maps, which upstream zig-yaml does not parse; the sibling checkout
         // carries those changes. `lazy = true`, so no other build ever
-        // resolves it — the generated file is committed.
+        // resolves it — the generated files are committed.
         .yaml = .{
             .path = "../zig-yaml",
             .lazy = true,

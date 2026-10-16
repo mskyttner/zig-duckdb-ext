@@ -1,17 +1,22 @@
-//! Generates static (direct-link) Zig bindings for the DuckDB v2 C API from its YAML spec.
+//! Generates Zig bindings for the DuckDB v2 C API from its YAML spec, in three files:
 //!
-//!   gen_v2_static <spec-dir> <out.zig> [--unstable] [--source <text>]
+//!   gen_v2_bindings <spec-dir> <out-dir> [--unstable] [--source <text>]
 //!
-//! `zig build gen-v2-static -Dv2-api-spec=<duckdb>/api_spec/v2` runs it and rewrites
-//! src/lib/duckdb_v2_static.zig, which is committed so that a normal build needs neither this tool
-//! nor zig-yaml.
+//!   duckdb_v2_types.zig    constants, enums, handles, structs, aliases and callback types
+//!   duckdb_v2_static.zig   the types, plus every function as a plain `extern fn`, resolved at link
+//!                          time against libduckdb (the "direct-link" mode of static extensions)
+//!   duckdb_v2_dynamic.zig  the types, plus the `get_api` function-pointer table (`Api`), `init` to
+//!                          fill it, and a wrapper per function that calls through it
 //!
-//! Every function becomes a plain `pub extern fn duckdb_v2_*`, resolved at link time against
-//! libduckdb (static or shared). Declaration names match the C header exactly, so code written
-//! against the generated module reads like the C API and can later be pointed at a vtable-backed
-//! module that exposes the same names.
+//! `zig build gen-v2-bindings -Dv2-api-spec=<duckdb>/api_spec/v2` runs it and rewrites the three
+//! files in src/lib/, which are committed so that a normal build needs neither this tool nor
+//! zig-yaml.
+//!
+//! Declaration names are the C names in both backends, so code written against one can be built
+//! against the other by swapping the module behind an import name. Both re-export the types of the
+//! one shared types module, so a program that imports both still sees a single `duckdb_v2_str`.
 const std = @import("std");
-const log = std.log.scoped(.gen_v2_static);
+const log = std.log.scoped(.gen_v2_bindings);
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Yaml = @import("yaml").Yaml;
@@ -54,9 +59,9 @@ pub fn main(init: std.process.Init) !void {
 
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, arena);
     _ = args.next();
-    const usage = "usage: gen_v2_static <spec-dir> <out.zig> [--unstable] [--source <text>]";
+    const usage = "usage: gen_v2_bindings <spec-dir> <out-dir> [--unstable] [--source <text>]";
     const spec_dir = args.next() orelse fatal(usage, .{});
-    const out_path = args.next() orelse fatal(usage, .{});
+    const out_dir = args.next() orelse fatal(usage, .{});
 
     var g: Gen = .{ .arena = arena };
     while (args.next()) |a| {
@@ -92,21 +97,34 @@ pub fn main(init: std.process.Init) !void {
 
     for (paths.items) |p| try loadModule(&g, try loadYaml(io, arena, dir, p));
 
-    var out: Io.Writer.Allocating = .init(arena);
-    try emit(&g, &out.writer, meta);
+    var types_out: Io.Writer.Allocating = .init(arena);
+    try emitTypes(&g, &types_out.writer, meta);
+    try writeFormatted(io, arena, out_dir, "duckdb_v2_types.zig", types_out.written());
 
-    // Run the result through the formatter, so that `zig fmt` leaves the committed file alone.
-    const raw = try arena.dupeSentinel(u8, out.written(), 0);
-    const tree = try std.zig.Ast.parse(arena, raw, .{});
-    if (tree.errors.len != 0) fatal("the generated code does not parse (first error: {t})", .{tree.errors[0].tag});
-    const formatted = try tree.renderAlloc(arena);
+    var static_out: Io.Writer.Allocating = .init(arena);
+    try emitStatic(&g, &static_out.writer, meta);
+    try writeFormatted(io, arena, out_dir, "duckdb_v2_static.zig", static_out.written());
 
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = formatted });
+    var dynamic_out: Io.Writer.Allocating = .init(arena);
+    try emitDynamic(&g, &dynamic_out.writer, meta);
+    try writeFormatted(io, arena, out_dir, "duckdb_v2_dynamic.zig", dynamic_out.written());
 
     log.info(
         "{d} modules, {d} functions ({d} unstable skipped), {d} callbacks, {d} structs, {d} enums, {d} handles\n",
         .{ paths.items.len, g.functions.items.len, g.skipped_unstable, g.callbacks.items.len, g.structs.items.len, g.enums.items.len, g.handles.items.len },
     );
+}
+
+/// Runs the generated code through the formatter, so that `zig fmt` leaves the committed file alone.
+fn writeFormatted(io: Io, arena: Allocator, out_dir: []const u8, name: []const u8, source: []const u8) !void {
+    const raw = try arena.dupeSentinel(u8, source, 0);
+    const tree = try std.zig.Ast.parse(arena, raw, .{});
+    if (tree.errors.len != 0) fatal("{s}: the generated code does not parse (first error: {t})", .{ name, tree.errors[0].tag });
+    const formatted = try tree.renderAlloc(arena);
+
+    var dir = try Io.Dir.cwd().openDir(io, out_dir, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = name, .data = formatted });
 }
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
@@ -224,17 +242,21 @@ fn isUnstable(v: Value) bool {
 
 // --- emitting ------------------------------------------------------------------------------------
 
-fn emit(g: *Gen, w: *Io.Writer, meta: Value) !void {
+fn fileHeader(g: *Gen, w: *Io.Writer, meta: Value, title: []const u8, blurb: []const u8) !void {
     try w.print(
-        \\//! Static (direct-link) bindings for the DuckDB v2 C API.
+        \\//! {s} for the DuckDB v2 C API.
         \\//!
-        \\//! Generated by tools/gen_v2_static.zig from the DuckDB v2 C API spec ({s}; schema {s}, API
-        \\//! versions {s}); do not edit. Regenerate with `zig build gen-v2-static -Dv2-api-spec=<dir>`.
-        \\//! Declaration names are the C names. Functions are plain externs, resolved at link time.
-        \\//! Pointer nullability is inferred from the parameter descriptions (see tools/gen_v2_static.zig).
+        \\//! Generated by tools/gen_v2_bindings.zig from the DuckDB v2 C API spec ({s}; schema {s}, API
+        \\//! versions {s}); do not edit. Regenerate with `zig build gen-v2-bindings -Dv2-api-spec=<dir>`.
+        \\//! Declaration names are the C names. {s}
+        \\//! Pointer nullability is inferred from the parameter descriptions (see tools/gen_v2_bindings.zig).
         \\
         \\
-    , .{ g.source, str(get(meta, "schema_version")) orelse "?", try versionList(g, meta) });
+    , .{ title, g.source, str(get(meta, "schema_version")) orelse "?", try versionList(g, meta), blurb });
+}
+
+fn emitTypes(g: *Gen, w: *Io.Writer, meta: Value) !void {
+    try fileHeader(g, w, meta, "Types", "Shared by the static and the dynamic backend, which re-export them.");
 
     try w.writeAll(arrow_preamble);
 
@@ -282,6 +304,34 @@ fn emit(g: *Gen, w: *Io.Writer, meta: Value) !void {
         try writeReturn(g, w, cb.v);
         try w.writeAll(";\n\n");
     }
+}
+
+/// What the backends re-export: every declaration of the types file.
+fn emitReexports(g: *Gen, w: *Io.Writer) !void {
+    try w.writeAll("// --- Types, re-exported from the shared types module -------------------------------------------\n\n");
+    for ([_][]const u8{ "ArrowSchema", "ArrowArray", "ArrowArrayStream" }) |name| try reexport(w, name);
+    for (g.primitive_handles.items) |name| try reexport(w, name);
+    for (g.constants.items) |c| try reexport2(w, g.upper, c.name, "");
+    for (g.enums.items) |e| try reexport2(w, g.upper, e.name, "");
+    for (g.handles.items) |h| try reexport2(w, g.prefix, h.name, "_handle");
+    for (g.structs.items) |st| try reexport2(w, g.prefix, st.name, "");
+    for (g.aliases.items) |a| try reexport2(w, g.prefix, a.name, "_t");
+    for (g.callbacks.items) |cb| try reexport2(w, g.prefix, cb.name, "_fn");
+    try w.writeAll("\n");
+}
+
+fn reexport(w: *Io.Writer, name: []const u8) !void {
+    try w.print("/// See `duckdb_v2_types.zig`.\npub const {s} = duckdb_v2_types.{s};\n", .{ name, name });
+}
+
+fn reexport2(w: *Io.Writer, prefix: []const u8, name: []const u8, suffix: []const u8) !void {
+    try w.print("/// See `duckdb_v2_types.zig`.\npub const {s}{s}{s} = duckdb_v2_types.{s}{s}{s};\n", .{ prefix, name, suffix, prefix, name, suffix });
+}
+
+fn emitStatic(g: *Gen, w: *Io.Writer, meta: Value) !void {
+    try fileHeader(g, w, meta, "Static (direct-link) bindings", "Functions are plain externs, resolved at link time.");
+    try w.writeAll("const duckdb_v2_types = @import(\"duckdb_v2_types\");\n\n");
+    try emitReexports(g, w);
 
     try w.writeAll("// --- Functions ---------------------------------------------------------------------------------\n\n");
     for (g.functions.items) |f| {
@@ -292,6 +342,104 @@ fn emit(g: *Gen, w: *Io.Writer, meta: Value) !void {
         try writeReturn(g, w, f.v);
         try w.writeAll(";\n\n");
     }
+}
+
+// --- the dynamic backend ---------------------------------------------------------------------------
+
+/// The order of the members of `duckdb_ext_api_v2` is the ABI: DuckDB fills the table in that order.
+/// The spec does not state it; the header generator derives it, and what it does today is: functions
+/// that are unstable come last (they sit under `#if DUCKDB_V2_API_ALLOW_UNSTABLE`), and otherwise they
+/// are ordered by the date of their first lifecycle entry, then by name. A new function therefore
+/// appends. The parity test compares the result with the pinned header, member by member.
+fn abiOrder(g: *Gen) ![]const Entry {
+    const items = try g.arena.dupe(Entry, g.functions.items);
+    std.mem.sort(Entry, items, {}, abiLessThan);
+    return items;
+}
+
+fn introduced(v: Value) []const u8 {
+    const lc = get(v, "lifecycle") orelse return "";
+    if (lc != .list or lc.list.len == 0 or lc.list[0] != .list or lc.list[0].list.len < 3) return "";
+    return lc.list[0].list[2].scalar;
+}
+
+fn abiLessThan(_: void, a: Entry, b: Entry) bool {
+    const unstable_a = isUnstable(a.v);
+    const unstable_b = isUnstable(b.v);
+    if (unstable_a != unstable_b) return !unstable_a;
+    switch (std.mem.order(u8, introduced(a.v), introduced(b.v))) {
+        .lt => return true,
+        .gt => return false,
+        .eq => return std.mem.lessThan(u8, a.name, b.name),
+    }
+}
+
+fn emitDynamic(g: *Gen, w: *Io.Writer, meta: Value) !void {
+    try fileHeader(g, w, meta, "Dynamic (get_api) bindings", "Functions call through the table DuckDB hands out at load time.");
+    try w.writeAll("const std = @import(\"std\");\nconst duckdb_v2_types = @import(\"duckdb_v2_types\");\n\n");
+    try emitReexports(g, w);
+
+    const ordered = try abiOrder(g);
+
+    try w.writeAll("// --- The function table ----------------------------------------------------------------------\n\n");
+    try w.print(
+        \\/// The API version this file was generated for, to pass to `init`.
+        \\pub const api_version: [*:0]const u8 = "{s}";
+        \\
+        \\/// The function-pointer table DuckDB hands out through `get_api`. The order of the members is the ABI.
+        \\/// A member is null when the table DuckDB serves does not have the function.
+        \\pub const Api = extern struct {{
+        \\
+    , .{latestVersion(meta)});
+    for (ordered) |f| {
+        try w.print("    {s}{s}: ?*const fn (", .{ g.prefix, f.name });
+        try writeParams(g, w, get(f.v, "parameters").?);
+        try w.writeAll(") callconv(.c) ");
+        try writeReturn(g, w, f.v);
+        try w.writeAll(",\n");
+    }
+    try w.writeAll(
+        \\};
+        \\
+        \\/// The table in use, filled by `init`. A copy: DuckDB may free the one `get_api` returns once the
+        \\/// entrypoint returns.
+        \\pub var api: Api = std.mem.zeroes(Api);
+        \\
+        \\/// Fetches the function table. Call it first in the extension entrypoint: nothing else may be called
+        \\/// before it succeeds. On failure return from the entrypoint without touching the error slot, since
+        \\/// DuckDB has already recorded why `get_api` refused.
+        \\pub fn init(input: *const duckdb_v2_extension_input, minimum_api_version: [*:0]const u8) bool {
+        \\    const get_api = input.get_api orelse return false;
+        \\    const table = get_api(input.extension, minimum_api_version) orelse return false;
+        \\    // SAFETY: for the version asked for, `get_api` returns a pointer to the table that `Api` lays out;
+        \\    // its member order is the ABI both sides were generated from.
+        \\    const typed: *const Api = @ptrCast(@alignCast(table));
+        \\    api = typed.*;
+        \\    return true;
+        \\}
+        \\
+        \\
+    );
+
+    try w.writeAll("// --- Functions -------------------------------------------------------------------------------\n\n");
+    for (g.functions.items) |f| {
+        try writeFunctionDoc(w, f.v);
+        try w.print("pub inline fn {s}{s}(", .{ g.prefix, f.name });
+        try writeParams(g, w, get(f.v, "parameters").?);
+        try w.writeAll(") ");
+        try writeReturn(g, w, f.v);
+        try w.print(" {{\n    return api.{s}{s}.?(", .{ g.prefix, f.name });
+        for (get(f.v, "parameters").?.map.keys(), 0..) |name, i| {
+            if (i > 0) try w.writeAll(", ");
+            try w.print("{f}", .{std.zig.fmtId(name)});
+        }
+        try w.writeAll(");\n}\n\n");
+    }
+}
+
+fn latestVersion(meta: Value) []const u8 {
+    const versions = get(meta, "versions") orelse return "";
+    return versions.list[versions.list.len - 1].scalar;
 }
 
 fn versionList(g: *Gen, meta: Value) ![]const u8 {

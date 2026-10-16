@@ -10,6 +10,7 @@ const std = @import("std");
 const log = std.log.scoped(.v2_static_parity);
 const gen = @import("duckdb_v2_static");
 const c = @import("duckdb_v2_full_c");
+const util = @import("duckdb_v2_parity_util.zig");
 
 const fn_prefix = "duckdb_v2_";
 const enum_prefix = "DUCKDB_V2_";
@@ -21,44 +22,12 @@ fn fail(comptime fmt: []const u8, args: anytype) void {
     if (failures <= 40) log.err(fmt, args);
 }
 
-/// Same size and, for pointers, the same kind of pointee. Integers, enums and structs of the same
-/// size are interchangeable: the C side spells an enum `c_uint` where the generated side has an enum.
-fn sameShape(comptime A: type, comptime B: type, comptime depth: u8) bool {
-    const ia = @typeInfo(A);
-    const ib = @typeInfo(B);
-    if (ia == .optional) return sameShape(ia.optional.child, B, depth);
-    if (ib == .optional) return sameShape(A, ib.optional.child, depth);
-
-    if (ia == .pointer or ib == .pointer) {
-        if (ia != .pointer or ib != .pointer) return false;
-        const ca = ia.pointer.child;
-        const cb = ib.pointer.child;
-        // Opaque and function pointees cannot be compared further.
-        if (@typeInfo(ca) == .@"opaque" or @typeInfo(cb) == .@"opaque") return true;
-        if (@typeInfo(ca) == .@"fn" or @typeInfo(cb) == .@"fn") return true;
-        if (depth == 0) return true;
-        return sameShape(ca, cb, depth - 1);
-    }
-    if (A == void or B == void) return A == B;
-    return @sizeOf(A) == @sizeOf(B);
-}
-
-fn sameFn(comptime FA: type, comptime FB: type) bool {
-    const a = @typeInfo(FA).@"fn";
-    const b = @typeInfo(FB).@"fn";
-    if (a.param_types.len != b.param_types.len) return false;
-    inline for (a.param_types, b.param_types) |pa, pb| {
-        if (!sameShape(pa.?, pb.?, 3)) return false;
-    }
-    return sameShape(a.return_type.?, b.return_type.?, 3);
-}
-
 fn checkFunction(comptime name: []const u8) void {
     if (!@hasDecl(c, name)) return fail("function {s}: not in the C header", .{name});
     const FA = @TypeOf(@field(gen, name));
     const FB = @TypeOf(@field(c, name));
     if (@typeInfo(FB) != .@"fn") return fail("function {s}: not a function in the C header", .{name});
-    if (!sameFn(FA, FB)) fail("function {s}: signature differs\n    gen: {s}\n    c:   {s}", .{ name, @typeName(FA), @typeName(FB) });
+    if (!util.sameFn(FA, FB)) fail("function {s}: signature differs\n    gen: {s}\n    c:   {s}", .{ name, @typeName(FA), @typeName(FB) });
 }
 
 fn checkEnum(comptime name: []const u8, comptime E: type) void {
@@ -90,7 +59,7 @@ fn checkStruct(comptime name: []const u8, comptime S: type) void {
     inline for (fa, fb) |na, nb| {
         if (!std.mem.eql(u8, na, nb)) return fail("struct {s}: field {s} here, {s} in the C header", .{ name, na, nb });
         if (@offsetOf(S, na) != @offsetOf(C, na)) fail("struct {s}.{s}: offset {d} here, {d} in the C header", .{ name, na, @offsetOf(S, na), @offsetOf(C, na) });
-        if (!sameShape(@FieldType(S, na), @FieldType(C, na), 3)) fail("struct {s}.{s}: type differs", .{ name, na });
+        if (!util.sameShape(@FieldType(S, na), @FieldType(C, na), 3)) fail("struct {s}.{s}: type differs", .{ name, na });
     }
 }
 
@@ -104,17 +73,12 @@ fn checkType(comptime name: []const u8, comptime T: type) void {
             const C = @field(c, name);
             if (@TypeOf(C) != type) return fail("type {s}: not a type in the C header", .{name});
             const ok = if (@typeInfo(T) == .pointer and @typeInfo(@typeInfo(T).pointer.child) == .@"fn")
-                sameFnPointer(T, C)
+                util.sameFnPointer(T, C)
             else
-                sameShape(T, C, 3);
+                util.sameShape(T, C, 3);
             if (!ok) fail("type {s}: differs from the C header", .{name});
         },
     }
-}
-
-fn sameFnPointer(comptime A: type, comptime B: type) bool {
-    const pb = if (@typeInfo(B) == .optional) @typeInfo(B).optional.child else B;
-    return sameFn(@typeInfo(A).pointer.child, @typeInfo(pb).pointer.child);
 }
 
 fn checkConstant(comptime name: []const u8, comptime value: anytype) void {

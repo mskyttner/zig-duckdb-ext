@@ -329,28 +329,60 @@ pub fn build(b: *std.Build) void {
     const v2_check = b.addTest(.{ .root_module = duckdb_v2_mod });
     const run_v2_check = b.addRunArtifact(v2_check);
 
-    // ── Generated static (direct-link) v2 bindings ───────────────────────
-    // `src/lib/duckdb_v2_static.zig` is generated from DuckDB's own YAML
-    // API spec by tools/gen_v2_static.zig (`zig build gen-v2-static`, below)
-    // and committed, so that a normal build needs neither the tool nor
-    // zig-yaml. Every function is a plain `extern fn duckdb_v2_*` resolved
-    // at link time — the mode `v2-static-embed-poc-direct` proved with
-    // hand-picked declarations. The parity test below compares the whole
-    // file with the pinned `duckdb_v2.h`, so it cannot silently drift from
-    // the commit `duckdb_headers_v2` pins.
+    // ── Generated v2 bindings: shared types, static (direct-link) and
+    // dynamic (get_api) backends ───────────────────────────────────────────
+    // `src/lib/duckdb_v2_{types,static,dynamic}.zig` are generated from
+    // DuckDB's own YAML API spec by tools/gen_v2_bindings.zig
+    // (`zig build gen-v2-bindings`, below) and committed, so that a normal
+    // build needs neither the tool nor zig-yaml.
+    //
+    // - static: every function is a plain `extern fn duckdb_v2_*` resolved
+    //   at link time — the mode `v2-static-embed-poc-direct` proved with
+    //   hand-picked declarations.
+    // - dynamic: the `get_api` function-pointer table (`Api`), `init` to
+    //   fill it, and a wrapper per function that calls through it.
+    //
+    // Both use the C names and re-export the one `duckdb_v2_types` module,
+    // so code written against `duckdb_v2_api` (an import name a consumer
+    // binds to one of the two) builds against either.
+    //
+    // Parity tests compare the files with the pinned headers, so they
+    // cannot silently drift from the commit `duckdb_headers_v2` pins.
+    const duckdb_v2_types_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/duckdb_v2_types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const duckdb_v2_static_mod = b.createModule(.{
         .root_source_file = b.path("src/lib/duckdb_v2_static.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "duckdb_v2_types", .module = duckdb_v2_types_mod }},
     });
+    const duckdb_v2_dynamic_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/duckdb_v2_dynamic.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "duckdb_v2_types", .module = duckdb_v2_types_mod }},
+    });
+    // The generated files include the unstable functions, so the headers
+    // are translated with them too.
     const duckdb_v2_header_c: Translator = .init(translate_c_dep, .{
         .name = "duckdb_v2_header_c",
         .c_source_file = duckdb_headers_v2_dep.path("duckdb_v2.h"),
         .target = target,
         .optimize = optimize,
-        // The generated file includes the unstable functions too.
         .extra_args = &.{"-DDUCKDB_V2_API_ALLOW_UNSTABLE=1"},
     });
+    const duckdb_v2_extension_header_c: Translator = .init(translate_c_dep, .{
+        .name = "duckdb_v2_extension_header_c",
+        .c_source_file = duckdb_headers_v2_dep.path("duckdb_extension_v2.h"),
+        .target = target,
+        .optimize = optimize,
+        .extra_args = &.{"-DDUCKDB_V2_API_ALLOW_UNSTABLE=1"},
+    });
+    duckdb_v2_extension_header_c.addIncludePath(duckdb_headers_v2_dep.path("."));
+
     const v2_static_parity = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/lib/duckdb_v2_static_parity.zig"),
@@ -367,19 +399,34 @@ pub fn build(b: *std.Build) void {
     });
     const run_v2_static_parity = b.addRunArtifact(v2_static_parity);
 
-    // Regenerates the file above. Not part of any default step: it needs a
-    // checkout of the DuckDB commit that `duckdb_headers_v2` pins, and
-    // zig-yaml (a lazy path dependency, fetched only here).
-    const v2_api_spec = b.option([]const u8, "v2-api-spec", "Directory with DuckDB's v2 API spec (<duckdb checkout>/api_spec/v2), for `gen-v2-static`");
-    const v2_api_spec_ref = b.option([]const u8, "v2-api-spec-ref", "Where the spec comes from, recorded in the generated file") orelse
+    const v2_dynamic_parity = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib/duckdb_v2_dynamic_parity.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = true,
+            .imports = &.{
+                .{ .name = "duckdb_v2_static", .module = duckdb_v2_static_mod },
+                .{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod },
+                .{ .name = "duckdb_v2_extension_c", .module = duckdb_v2_extension_header_c.mod },
+            },
+        }),
+    });
+    const run_v2_dynamic_parity = b.addRunArtifact(v2_dynamic_parity);
+
+    // Regenerates the three files above. Not part of any default step: it
+    // needs a checkout of the DuckDB commit that `duckdb_headers_v2` pins,
+    // and zig-yaml (a lazy path dependency, fetched only here).
+    const v2_api_spec = b.option([]const u8, "v2-api-spec", "Directory with DuckDB's v2 API spec (<duckdb checkout>/api_spec/v2), for `gen-v2-bindings`");
+    const v2_api_spec_ref = b.option([]const u8, "v2-api-spec-ref", "Where the spec comes from, recorded in the generated files") orelse
         "duckdb b15358c371, v2.0.0-alpha46057";
-    const gen_v2_static_step = b.step("gen-v2-static", "Regenerate src/lib/duckdb_v2_static.zig from the DuckDB v2 API spec (needs -Dv2-api-spec=)");
+    const gen_v2_bindings_step = b.step("gen-v2-bindings", "Regenerate src/lib/duckdb_v2_{types,static,dynamic}.zig from the DuckDB v2 API spec (needs -Dv2-api-spec=)");
     if (v2_api_spec) |spec_dir| {
         if (b.lazyDependency("yaml", .{ .target = b.graph.host, .optimize = .ReleaseSafe })) |yaml_dep| {
             const gen_exe = b.addExecutable(.{
-                .name = "gen_v2_static",
+                .name = "gen_v2_bindings",
                 .root_module = b.createModule(.{
-                    .root_source_file = b.path("tools/gen_v2_static.zig"),
+                    .root_source_file = b.path("tools/gen_v2_bindings.zig"),
                     .target = b.graph.host,
                     .optimize = .ReleaseSafe,
                 }),
@@ -388,17 +435,35 @@ pub fn build(b: *std.Build) void {
 
             const run_gen = b.addRunArtifact(gen_exe);
             run_gen.addDirectoryArg(.{ .cwd_relative = spec_dir });
-            const generated = run_gen.addOutputFileArg("duckdb_v2_static.zig");
+            const generated = run_gen.addOutputDirectoryArg("duckdb_v2_bindings");
             run_gen.addArg("--unstable");
             run_gen.addArgs(&.{ "--source", v2_api_spec_ref });
 
             const update_generated = b.addUpdateSourceFiles();
-            update_generated.addCopyFileToSource(generated, "src/lib/duckdb_v2_static.zig");
-            gen_v2_static_step.dependOn(&update_generated.step);
+            inline for (.{ "types", "static", "dynamic" }) |backend| {
+                const file = "duckdb_v2_" ++ backend ++ ".zig";
+                update_generated.addCopyFileToSource(generated.path(b, file), "src/lib/" ++ file);
+            }
+            gen_v2_bindings_step.dependOn(&update_generated.step);
         }
     } else {
-        gen_v2_static_step.dependOn(&b.addFail("gen-v2-static needs -Dv2-api-spec=<duckdb checkout>/api_spec/v2").step);
+        gen_v2_bindings_step.dependOn(&b.addFail("gen-v2-bindings needs -Dv2-api-spec=<duckdb checkout>/api_spec/v2").step);
     }
+
+    // One hello-world scalar function written against `duckdb_v2_api`,
+    // instantiated once per backend: the same source, two bindings.
+    const gen_hello_static_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/gen_hello.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "duckdb_v2_api", .module = duckdb_v2_static_mod }},
+    });
+    const gen_hello_dynamic_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/gen_hello.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "duckdb_v2_api", .module = duckdb_v2_dynamic_mod }},
+    });
 
     // Worked examples kept separate from duckdb_v2.zig itself — see that
     // file's own doc comment for why.
@@ -480,6 +545,7 @@ pub fn build(b: *std.Build) void {
     const v2_check_step = b.step("v2-check", "Type-check the in-progress duckdb v2 API bindings");
     v2_check_step.dependOn(&run_v2_check.step);
     v2_check_step.dependOn(&run_v2_static_parity.step);
+    v2_check_step.dependOn(&run_v2_dynamic_parity.step);
     v2_check_step.dependOn(&run_duckdb_v2_examples_check.step);
     v2_check_step.dependOn(&run_comptime_scalar_v2_check.step);
     v2_check_step.dependOn(&run_comptime_table_v2_check.step);
@@ -586,6 +652,36 @@ pub fn build(b: *std.Build) void {
     const v2_poc_step = b.step("v2-poc", "Build the v2 proof-of-concept .duckdb_extension file");
     v2_poc_step.dependOn(&install_v2_poc.step);
     v2_poc_step.dependOn(&install_fake_nethogs.step);
+
+    // ── Dynamic-bindings PoC extension: the generated `get_api` backend,
+    // loaded by the real pinned CLI. Registers `gen_hello()` from the same
+    // source `v2-static-embed-poc-gen` links statically.
+    const v2_gen_poc_lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "zig_ext_v2_gen_poc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ext/init_v2_gen_poc.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    v2_gen_poc_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    v2_gen_poc_lib.root_module.addImport("gen_hello", gen_hello_dynamic_mod);
+    v2_gen_poc_lib.root_module.link_libc = true;
+    const v2_gen_poc_output = addDuckdbExtensionMetadata(b, v2_gen_poc_lib, "zig_ext_v2_gen_poc", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
+
+    const v2_gen_poc_step = b.step("v2-gen-poc", "Build the generated-dynamic-bindings .duckdb_extension, load it in the pinned v2 CLI and call gen_hello()");
+    {
+        const run_duckdb_v2_gen_poc = if (duckdb_cli_v2) |cli| blk: {
+            const r = std.Build.Step.Run.create(b, "run duckdb (v2-gen-poc, pinned)");
+            r.addFileArg(cli);
+            break :blk r;
+        } else b.addSystemCommand(&.{"duckdb"});
+        run_duckdb_v2_gen_poc.addArgs(&.{ "-unsigned", "-no-init", "-list", "-noheader", "-c" });
+        run_duckdb_v2_gen_poc.addFileArg2(v2_gen_poc_output, .{ .prefix = "LOAD '", .suffix = "'; SELECT gen_hello();" });
+        run_duckdb_v2_gen_poc.expectStdOutEqual("Hello, generated bindings!\n");
+        v2_gen_poc_step.dependOn(&run_duckdb_v2_gen_poc.step);
+    }
 
     // ── Interactive session with the v2-poc extension pre-loaded ─────────
     // Same idea/mechanism as the `duckdb-extension` step above, pointed at
@@ -755,6 +851,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         static_embed_poc_gen_exe.root_module.addImport("duckdb_v2_static", duckdb_v2_static_mod);
+        static_embed_poc_gen_exe.root_module.addImport("gen_hello", gen_hello_static_mod);
         static_embed_poc_gen_exe.root_module.addImport("duckdb_static", duckdb_static_mod);
         static_embed_poc_gen_exe.root_module.addImport("duckdb_full_c", duckdb_full_c.mod);
         static_embed_poc_gen_exe.root_module.link_libc = true;
@@ -1055,6 +1152,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_sign_extension_tests.step);
     test_step.dependOn(&run_v2_static_parity.step);
+    test_step.dependOn(&run_v2_dynamic_parity.step);
 
     // Installs the signing tool itself — see src/sign_extension_main.zig's
     // own doc comment for usage.
