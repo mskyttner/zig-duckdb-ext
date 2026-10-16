@@ -59,6 +59,44 @@ SELECT zig_add_numbers(NULL, 2)
 NULL
 
 query I
+SELECT zig_add_numbers(1, NULL)
+----
+NULL
+
+query I
+SELECT zig_add_numbers(100, -50)
+----
+50
+
+query I
+SELECT zig_add_numbers(0, 0)
+----
+0
+
+query I
+SELECT zig_add_numbers(i, i * 10) FROM generate_series(1, 5) t(i)
+----
+11
+22
+33
+44
+55
+
+# NULLs in a column, on both sides, over more than one 64-row validity word.
+query III
+SELECT count(*), count(zig_add_numbers(i, CASE WHEN i % 7 = 0 THEN NULL ELSE i END)), sum(zig_add_numbers(i, CASE WHEN i % 7 = 0 THEN NULL ELSE i END)) FROM generate_series(1, 200) t(i)
+----
+200
+172
+34516
+
+query II
+SELECT count(zig_add_numbers(CASE WHEN i % 5 = 0 THEN NULL ELSE i END, CASE WHEN i % 7 = 0 THEN NULL ELSE i END)), sum(zig_add_numbers(CASE WHEN i % 5 = 0 THEN NULL ELSE i END, CASE WHEN i % 7 = 0 THEN NULL ELSE i END)) FROM generate_series(1, 200) t(i)
+----
+137
+27366
+
+query I
 SELECT tp_bar(0.5, 'X', '.', 10)
 ----
 XXXXX.....
