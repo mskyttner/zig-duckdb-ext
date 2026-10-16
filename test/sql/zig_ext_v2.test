@@ -82,6 +82,40 @@ SELECT zig_add_numbers(i, i * 10) FROM generate_series(1, 5) t(i)
 44
 55
 
+# Overflow is an error of the query, as for DuckDB's own +, not the end of the process.
+statement error
+SELECT zig_add_numbers(9223372036854775807, 1)
+----
+Overflow in addition of INT64 (9223372036854775807 + 1)!
+
+statement error
+SELECT zig_add_numbers(-9223372036854775807 - 1, -1)
+----
+Overflow in addition of INT64 (-9223372036854775808 + -1)!
+
+# The first overflowing row of a column is the one reported; rows before it were fine.
+statement error
+SELECT sum(zig_add_numbers(i, 9223372036854775807)) FROM generate_series(0, 3) t(i)
+----
+Overflow in addition of INT64 (1 + 9223372036854775807)!
+
+# The same with a NULL in the column, which takes the path that checks validity.
+statement error
+SELECT sum(zig_add_numbers(CASE WHEN i = 0 THEN NULL ELSE i END, 9223372036854775807)) FROM generate_series(0, 3) t(i)
+----
+Overflow in addition of INT64 (1 + 9223372036854775807)!
+
+# The largest sum that fits is not an overflow, and the session is still usable.
+query I
+SELECT zig_add_numbers(9223372036854775806, 1)
+----
+9223372036854775807
+
+query I
+SELECT zig_add_numbers(1, 2)
+----
+3
+
 # NULLs in a column, on both sides, over more than one 64-row validity word.
 query III
 SELECT count(*), count(zig_add_numbers(i, CASE WHEN i % 7 = 0 THEN NULL ELSE i END)), sum(zig_add_numbers(i, CASE WHEN i % 7 = 0 THEN NULL ELSE i END)) FROM generate_series(1, 200) t(i)

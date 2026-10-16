@@ -1853,13 +1853,21 @@ global switch exists yet.
   — struct fields that point to a scalar are `[*]`, not `*`. A failed
   registration now passes the entrypoint's error slot (`input.err`) rather
   than a throwaway local, so the load reports why.
-- **Pre-existing bug found while porting `zig_add_numbers`, kept as is:**
-  `a + b` on `i64` traps on overflow in safe builds, so
-  `SELECT zig_add_numbers(9223372036854775807, 1)` aborts the whole DuckDB
-  process with a panic and stack trace, where DuckDB's own `+` raises "Out of
-  Range Error: Overflow in addition of INT64". The port is faithful to this
-  (verified before and after). Fixing it means reporting an error through
-  the callback's `err` instead of trapping; not done here.
+- **Overflow in `zig_add_numbers` (found while porting it, fixed after).**
+  `a + b` on `i64` trapped in safe builds, so
+  `SELECT zig_add_numbers(9223372036854775807, 1)` aborted the whole DuckDB
+  process with a panic and stack trace, where DuckDB's own `+` raises an
+  error. The port kept that on purpose (verified before and after); the fix
+  is separate. The sum is now `@addWithOverflow`, and an overflow sets
+  `ERROR_INPUT_OUT_OF_RANGE` and the text "Overflow in addition of INT64
+  (a + b)!" on the exec callback's `err` (the pattern `comptime_scalar_v2`
+  already uses), so the query fails with "Out of Range Error: Overflow in
+  addition of INT64 (9223372036854775807 + 1)!" — DuckDB's own wording — and
+  the session survives. Tested on both code paths (no NULLs, and with
+  NULLs), at the largest sum that fits, and that the session still works
+  afterwards. **Still affected:** `ct_add_numbers` (v1 and v2), whose `+` is
+  the user function the comptime framework calls, so the framework cannot
+  catch it, and v1's `zig_add_numbers`; both still panic on overflow.
 - **Not done:** the other seven function modules and the comptime
   frameworks (`comptime_scalar_v2`, ...), which still take the hand-written
   `duckdb_v2.zig` layer — those are where a shared bytes/validity helper

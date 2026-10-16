@@ -4,9 +4,23 @@
 ///! ct_add_numbers_v2.zig for that style), adapted to v2's error-returning calling convention and
 ///! extension-based registration, and written against the generated bindings
 ///! (`duckdb_v2_dynamic`, see tools/gen_v2_bindings.zig) like hello_v2.zig.
-///! Adds two 64-bit integers. Propagates NULL if either input is NULL.
+///! Adds two 64-bit integers. Propagates NULL if either input is NULL. A sum that does not fit is an
+///! error of the query ("Overflow in addition of INT64 (a + b)!", as for DuckDB's own `+`), not a
+///! trap that would take the whole process down.
+const std = @import("std");
 const v2 = @import("duckdb_v2_dynamic");
 const helpers = @import("../lib/v2_helpers.zig");
+
+/// Reports `a + b` overflowing as the error of the query running the callback.
+fn reportOverflow(err: *v2.duckdb_v2_error_info_handle, a: i64, b: i64) void {
+    var buf: [96]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Overflow in addition of INT64 ({d} + {d})!", .{ a, b }) catch
+        "Overflow in addition of INT64!";
+    const text: v2.duckdb_v2_str = .{ .ptr = msg.ptr, .len = msg.len };
+    // There is nowhere to report a failure to report: DuckDB fails the query either way.
+    _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_INPUT_OUT_OF_RANGE);
+    _ = v2.duckdb_v2_error_info_set_text(err.*, &text);
+}
 
 fn exec(
     info: v2.duckdb_v2_scalar_function_exec_info_handle,
@@ -45,7 +59,9 @@ fn exec(
         var row: u64 = 0;
         while (row < row_count) : (row += 1) {
             if (helpers.isValid(a_view.validity, row) and helpers.isValid(b_view.validity, row)) {
-                result[row] = a_data[row] + b_data[row];
+                const sum, const overflowed = @addWithOverflow(a_data[row], b_data[row]);
+                if (overflowed != 0) return reportOverflow(err, a_data[row], b_data[row]);
+                result[row] = sum;
             } else {
                 if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
             }
@@ -53,7 +69,9 @@ fn exec(
     } else {
         var row: u64 = 0;
         while (row < row_count) : (row += 1) {
-            result[row] = a_data[row] + b_data[row];
+            const sum, const overflowed = @addWithOverflow(a_data[row], b_data[row]);
+            if (overflowed != 0) return reportOverflow(err, a_data[row], b_data[row]);
+            result[row] = sum;
         }
     }
 }
