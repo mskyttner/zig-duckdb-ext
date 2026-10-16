@@ -1852,14 +1852,16 @@ global switch exists yet.
 - **Function modules moved onto the generated bindings:** `hello_v2.zig`,
   `add_numbers_v2.zig`, `ct_add_numbers_v2.zig` and `ct_tokenize_v2.zig`, and
   with the last two the comptime frameworks they use, **`comptime_scalar_v2`
-  and `comptime_table_v2`**, then **`comptime_cast_v2`** (every PoC function
-  built on them moves too). The other five function modules (`tp_bar`,
-  `tokenize`, `tp_line`, `tp_treemap`, `tp_snakemap`) and the aggregate and
-  appender frameworks still use the hand-written `duckdb_v2.zig`. What the migrated code needs to read vectors
+  and `comptime_table_v2`**, then **`comptime_cast_v2`** and
+  **`comptime_aggregate_v2`** (every PoC function built on them moves too). The
+  other five function modules (`tp_bar`, `tokenize`, `tp_line`, `tp_treemap`,
+  `tp_snakemap`) and the appender framework still use the hand-written
+  `duckdb_v2.zig`. What the migrated code needs to read vectors
   and build parametrised types lives in `src/lib/v2_helpers.zig` (a module of
   its own, since the frameworks are modules too): `isValid`, `bytesSlice`,
   `str`, the slice forms of the calls that take a pointer and a count or a
-  `str`, and the LIST/ARRAY/MAP/DECIMAL/STRUCT/UNION type creators.
+  `str`, `makeBytesValue` (the arena-backed VARCHAR value an aggregate's finalize
+  writes), and the LIST/ARRAY/MAP/DECIMAL/STRUCT/UNION type creators.
   `db.initApi` fills both function tables from its single `get_api` call
   (`get_api` may only be called once).
 - **The frameworks' public surface is unchanged, with an explicit boundary.**
@@ -1873,24 +1875,36 @@ global switch exists yet.
 - **How the frameworks were verified.** They had almost no runtime tests: the
   real extension used one scalar and one table function through them, and
   everything else was compile-time. `test/sql/zig_ext_v2_poc.test` (new step
-  `sqllogictest-v2-poc`, task `sqllogictest:v2:poc`, now 152 blocks) pins their
+  `sqllogictest-v2-poc`, task `sqllogictest:v2:poc`, now 220 blocks) pins their
   behavior through the proof-of-concept extension — numeric, VARCHAR, STRUCT,
   VARIANT, TIMESTAMP, BLOB, DECIMAL, ENUM, LIST, ARRAY, MAP and UNION scalars,
   matmul at odd sizes, range/repeat tables across batch boundaries, filter and
-  projection pushdown, and the custom casts (VARCHAR/DECIMAL/ENUM/STRUCT/VARIANT,
-  NULL rows, TRY_CAST) — with big or nested results compared by `md5()` of an
-  aggregated string whose expected value was computed independently in Python.
-  Each framework's suite passed against the old code first and passes unchanged
-  on the ported one; mutating the frameworks or helpers (type creation, byte
-  reads, NULL handling, union members, column remapping, batching, the pushdown
-  call, the cast writes and decodes) makes it fail, each checked to be a test
+  projection pushdown, the custom casts (VARCHAR/DECIMAL/ENUM/STRUCT/VARIANT,
+  NULL rows, TRY_CAST), and the aggregates (additive and non-additive combine,
+  NULL-returning finalize, VARCHAR arguments and results, a heap-owning state,
+  the SIMD `updateBatch` path at row counts around the vector width, a 3x3
+  covariance text, as window functions, under ROLLUP, and with `ORDER BY` inside)
+  — with big or nested results compared by `md5()` of an aggregated string whose
+  expected value was computed independently in Python. Each framework's suite
+  passed against the old code first and passes unchanged on the ported one;
+  mutating the frameworks or helpers (type creation, byte reads, NULL handling,
+  union members, column remapping, batching, the pushdown call, the cast writes
+  and decodes, the aggregate callbacks) makes it fail, each checked to be a test
   failure and not a compile error, which also exposed and closed gaps in the
   suite itself. Not covered, before or after: the value a table `progress` hook
-  reports, MAP types whose key and value types differ, and the TRY branch of the
+  reports, MAP types whose key and value types differ, the TRY branch of the
   cast framework's STRUCT and VARIANT paths (no PoC cast of those shapes ever
-  returns `null`). One constraint of the runner worth knowing: DuckDB ends the
-  CLI session on an INTERNAL error, so a `.test` file can hold at most one such
-  case, as its last block.
+  returns `null`), and that an aggregate's `deinit` actually runs (a leak is not
+  observable from SQL). Constraints of the runner and of DuckDB worth knowing:
+  DuckDB ends the CLI session on an INTERNAL error, so a `.test` file can hold at
+  most one such case, as its last block; a function that returns a result
+  *offset* into the output vector is only called that way for an aggregate with
+  `ORDER BY` inside, so only such a query reaches that code; and a test that
+  sums floating-point values must use inputs whose sums are exact in binary
+  (multiples of 0.25, integer-valued doubles), because a parallel combine
+  reorders the additions and Python 3.12's `sum()` of floats is compensated —
+  the first version of the 1BRC tests used multiples of 0.1 and passed only by
+  luck.
 - **`comptime_cast_v2`: ported, and a framework bug found and fixed.** The
   baseline (22 blocks, `af20d50`) was written first and pinned what failed
   alongside what worked: every custom cast failed over a column containing a
@@ -1931,13 +1945,32 @@ global switch exists yet.
   afterwards. **Still affected:** `ct_add_numbers` (v1 and v2), whose `+` is
   the user function the comptime framework calls, so the framework cannot
   catch it, and v1's `zig_add_numbers`; both still panic on overflow.
-- **Not done:** the five hand-written function modules and the aggregate and
-  appender frameworks, then the PoC code itself, and finally removing
-  `duckdb_v2.zig` and the `register`/`db.*` compatibility layer; a build option
-  that binds `duckdb_v2_api` for the frameworks. `ct_add_numbers` (v1 and v2)
-  and v1's `zig_add_numbers` still trap on overflow, now for the comptime
-  framework as a design question: the framework calls a user function that
-  returns a plain `i64`, so it has no way to report an error.
+- **`comptime_aggregate_v2`: ported (`a4739ec`), after fixes to the generator
+  and a bug found on the way.** The aggregate callbacks receive state pointers
+  through `void ***states`, an array of pointers, and the data-pointer getters
+  through `void **` ("or null if none was set"); the generator emitted
+  `***anyopaque` and `**anyopaque`. They are now `*[*]?*anyopaque` and
+  `*?*anyopaque` (every multi-level `void` pointer in the spec is an OUT
+  parameter, so the rule is safe), and the scalar, table and cast frameworks and
+  `add_numbers_v2` went back to `?*anyopaque` for their data pointers — the
+  wrong type had made them declare `*anyopaque = undefined`, which cannot hold
+  the null. The optional `updateBatch` hook still takes `db.VectorView`; the
+  views are handed to it through a pointer cast whose size, alignment and field
+  offsets are checked at comptime. The bug: `makeBytesValue` built the value of a
+  result of up to 12 bytes from `undefined` memory, so the bytes DuckDB compares
+  after the text were garbage and a short VARCHAR aggregate result did not equal
+  the same literal (nor hash, group, sort or join like it). It was in the
+  hand-written original and carried over by the port; fixed separately
+  (`1a65db1`) with failing tests first, and the hand-written copy, left without a
+  caller by the port, removed. Custom aggregates also run as window functions and
+  under ROLLUP, which is now pinned.
+- **Not done:** the five hand-written function modules and the appender
+  framework, then the PoC code itself, and finally removing `duckdb_v2.zig` and
+  the `register`/`db.*` compatibility layer; a build option that binds
+  `duckdb_v2_api` for the frameworks. `ct_add_numbers` (v1 and v2) and v1's
+  `zig_add_numbers` still trap on overflow, now for the comptime framework as a
+  design question: the framework calls a user function that returns a plain
+  `i64`, so it has no way to report an error.
 
 ### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
 
