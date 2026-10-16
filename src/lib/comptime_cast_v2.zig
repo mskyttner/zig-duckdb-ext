@@ -125,6 +125,12 @@
 ///! custom `register` if a future caller needs that; not exposed as a
 ///! `Function` parameter yet since nothing needs it.
 ///!
+///! Bindings: the framework itself calls DuckDB through the generated bindings
+///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). A VARIANT source type is
+///! still written as the hand-written `duckdb_v2.zig`'s `db.ValueHandle`, which `castFn`
+///! receives; the handle is converted where it crosses. Port of the behavior as it was,
+///! including what is broken: see the CAUTIONs above.
+///!
 ///! Usage:
 ///!   const VarcharToInt = comptime_cast_v2.Function([]const u8, i64, struct {
 ///!       fn cast(s: []const u8) ?i64 {
@@ -134,18 +140,31 @@
 ///!   try VarcharToInt.register(input); // input: *const db.ExtensionInput
 const std = @import("std");
 const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
+const helpers = @import("v2_helpers");
 
-fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
+// Everything this framework does goes through the generated bindings (`v2`). A VARIANT source type is
+// still written in the hand-written layer's `db.ValueHandle`, a different Zig type for the same pointer,
+// which `castFn` receives; it is converted where it crosses. This goes away with the hand-written layer.
+const UserValue = db.ValueHandle;
+
+fn toUserValue(v: v2.duckdb_v2_value_handle) UserValue {
+    // SAFETY: both are the same pointer to DuckDB's value, typed by two different translations; the
+    // generated handle points to an opaque type, so only the alignment needs restoring.
+    return @ptrCast(@alignCast(v));
+}
+
+fn duckdbV2TypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
     return switch (T) {
-        i8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT,
-        i16 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT,
-        i32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER,
-        i64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
-        f32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT,
-        f64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE,
-        bool => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN,
-        []const u8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR,
-        db.ValueHandle => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARIANT,
+        i8 => .LOGICAL_TYPE_ID_TINYINT,
+        i16 => .LOGICAL_TYPE_ID_SMALLINT,
+        i32 => .LOGICAL_TYPE_ID_INTEGER,
+        i64 => .LOGICAL_TYPE_ID_BIGINT,
+        f32 => .LOGICAL_TYPE_ID_FLOAT,
+        f64 => .LOGICAL_TYPE_ID_DOUBLE,
+        bool => .LOGICAL_TYPE_ID_BOOLEAN,
+        []const u8 => .LOGICAL_TYPE_ID_VARCHAR,
+        UserValue => .LOGICAL_TYPE_ID_VARIANT,
         else => @compileError("unsupported type for DuckDB v2 cast mapping: " ++ @typeName(T)),
     };
 }
@@ -183,43 +202,43 @@ fn enumSqlText(comptime T: type) []const u8 {
 /// Build the logical type for a plain, DECIMAL, ENUM, STRUCT, or VARIANT
 /// Zig type `T` — mirrors `comptime_scalar_v2.zig`'s identical function
 /// (same duplication rationale as `enumSqlText`).
-fn createLogicalType(ctx: db.ContextHandle, comptime T: type, out_type: *db.LogicalTypeHandle, err: *db.ErrorInfoHandle) db.ErrorCode {
-    if (comptime T == db.ValueHandle) {
-        return db.contextCreateTypeFromText(ctx, "VARIANT", out_type, err);
+fn createLogicalType(ctx: v2.duckdb_v2_context_handle, comptime T: type, out_type: *v2.duckdb_v2_logical_type_handle, err: *v2.duckdb_v2_error_info_handle) v2.DUCKDB_V2_ERROR {
+    if (comptime T == UserValue) {
+        return helpers.createTypeFromText(ctx, "VARIANT", out_type, err);
     }
     if (comptime isDecimalType(T)) {
-        return db.contextCreateDecimalType(ctx, T.v2_decimal_width, T.v2_decimal_scale, out_type, err);
+        return helpers.createDecimalType(ctx, T.v2_decimal_width, T.v2_decimal_scale, out_type, err);
     }
     if (comptime isEnumType(T)) {
-        return db.contextCreateTypeFromText(ctx, comptime enumSqlText(T), out_type, err);
+        return helpers.createTypeFromText(ctx, comptime enumSqlText(T), out_type, err);
     }
     if (comptime isStructType(T)) {
         const fields = @typeInfo(T).@"struct";
         const n = fields.field_types.len;
-        var field_logical_types: [n]db.LogicalTypeHandle = undefined;
+        var field_logical_types: [n]v2.duckdb_v2_logical_type_handle = undefined;
         inline for (0..n) |f| {
-            if (createLogicalType(ctx, fields.field_types[f], &field_logical_types[f], err) != db.c.DUCKDB_V2_ERROR_NONE) {
-                return db.c.DUCKDB_V2_ERROR_API;
+            if (createLogicalType(ctx, fields.field_types[f], &field_logical_types[f], err) != .ERROR_NONE) {
+                return .ERROR_API;
             }
         }
         defer inline for (0..n) |f| {
-            _ = db.logicalTypeDestroy(&field_logical_types[f]);
+            _ = v2.duckdb_v2_logical_type_destroy(&field_logical_types[f]);
         };
-        var field_names: [n]db.IdentifierT = undefined;
-        inline for (0..n) |f| field_names[f] = db.str(fields.field_names[f]);
-        var field_type_values: [n]db.ValueHandle = undefined;
-        const rc = db.contextCreateStructType(ctx, &field_names, &field_logical_types, &field_type_values, out_type, err);
+        var field_names: [n]v2.duckdb_v2_identifier_t = undefined;
+        inline for (0..n) |f| field_names[f] = helpers.str(fields.field_names[f]);
+        var field_type_values: [n]v2.duckdb_v2_value_handle = undefined;
+        const rc = helpers.createStructType(ctx, &field_names, &field_logical_types, &field_type_values, out_type, err);
         defer inline for (0..n) |f| {
-            _ = db.valueDestroy(&field_type_values[f]);
+            _ = v2.duckdb_v2_value_destroy(&field_type_values[f]);
         };
         return rc;
     }
-    return db.contextCreateTypeFromId(ctx, duckdbV2TypeId(T), out_type, err);
+    return helpers.createTypeFromId(ctx, duckdbV2TypeId(T), out_type, err);
 }
 
 /// Decode an ENUM value from its vector storage (a dictionary ordinal) —
 /// mirrors `comptime_scalar_v2.zig`'s identical `decodeEnumArg`.
-inline fn decodeEnumValue(comptime T: type, view: db.VectorView, row: db.idx_t) T {
+inline fn decodeEnumValue(comptime T: type, view: v2.duckdb_v2_vector_view, row: u64) T {
     const info = @typeInfo(T).@"enum";
     const n = info.field_values.len;
     const StorageT = if (n <= 255) u8 else if (n <= 65535) u16 else u32;
@@ -273,7 +292,7 @@ inline fn encodeEnumOrdinal(comptime T: type, value: T) EnumOrdinalStorageT(T) {
 /// DECIMAL/ENUM/VARIANT support's exact scope (VARIANT is source-only —
 /// see the module doc comment's CAUTION on why).
 pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn: fn (SourceT) ?TargetT) type {
-    if (comptime TargetT == db.ValueHandle) {
+    if (comptime TargetT == UserValue) {
         @compileError("comptime_cast_v2.Function: VARIANT is only supported as a source type, not a target type — boxing a fresh Value needs a context castFn's fixed `fn(SourceT) ?TargetT` signature doesn't receive (unlike comptime_scalar_v2.Function's implFn, which can opt into a leading `context` parameter)");
     }
     if (comptime !isStructType(SourceT) and !isDecimalType(SourceT) and !isEnumType(SourceT)) _ = duckdbV2TypeId(SourceT);
@@ -281,7 +300,7 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
 
     const source_is_varchar = SourceT == []const u8;
     const target_is_varchar = TargetT == []const u8;
-    const source_is_variant = SourceT == db.ValueHandle;
+    const source_is_variant = SourceT == UserValue;
     const source_is_decimal = isDecimalType(SourceT);
     const target_is_decimal = isDecimalType(TargetT);
     const source_is_enum = isEnumType(SourceT);
@@ -299,38 +318,46 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
         /// Register this cast against the extension being loaded. Must be
         /// called from inside the v2 extension entrypoint, same as every
         /// other comptime framework's `register`.
-        pub fn register(input: *const db.ExtensionInput) !void {
-            var err: db.ErrorInfoHandle = undefined;
+        pub fn register(user_input: *const db.ExtensionInput) !void {
+            // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
+            // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
+            return registerGenerated(@ptrCast(user_input));
+        }
 
-            var function: db.CastFunctionHandle = undefined;
-            if (db.castFunctionCreateWithExtension(input.extension, &function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+        /// `register` for code that has the generated bindings' input (`duckdb_v2_dynamic`), which needs no
+        /// conversion. When the hand-written layer is gone this is `register`.
+        pub fn registerGenerated(input: *const v2.duckdb_v2_extension_input) !void {
+            var err: v2.duckdb_v2_error_info_handle = undefined;
+
+            var function: v2.duckdb_v2_cast_function_handle = undefined;
+            if (v2.duckdb_v2_cast_function_create_with_extension(input.extension, &function, &err) != .ERROR_NONE) {
                 return error.FailedToCreateFunction;
             }
-            defer _ = db.castFunctionDestroy(&function);
+            defer _ = v2.duckdb_v2_cast_function_destroy(&function);
 
-            var source_type: db.LogicalTypeHandle = undefined;
-            if (createLogicalType(input.context, SourceT, &source_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var source_type: v2.duckdb_v2_logical_type_handle = undefined;
+            if (createLogicalType(input.context, SourceT, &source_type, &err) != .ERROR_NONE) {
                 return error.FailedToCreateSourceType;
             }
-            defer _ = db.logicalTypeDestroy(&source_type);
-            if (db.castFunctionSetSourceType(function, source_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            defer _ = v2.duckdb_v2_logical_type_destroy(&source_type);
+            if (v2.duckdb_v2_cast_function_set_source_type(function, source_type, &err) != .ERROR_NONE) {
                 return error.FailedToSetSourceType;
             }
 
-            var target_type: db.LogicalTypeHandle = undefined;
-            if (createLogicalType(input.context, TargetT, &target_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var target_type: v2.duckdb_v2_logical_type_handle = undefined;
+            if (createLogicalType(input.context, TargetT, &target_type, &err) != .ERROR_NONE) {
                 return error.FailedToCreateTargetType;
             }
-            defer _ = db.logicalTypeDestroy(&target_type);
-            if (db.castFunctionSetTargetType(function, target_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            defer _ = v2.duckdb_v2_logical_type_destroy(&target_type);
+            if (v2.duckdb_v2_cast_function_set_target_type(function, target_type, &err) != .ERROR_NONE) {
                 return error.FailedToSetTargetType;
             }
 
-            if (db.castFunctionSetExecCallback(function, execute, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_cast_function_set_exec_callback(function, execute, &err) != .ERROR_NONE) {
                 return error.FailedToSetExecCallback;
             }
 
-            if (db.castFunctionRegister(function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_cast_function_register(function, &err) != .ERROR_NONE) {
                 return error.FailedToRegisterFunction;
             }
         }
@@ -338,15 +365,15 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
         const WriteType = if (target_is_decimal) TargetT.Raw else TargetT;
         const EnumOut = if (target_is_enum) [*]EnumOrdinalStorageT(TargetT) else void;
 
-        fn execute(info: db.CastFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-            var row_count: db.idx_t = 0;
-            if (db.castFunctionExecGetRowCount(info, &row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        fn execute(info: v2.duckdb_v2_cast_function_exec_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+            var row_count: u64 = 0;
+            if (v2.duckdb_v2_cast_function_exec_get_row_count(info, &row_count, err) != .ERROR_NONE) return;
 
-            var mode: db.CastMode = undefined;
-            if (db.castFunctionExecGetMode(info, &mode, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            var mode: v2.DUCKDB_V2_CAST_MODE = undefined;
+            if (v2.duckdb_v2_cast_function_exec_get_mode(info, &mode, err) != .ERROR_NONE) return;
 
-            var output_vec: db.VectorHandle = undefined;
-            if (db.castFunctionExecGetOutput(info, &output_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            var output_vec: v2.duckdb_v2_vector_handle = undefined;
+            if (v2.duckdb_v2_cast_function_exec_get_output(info, &output_vec, err) != .ERROR_NONE) return;
 
             if (comptime source_is_variant) {
                 return executeFromVariant(info, context, mode, output_vec, row_count, err);
@@ -355,39 +382,39 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                 return executeStruct(info, context, mode, output_vec, row_count, err);
             }
 
-            var input_vec: db.VectorHandle = undefined;
-            if (db.castFunctionExecGetInput(info, &input_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            if (db.vectorFlatten(input_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            var in_view: db.VectorView = undefined;
-            if (db.vectorGetView(input_vec, &in_view, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            var input_vec: v2.duckdb_v2_vector_handle = undefined;
+            if (v2.duckdb_v2_cast_function_exec_get_input(info, &input_vec, err) != .ERROR_NONE) return;
+            if (v2.duckdb_v2_vector_flatten(input_vec, err) != .ERROR_NONE) return;
+            var in_view: v2.duckdb_v2_vector_view = undefined;
+            if (v2.duckdb_v2_vector_get_view(input_vec, &in_view, err) != .ERROR_NONE) return;
 
             var out: [*]WriteType = undefined;
             var enum_out: EnumOut = undefined;
             if (comptime target_is_enum) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(output_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 enum_out = @ptrCast(@alignCast(out_data));
             } else if (comptime !target_is_varchar) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(output_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
                 if (in_view.validity) |validity| {
                     const entry_idx = row / 64;
                     const bit_idx: u6 = @intCast(row % 64);
                     if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) {
-                        if (db.vectorSetNull(output_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        if (v2.duckdb_v2_vector_set_null(output_vec, row, err) != .ERROR_NONE) return;
                         continue;
                     }
                 }
 
                 const source_value: SourceT = if (comptime source_is_varchar) blk: {
                     // SAFETY: the signature registered the source type as VARCHAR.
-                    const typed: [*]const db.BytesValue = @ptrCast(@alignCast(in_view.data));
-                    break :blk db.bytesSlice(&typed[row]);
+                    const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(in_view.data));
+                    break :blk helpers.bytesSlice(&typed[row]);
                 } else if (comptime source_is_decimal) blk: {
                     // SAFETY: DECIMAL is a typed leaf array over SourceT.Raw.
                     const typed: [*]const SourceT.Raw = @ptrCast(@alignCast(in_view.data));
@@ -402,9 +429,9 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
 
                 if (castFn(source_value)) |value| {
                     if (comptime target_is_varchar) {
-                        var v: db.ValueHandle = undefined;
-                        if (db.valueCreateVarcharWithContext(context, value, &v, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                        defer _ = db.valueDestroy(&v);
+                        var v: v2.duckdb_v2_value_handle = undefined;
+                        if (helpers.createVarcharValue(context, value, &v, err) != .ERROR_NONE) return;
+                        defer _ = v2.duckdb_v2_value_destroy(&v);
                         // CAUTION, confirmed live: this `vectorSetValue` call
                         // fails with a bogus "row out of range" specifically
                         // when SourceT is ENUM — even for row 0 of a 3-row
@@ -418,7 +445,7 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                         // ANY target going through the boxed-`Value`/
                         // `vectorSetValue` write path (VARCHAR here) — see
                         // this file's module doc comment for the full note.
-                        if (db.vectorSetValue(output_vec, row, v, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        if (v2.duckdb_v2_vector_set_value(output_vec, row, v, err) != .ERROR_NONE) return;
                     } else if (comptime target_is_enum) {
                         enum_out[row] = encodeEnumOrdinal(TargetT, value);
                     } else if (comptime target_is_decimal) {
@@ -426,16 +453,16 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                     } else {
                         out[row] = value;
                     }
-                } else if (mode == db.c.DUCKDB_V2_CAST_MODE_TRY) {
-                    if (db.vectorSetNull(output_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                } else if (mode == .CAST_MODE_TRY) {
+                    if (v2.duckdb_v2_vector_set_null(output_vec, row, err) != .ERROR_NONE) return;
                 } else {
                     // NORMAL mode: a failed conversion aborts the query —
                     // populate the already-live error slot and stop, rather
                     // than silently producing NULL (see this file's module
                     // doc comment on castFn's return convention).
-                    const msg = db.str("cast failed");
-                    _ = db.errorInfoSetCode(err.*, db.c.DUCKDB_V2_ERROR_API);
-                    _ = db.errorInfoSetText(err.*, &msg);
+                    const msg = helpers.str("cast failed");
+                    _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
+                    _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
                     return;
                 }
             }
@@ -451,34 +478,34 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
         /// non-NULL VARIANT cell holding the value NULL) still short-
         /// circuits to a NULL output row without calling `castFn` — same
         /// as every other source type.
-        fn executeFromVariant(info: db.CastFunctionExecInfoHandle, context: db.ContextHandle, mode: db.CastMode, output_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
-            var input_vec: db.VectorHandle = undefined;
-            if (db.castFunctionExecGetInput(info, &input_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        fn executeFromVariant(info: v2.duckdb_v2_cast_function_exec_info_handle, context: v2.duckdb_v2_context_handle, mode: v2.DUCKDB_V2_CAST_MODE, output_vec: v2.duckdb_v2_vector_handle, row_count: u64, err: *v2.duckdb_v2_error_info_handle) void {
+            var input_vec: v2.duckdb_v2_vector_handle = undefined;
+            if (v2.duckdb_v2_cast_function_exec_get_input(info, &input_vec, err) != .ERROR_NONE) return;
 
             var out: [*]WriteType = undefined;
             var enum_out: EnumOut = undefined;
             if (comptime target_is_enum) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(output_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 enum_out = @ptrCast(@alignCast(out_data));
             } else if (comptime !target_is_varchar) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(output_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
-                var value: db.ValueHandle = undefined;
-                if (db.vectorGetValue(input_vec, row, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                defer _ = db.valueDestroy(&value);
+                var value: v2.duckdb_v2_value_handle = undefined;
+                if (v2.duckdb_v2_vector_get_value(input_vec, row, &value, err) != .ERROR_NONE) return;
+                defer _ = v2.duckdb_v2_value_destroy(&value);
 
-                if (castFn(value)) |result| {
+                if (castFn(toUserValue(value))) |result| {
                     if (comptime target_is_varchar) {
-                        var v: db.ValueHandle = undefined;
-                        if (db.valueCreateVarcharWithContext(context, result, &v, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                        defer _ = db.valueDestroy(&v);
-                        if (db.vectorSetValue(output_vec, row, v, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        var v: v2.duckdb_v2_value_handle = undefined;
+                        if (helpers.createVarcharValue(context, result, &v, err) != .ERROR_NONE) return;
+                        defer _ = v2.duckdb_v2_value_destroy(&v);
+                        if (v2.duckdb_v2_vector_set_value(output_vec, row, v, err) != .ERROR_NONE) return;
                     } else if (comptime target_is_enum) {
                         enum_out[row] = encodeEnumOrdinal(TargetT, result);
                     } else if (comptime target_is_decimal) {
@@ -486,12 +513,12 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                     } else {
                         out[row] = result;
                     }
-                } else if (mode == db.c.DUCKDB_V2_CAST_MODE_TRY) {
-                    if (db.vectorSetNull(output_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                } else if (mode == .CAST_MODE_TRY) {
+                    if (v2.duckdb_v2_vector_set_null(output_vec, row, err) != .ERROR_NONE) return;
                 } else {
-                    const msg = db.str("cast failed");
-                    _ = db.errorInfoSetCode(err.*, db.c.DUCKDB_V2_ERROR_API);
-                    _ = db.errorInfoSetText(err.*, &msg);
+                    const msg = helpers.str("cast failed");
+                    _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
+                    _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
                     return;
                 }
             }
@@ -507,7 +534,7 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
         /// per row) — mirrors `comptime_scalar_v2.zig`'s identical
         /// `StructFieldWriteHandle`.
         fn TargetFieldWriteHandle(comptime FT: type) type {
-            return if (FT == []const u8) db.VectorHandle else [*]FT;
+            return if (FT == []const u8) v2.duckdb_v2_vector_handle else [*]FT;
         }
 
         fn MakeTargetChildPtrsTuple() type {
@@ -526,23 +553,23 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
         /// `comptime_scalar_v2.zig`'s `executeStruct`. The non-STRUCT side
         /// (if any) still supports plain/VARCHAR/DECIMAL/ENUM, same as the
         /// main `execute` path.
-        fn executeStruct(info: db.CastFunctionExecInfoHandle, context: db.ContextHandle, mode: db.CastMode, output_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
-            var input_vec: db.VectorHandle = undefined;
-            if (db.castFunctionExecGetInput(info, &input_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            if (db.vectorFlatten(input_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        fn executeStruct(info: v2.duckdb_v2_cast_function_exec_info_handle, context: v2.duckdb_v2_context_handle, mode: v2.DUCKDB_V2_CAST_MODE, output_vec: v2.duckdb_v2_vector_handle, row_count: u64, err: *v2.duckdb_v2_error_info_handle) void {
+            var input_vec: v2.duckdb_v2_vector_handle = undefined;
+            if (v2.duckdb_v2_cast_function_exec_get_input(info, &input_vec, err) != .ERROR_NONE) return;
+            if (v2.duckdb_v2_vector_flatten(input_vec, err) != .ERROR_NONE) return;
 
-            const SourceViews = if (comptime source_is_struct) [StructFieldCount(SourceT)]db.VectorView else db.VectorView;
+            const SourceViews = if (comptime source_is_struct) [StructFieldCount(SourceT)]v2.duckdb_v2_vector_view else v2.duckdb_v2_vector_view;
             var source_views: SourceViews = undefined;
             if (comptime source_is_struct) {
                 const fields = @typeInfo(SourceT).@"struct";
                 inline for (0..fields.field_types.len) |f| {
-                    var child_vec: db.VectorHandle = undefined;
-                    if (db.vectorGetChild(input_vec, f, &child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorFlatten(child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorGetView(child_vec, &source_views[f], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var child_vec: v2.duckdb_v2_vector_handle = undefined;
+                    if (v2.duckdb_v2_vector_get_child(input_vec, f, &child_vec, err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_flatten(child_vec, err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_get_view(child_vec, &source_views[f], err) != .ERROR_NONE) return;
                 }
             } else {
-                if (db.vectorGetView(input_vec, &source_views, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_get_view(input_vec, &source_views, err) != .ERROR_NONE) return;
             }
 
             var target_child_ptrs: TargetChildPtrs = undefined;
@@ -551,26 +578,26 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                 const fields = @typeInfo(TargetT).@"struct";
                 inline for (0..fields.field_types.len) |f| {
                     const FT = fields.field_types[f];
-                    var child_vec: db.VectorHandle = undefined;
-                    if (db.vectorGetChild(output_vec, f, &child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var child_vec: v2.duckdb_v2_vector_handle = undefined;
+                    if (v2.duckdb_v2_vector_get_child(output_vec, f, &child_vec, err) != .ERROR_NONE) return;
                     if (comptime FT == []const u8) {
                         target_child_ptrs[f] = child_vec;
                     } else {
-                        var out_data: ?*anyopaque = null;
-                        if (db.vectorGetDataMutable(child_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        var out_data: *anyopaque = undefined;
+                        if (v2.duckdb_v2_vector_get_data_mutable(child_vec, &out_data, err) != .ERROR_NONE) return;
                         target_child_ptrs[f] = @ptrCast(@alignCast(out_data));
                     }
                 }
             } else if (comptime !target_is_varchar) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(output_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
                 if (!structSourceRowIsValid(&source_views, row)) {
-                    if (db.vectorSetNull(output_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_set_null(output_vec, row, err) != .ERROR_NONE) return;
                     continue;
                 }
 
@@ -582,36 +609,36 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                             const FT = fields.field_types[f];
                             const field_value = @field(value, fields.field_names[f]);
                             if (comptime FT == []const u8) {
-                                var v: db.ValueHandle = undefined;
-                                if (db.valueCreateVarcharWithContext(context, field_value, &v, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                                defer _ = db.valueDestroy(&v);
-                                if (db.vectorSetValue(target_child_ptrs[f], row, v, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                                var v: v2.duckdb_v2_value_handle = undefined;
+                                if (helpers.createVarcharValue(context, field_value, &v, err) != .ERROR_NONE) return;
+                                defer _ = v2.duckdb_v2_value_destroy(&v);
+                                if (v2.duckdb_v2_vector_set_value(target_child_ptrs[f], row, v, err) != .ERROR_NONE) return;
                             } else {
                                 target_child_ptrs[f][row] = field_value;
                             }
                         }
                     } else if (comptime target_is_varchar) {
-                        var v: db.ValueHandle = undefined;
-                        if (db.valueCreateVarcharWithContext(context, value, &v, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                        defer _ = db.valueDestroy(&v);
-                        if (db.vectorSetValue(output_vec, row, v, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        var v: v2.duckdb_v2_value_handle = undefined;
+                        if (helpers.createVarcharValue(context, value, &v, err) != .ERROR_NONE) return;
+                        defer _ = v2.duckdb_v2_value_destroy(&v);
+                        if (v2.duckdb_v2_vector_set_value(output_vec, row, v, err) != .ERROR_NONE) return;
                     } else if (comptime target_is_decimal) {
                         out[row] = value.raw;
                     } else {
                         out[row] = value;
                     }
-                } else if (mode == db.c.DUCKDB_V2_CAST_MODE_TRY) {
-                    if (db.vectorSetNull(output_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                } else if (mode == .CAST_MODE_TRY) {
+                    if (v2.duckdb_v2_vector_set_null(output_vec, row, err) != .ERROR_NONE) return;
                 } else {
-                    const msg = db.str("cast failed");
-                    _ = db.errorInfoSetCode(err.*, db.c.DUCKDB_V2_ERROR_API);
-                    _ = db.errorInfoSetText(err.*, &msg);
+                    const msg = helpers.str("cast failed");
+                    _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
+                    _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
                     return;
                 }
             }
         }
 
-        inline fn structSourceRowIsValid(views: anytype, row: db.idx_t) bool {
+        inline fn structSourceRowIsValid(views: anytype, row: u64) bool {
             if (comptime source_is_struct) {
                 const fields = @typeInfo(SourceT).@"struct";
                 inline for (0..fields.field_types.len) |f| {
@@ -631,7 +658,7 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
             return true;
         }
 
-        inline fn buildStructSource(views: anytype, row: db.idx_t) SourceT {
+        inline fn buildStructSource(views: anytype, row: u64) SourceT {
             if (comptime source_is_struct) {
                 const fields = @typeInfo(SourceT).@"struct";
                 var val: SourceT = undefined;
@@ -639,8 +666,8 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                     const FT = fields.field_types[f];
                     const fname = fields.field_names[f];
                     if (comptime FT == []const u8) {
-                        const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[f].data));
-                        @field(val, fname) = db.bytesSlice(&typed[row]);
+                        const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views.*[f].data));
+                        @field(val, fname) = helpers.bytesSlice(&typed[row]);
                     } else {
                         const typed: [*]const FT = @ptrCast(@alignCast(views.*[f].data));
                         @field(val, fname) = typed[row];
@@ -649,8 +676,8 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                 return val;
             }
             if (comptime SourceT == []const u8) {
-                const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*.data));
-                return db.bytesSlice(&typed[row]);
+                const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views.*.data));
+                return helpers.bytesSlice(&typed[row]);
             }
             if (comptime source_is_decimal) {
                 const typed: [*]const SourceT.Raw = @ptrCast(@alignCast(views.*.data));
@@ -673,8 +700,8 @@ test "Function generates a valid Zig type for a numeric-to-numeric cast" {
     }.cast);
     // Referencing .register forces analysis of its comptime-unrolled body.
     _ = &DoubleToBigint.register;
-    const exec_cb: db.CastFunctionExecCallback = DoubleToBigint.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_cast_function_exec_callback_fn = DoubleToBigint.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports VARCHAR as either source or target type" {
@@ -700,8 +727,8 @@ test "Function supports a conversion that can fail (null return)" {
         }
     }.cast);
     _ = &StrictVarcharToInt.register;
-    const exec_cb: db.CastFunctionExecCallback = StrictVarcharToInt.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_cast_function_exec_callback_fn = StrictVarcharToInt.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports DECIMAL as either source or target type" {
@@ -759,6 +786,7 @@ test "Function supports STRUCT as either source or target type" {
 test "Function supports VARIANT as a source type (target-only is a compile error, see module doc comment)" {
     const VariantToInt = Function(db.ValueHandle, i64, struct {
         fn cast(v: db.ValueHandle) ?i64 {
+            // A user cast function: written against the hand-written layer's types.
             var err: db.ErrorInfoHandle = undefined;
             var is_null: bool = false;
             _ = db.valueIsNull(v, &is_null, &err);
@@ -766,6 +794,6 @@ test "Function supports VARIANT as a source type (target-only is a compile error
         }
     }.cast);
     _ = &VariantToInt.register;
-    const exec_cb: db.CastFunctionExecCallback = VariantToInt.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_cast_function_exec_callback_fn = VariantToInt.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
