@@ -4060,7 +4060,7 @@ pub extern fn duckdb_v2_scalar_function_destroy(function: *duckdb_v2_scalar_func
 /// - `value` (IN): Optional default value, borrowed and copied. Will be cast to the parameter type.
 /// - `kind` (IN): How a caller passes the argument for the parameter.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_function_signature_add_parameter(sig: duckdb_v2_function_signature_handle, name: *const duckdb_v2_identifier_t, @"type": duckdb_v2_logical_type_handle, value: duckdb_v2_value_handle, kind: DUCKDB_V2_FUNCTION_PARAMETER_KIND, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_function_signature_add_parameter(sig: duckdb_v2_function_signature_handle, name: *const duckdb_v2_identifier_t, @"type": duckdb_v2_logical_type_handle, value: ?duckdb_v2_value_handle, kind: DUCKDB_V2_FUNCTION_PARAMETER_KIND, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the return type of a signature.
 ///
@@ -5233,7 +5233,7 @@ pub extern fn duckdb_v2_instance_destroy(instance: *duckdb_v2_instance_handle) D
 /// - `options`: Optional attach options created from `instance`, or null to attach with defaults under the derived name.
 /// - `make_default`: Whether to make the attached database the default for connections created afterwards.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_instance_attach(instance: duckdb_v2_instance_handle, path: *const duckdb_v2_str, name: ?*const duckdb_v2_identifier_t, options: duckdb_v2_attach_options_handle, make_default: bool, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_instance_attach(instance: duckdb_v2_instance_handle, path: *const duckdb_v2_str, name: ?*const duckdb_v2_identifier_t, options: ?duckdb_v2_attach_options_handle, make_default: bool, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Detaches the database that was attached from `path`.
 ///
@@ -7917,7 +7917,7 @@ pub extern fn duckdb_v2_value_create_bignum_with_connection(conn: duckdb_v2_conn
 /// - `child_count`: The number of elements.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_value_create_list_with_context(ctx: duckdb_v2_context_handle, child_type: duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_value_create_list_with_context(ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Creates a LIST value from its elements.
 ///
@@ -7940,7 +7940,7 @@ pub extern fn duckdb_v2_value_create_list_with_context(ctx: duckdb_v2_context_ha
 /// - `child_count`: The number of elements.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_value_create_list_with_connection(conn: duckdb_v2_connection_handle, child_type: duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_value_create_list_with_connection(conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Creates an ARRAY value from its elements, sized by their count.
 ///
@@ -7960,7 +7960,7 @@ pub extern fn duckdb_v2_value_create_list_with_connection(conn: duckdb_v2_connec
 /// - `child_count`: The number of elements.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_value_create_array_with_context(ctx: duckdb_v2_context_handle, child_type: duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_value_create_array_with_context(ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Creates an ARRAY value from its elements, sized by their count.
 ///
@@ -7980,7 +7980,7 @@ pub extern fn duckdb_v2_value_create_array_with_context(ctx: duckdb_v2_context_h
 /// - `child_count`: The number of elements.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_value_create_array_with_connection(conn: duckdb_v2_connection_handle, child_type: duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_value_create_array_with_connection(conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Creates a STRUCT value from named fields, in order.
 ///
@@ -8081,7 +8081,7 @@ pub extern fn duckdb_v2_value_create_tuple_with_connection(conn: duckdb_v2_conne
 /// - `entry_count`: The number of entries.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_value_create_map_with_context(ctx: duckdb_v2_context_handle, key_type: duckdb_v2_logical_type_handle, value_type: duckdb_v2_logical_type_handle, keys: ?*const duckdb_v2_value_handle, values: ?*const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_value_create_map_with_context(ctx: duckdb_v2_context_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?*const duckdb_v2_value_handle, values: ?*const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Creates a MAP value from parallel key and value arrays.
 ///
@@ -8104,7 +8104,7 @@ pub extern fn duckdb_v2_value_create_map_with_context(ctx: duckdb_v2_context_han
 /// - `entry_count`: The number of entries.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_value_create_map_with_connection(conn: duckdb_v2_connection_handle, key_type: duckdb_v2_logical_type_handle, value_type: duckdb_v2_logical_type_handle, keys: ?*const duckdb_v2_value_handle, values: ?*const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_value_create_map_with_connection(conn: duckdb_v2_connection_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?*const duckdb_v2_value_handle, values: ?*const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns the number of child values of a value.
 ///

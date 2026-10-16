@@ -1120,8 +1120,8 @@ pub const duckdb_v2_extension_input = extern struct {
 
 pub const duckdb_v2_vector_view = extern struct {
     data: ?*const anyopaque,
-    validity: ?*const u64,
-    sel: ?*const duckdb_v2_sel_t,
+    validity: ?[*]const u64,
+    sel: ?[*]const duckdb_v2_sel_t,
     count: u64,
 };
 

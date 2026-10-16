@@ -291,7 +291,7 @@ fn emitTypes(g: *Gen, w: *Io.Writer, meta: Value) !void {
     for (g.aliases.items) |a| {
         try writeDoc(w, "", str(get(a.v, "description")));
         try w.print("pub const {s}{s}_t = ", .{ g.prefix, a.name });
-        try writeType(g, w, str(get(a.v, "underlying")).?, 0, false, false);
+        try writeType(g, w, str(get(a.v, "underlying")).?, 0, false, false, false);
         try w.writeAll(";\n\n");
     }
 
@@ -513,8 +513,13 @@ fn writeFields(g: *Gen, w: *Io.Writer, fields: []const Value, depth: usize) !voi
             try w.print("{f}: ", .{std.zig.fmtId(name)});
             if (get(f, "array_size")) |n| try w.print("[{s}]", .{n.scalar});
             const ptr = count(f, "pointer");
-            // A pointer stored in a struct may be NULL (`{NULL, 0}` is the empty string view).
-            try writeType(g, w, str(get(f, "type")).?, ptr, flag(f, "const"), ptr > 0);
+            const ty = str(get(f, "type")).?;
+            // A pointer stored in a struct may be NULL (`{NULL, 0}` is the empty string view). One
+            // to a scalar is an array (the validity mask and selection vector of a vector view are
+            // views, not out-parameters); `char *` is dealt with by `writeType`.
+            const kind = g.kinds.get(ty) orelse fatal("unknown type '{s}'", .{ty});
+            const scalar = (kind == .primitive and !std.mem.eql(u8, ty, "void")) or kind == .alias;
+            try writeType(g, w, ty, ptr, flag(f, "const"), ptr > 0, scalar);
             try w.writeAll(",\n");
         }
     }
@@ -528,9 +533,11 @@ fn writeParams(g: *Gen, w: *Io.Writer, params: Value) !void {
     for (params.map.keys(), params.map.values(), 0..) |name, p, i| {
         if (i > 0) try w.writeAll(", ");
         const ind = count(p, "indirection");
-        const optional = ind > 0 and try isNullable(g.arena, str(get(p, "description")) orelse "");
+        const ty = str(get(p, "type")).?;
+        const by_value_handle = ind == 0 and (g.kinds.get(ty) orelse .primitive) == .handle;
+        const optional = (ind > 0 or by_value_handle) and try isNullable(g.arena, str(get(p, "description")) orelse "");
         try w.print("{f}: ", .{std.zig.fmtId(name)});
-        try writeType(g, w, str(get(p, "type")).?, ind, flag(p, "const"), optional);
+        try writeType(g, w, ty, ind, flag(p, "const"), optional, false);
     }
 }
 
@@ -551,15 +558,16 @@ fn isNullable(arena: Allocator, description: []const u8) !bool {
 fn writeReturn(g: *Gen, w: *Io.Writer, v: Value) !void {
     const ty = str(get(v, "return_type")).?;
     if (count(v, "return_pointer") > 0) {
-        try writeType(g, w, ty, 1, flag(v, "return_const"), true);
+        try writeType(g, w, ty, 1, flag(v, "return_const"), true, false);
     } else {
-        try writeType(g, w, ty, 0, false, false);
+        try writeType(g, w, ty, 0, false, false, false);
     }
 }
 
 /// Writes the Zig spelling of a spec type under `indirection` levels of pointer.
-/// `const` applies to the innermost pointee; `optional` to the outermost pointer.
-fn writeType(g: *Gen, w: *Io.Writer, ty: []const u8, indirection: usize, is_const: bool, optional: bool) !void {
+/// `const` applies to the innermost pointee; `optional` to the outermost pointer (or to the handle
+/// itself, passed by value); `many` makes the innermost pointer a many-item pointer.
+fn writeType(g: *Gen, w: *Io.Writer, ty: []const u8, indirection: usize, is_const: bool, optional: bool, many: bool) !void {
     const kind = g.kinds.get(ty) orelse fatal("unknown type '{s}'", .{ty});
     const is_char = std.mem.eql(u8, ty, "char");
     const is_void = std.mem.eql(u8, ty, "void");
@@ -568,10 +576,12 @@ fn writeType(g: *Gen, w: *Io.Writer, ty: []const u8, indirection: usize, is_cons
         if (level == 0 and optional) try w.writeAll("?");
         const innermost = level == indirection - 1;
         // `char *` is a string or a buffer, never a single character.
-        try w.writeAll(if (innermost and is_char) "[*]" else "*");
+        try w.writeAll(if (innermost and (is_char or many)) "[*]" else "*");
         if (innermost and is_const) try w.writeAll("const ");
     }
 
+    // A handle is a pointer, so one passed by value can be NULL too.
+    if (indirection == 0 and optional and kind == .handle) try w.writeAll("?");
     if (is_void) return w.writeAll(if (indirection > 0) "anyopaque" else "void");
     switch (kind) {
         .primitive => try w.writeAll(g.prims.get(ty).?),
