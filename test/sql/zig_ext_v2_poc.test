@@ -896,3 +896,291 @@ statement error
 SELECT CAST(CAST('a' AS ENUM('a','b','c')) AS BIGINT)
 ----
 cast failed
+
+# ── aggregates (comptime_aggregate_v2) ──
+# Ungrouped inputs of 100000 rows span many chunks and are combined across threads; grouped ones go through
+# the per-row update. Orders that cannot be guaranteed (last seen, string_agg) are only checked where they
+# are: a constant per group, or ORDER BY inside the aggregate. Results that depend on summation order use
+# integer-valued doubles so they are exact.
+
+
+# zig_v2_agg_sum_ct (BIGINT -> BIGINT): additive combine; NULL rows are skipped; no rows is the initial state
+
+query I
+SELECT zig_v2_agg_sum_ct(i) FROM generate_series(1, 100000) t(i)
+----
+5000050000
+
+query I
+SELECT zig_v2_agg_sum_ct(i) FROM generate_series(1, 10) t(i) WHERE false
+----
+0
+
+query I
+SELECT zig_v2_agg_sum_ct(CASE WHEN i % 3 = 0 THEN NULL ELSE i END) FROM generate_series(1, 10) t(i)
+----
+37
+
+query I
+SELECT zig_v2_agg_sum_ct(NULL::BIGINT) FROM generate_series(1, 10) t(i)
+----
+0
+
+query I
+SELECT zig_v2_agg_sum_ct(CASE WHEN i % 3 = 0 OR i % 5 = 0 THEN NULL ELSE i END) FROM generate_series(1, 100000) t(i)
+----
+2666633332
+
+query T
+SELECT md5(string_agg(g || ':' || s, ',' ORDER BY g)) FROM (SELECT i % 7 AS g, zig_v2_agg_sum_ct(i) AS s FROM generate_series(1, 100000) t(i) GROUP BY g)
+----
+6da713082233d9fce81650a3a1f62082
+
+query II
+SELECT count(*), sum(s) FROM (SELECT i % 5000 AS g, zig_v2_agg_sum_ct(i) AS s FROM generate_series(1, 100000) t(i) GROUP BY g)
+----
+5000
+5000050000
+
+
+# zig_v2_weighted_avg_ct and its SIMD twin (updateBatch on the ungrouped path): NULL if the weights sum to zero, NULL arguments skip the row
+
+query R
+SELECT zig_v2_weighted_avg_ct(x, w) FROM (VALUES (1.0, 1.0), (2.0, 3.0)) t(x, w)
+----
+1.75
+
+query R
+SELECT zig_v2_weighted_avg_ct(x, w) FROM (VALUES (1.0, 0.0), (2.0, 0.0)) t(x, w)
+----
+NULL
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(x, w) FROM (VALUES (1.0, 1.0), (2.0, 3.0), (NULL, 5.0), (7.0, NULL)) t(x, w)
+----
+1.75
+
+query R
+SELECT zig_v2_weighted_avg_ct(x, w) FROM (VALUES (1.0, 1.0)) t(x, w) WHERE false
+----
+NULL
+
+query R
+SELECT zig_v2_weighted_avg_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 100000) t(i)
+----
+50000.333335
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 100000) t(i)
+----
+50000.333335
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(CASE WHEN i % 4 = 0 THEN NULL ELSE i::DOUBLE END, CASE WHEN i % 9 = 0 THEN NULL ELSE (1 + i % 3)::DOUBLE END) FROM generate_series(1, 100000) t(i)
+----
+49999.76467889261
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 1) t(i)
+----
+1.0
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 2) t(i)
+----
+1.6
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 3) t(i)
+----
+1.8333333333333333
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 5) t(i)
+----
+3.090909090909091
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 7) t(i)
+----
+3.857142857142857
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 8) t(i)
+----
+4.588235294117647
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 9) t(i)
+----
+4.833333333333333
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 15) t(i)
+----
+7.833333333333333
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 17) t(i)
+----
+9.085714285714285
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 31) t(i)
+----
+15.838709677419354
+
+query R
+SELECT zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) FROM generate_series(1, 33) t(i)
+----
+16.833333333333332
+
+query T
+SELECT md5(string_agg(g || ':' || a, ',' ORDER BY g)) FROM (SELECT i % 9 AS g, zig_v2_weighted_avg_simd_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) AS a FROM generate_series(1, 100000) t(i) GROUP BY g)
+----
+2aa949575d933dda209e3b849a7f8178
+
+query T
+SELECT md5(string_agg(g || ':' || a, ',' ORDER BY g)) FROM (SELECT i % 9 AS g, zig_v2_weighted_avg_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) AS a FROM generate_series(1, 100000) t(i) GROUP BY g)
+----
+2aa949575d933dda209e3b849a7f8178
+
+
+# zig_v2_arg_max_ct (BIGINT, DOUBLE -> BIGINT): a combine that is not additive; NULL for no rows; a NULL argument skips the row
+
+query I
+SELECT zig_v2_arg_max_ct(id, v) FROM (VALUES (1::BIGINT, 2.5), (2::BIGINT, 9.5), (3::BIGINT, 4.0)) t(id, v)
+----
+2
+
+query I
+SELECT zig_v2_arg_max_ct(id, v) FROM (VALUES (1::BIGINT, 2.5)) t(id, v) WHERE false
+----
+NULL
+
+query I
+SELECT zig_v2_arg_max_ct(id, v) FROM (VALUES (1::BIGINT, 2.5), (2::BIGINT, NULL), (NULL, 99.0)) t(id, v)
+----
+1
+
+query I
+SELECT zig_v2_arg_max_ct(i, ((i * 7919) % 100003)::DOUBLE) FROM generate_series(1, 50000) t(i)
+----
+5367
+
+query I
+SELECT zig_v2_arg_max_ct(i, CASE WHEN i % 10 = 0 THEN NULL ELSE ((i * 7919) % 100003)::DOUBLE END) FROM generate_series(1, 50000) t(i)
+----
+5367
+
+query T
+SELECT md5(string_agg(g || ':' || b, ',' ORDER BY g)) FROM (SELECT i % 5 AS g, zig_v2_arg_max_ct(i, ((i * 7919) % 100003)::DOUBLE) AS b FROM generate_series(1, 50000) t(i) GROUP BY g)
+----
+36c9f359f8bc728bf8282abbc7081f99
+
+
+# zig_v2_total_len_ct (VARCHAR argument, inline and heap strings) and zig_v2_last_seen_ct (VARCHAR result, under and over the 12 inline bytes)
+
+query I
+SELECT zig_v2_total_len_ct(s) FROM (VALUES ('ab'), ('a string longer than twelve bytes'), (NULL)) t(s)
+----
+35
+
+query I
+SELECT zig_v2_total_len_ct('s' || i::VARCHAR) FROM generate_series(1, 20000) t(i)
+----
+108894
+
+query I
+SELECT zig_v2_total_len_ct(CASE WHEN i % 4 = 0 THEN NULL ELSE repeat('x', i % 30) END) FROM generate_series(1, 20000) t(i)
+----
+219930
+
+query T
+SELECT zig_v2_last_seen_ct(s) FROM (VALUES ('short')) t(s)
+----
+short
+
+query T
+SELECT zig_v2_last_seen_ct(s) FROM (VALUES ('a string longer than twelve bytes')) t(s)
+----
+a string longer than twelve bytes
+
+query I
+SELECT length(zig_v2_last_seen_ct(repeat('x', 200)))
+----
+128
+
+query T
+SELECT md5(string_agg(g || ':' || s, ',' ORDER BY g)) FROM (SELECT i % 6 AS g, zig_v2_last_seen_ct(CASE WHEN i % 6 % 2 = 1 THEN 'group-' || (i % 6)::VARCHAR || '-a-long-string-over-twelve' ELSE 'g' || (i % 6)::VARCHAR END) AS s FROM generate_series(1, 20000) t(i) GROUP BY g)
+----
+bc999a84f6facc807871e831477d8b0c
+
+
+# zig_v2_string_agg_ct: a State that owns heap memory (released by the destroy callback); ORDER BY inside makes the order defined
+
+query T
+SELECT zig_v2_string_agg_ct(s ORDER BY ord) FROM (VALUES (1, 'a'), (2, 'bb'), (3, 'a rather long third element')) t(ord, s)
+----
+a,bb,a rather long third element
+
+query T
+SELECT md5(zig_v2_string_agg_ct('item' || i::VARCHAR ORDER BY i)) FROM generate_series(1, 3000) t(i)
+----
+d66ccb52aa997c447b0742be21a46672
+
+query T
+SELECT md5(string_agg(g || '=' || a, '|' ORDER BY g)) FROM (SELECT i % 2000 AS g, zig_v2_string_agg_ct('v' || i::VARCHAR ORDER BY i) AS a FROM generate_series(1, 12000) t(i) GROUP BY g)
+----
+0aa00cb42c4f9d0fd63cfed9e12ad3a6
+
+
+# zig_v2_1brc_stats_ct: min/mean/max as text with one decimal (ties round away from zero); NULL for no rows
+
+query T
+SELECT zig_v2_1brc_stats_ct(t) FROM (VALUES (-5.5), (0.0), (12.25)) t(t)
+----
+-5.5/2.3/12.3
+
+query T
+SELECT zig_v2_1brc_stats_ct(t) FROM (VALUES (1.0)) t(t) WHERE false
+----
+NULL
+
+query T
+SELECT zig_v2_1brc_stats_ct(((i * 37) % 1999) / 10.0 - 100.0) FROM generate_series(1, 50000) t(i)
+----
+-100.0/-0.1/99.8
+
+query T
+SELECT md5(string_agg(g || ':' || s, ',' ORDER BY g)) FROM (SELECT i % 8 AS g, zig_v2_1brc_stats_ct(((i * 37) % 1999) / 10.0 - 100.0) AS s FROM generate_series(1, 50000) t(i) GROUP BY g)
+----
+2c89e9950543fd392bae3939e6a33c02
+
+
+# zig_v2_gram3_ct: sample covariance of three columns as text; NULL below two rows; any NULL argument skips the row
+
+query T
+SELECT zig_v2_gram3_ct(a, b, c) FROM (VALUES (1.0, 2.0, 3.0), (2.0, 4.0, 7.0), (3.0, 7.0, 8.0)) t(a, b, c)
+----
+[[1.0000,2.5000,2.5000],[2.5000,6.3333,6.0000],[2.5000,6.0000,7.0000]]
+
+query T
+SELECT zig_v2_gram3_ct(a, b, c) FROM (VALUES (1.0, 2.0, 3.0)) t(a, b, c)
+----
+NULL
+
+query T
+SELECT zig_v2_gram3_ct(a, b, c) FROM (VALUES (1.0, 2.0, 3.0), (2.0, 4.0, 7.0), (NULL, 9.0, 9.0), (3.0, 7.0, 8.0), (4.0, NULL, 1.0)) t(a, b, c)
+----
+[[1.0000,2.5000,2.5000],[2.5000,6.3333,6.0000],[2.5000,6.0000,7.0000]]
+
+query T
+SELECT zig_v2_gram3_ct(i::DOUBLE, ((i * i) % 101)::DOUBLE, ((i * 13) % 97)::DOUBLE) FROM generate_series(1, 40000) t(i)
+----
+[[133336666.6667,-109.9911,16.0095],[-109.9911,926.1144,0.3692],[16.0095,0.3692,783.9773]]
+
+query T
+SELECT md5(string_agg(g || ':' || c, ',' ORDER BY g)) FROM (SELECT i % 6 AS g, zig_v2_gram3_ct(i::DOUBLE, ((i * i) % 101)::DOUBLE, ((i * 13) % 97)::DOUBLE) AS c FROM generate_series(1, 40000) t(i) GROUP BY g)
+----
+3f84ec89ff207928a9243f97fe41cf66
