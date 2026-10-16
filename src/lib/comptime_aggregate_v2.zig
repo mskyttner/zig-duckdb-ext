@@ -87,6 +87,12 @@
 ///! `other` argument must NOT be freed by `combine` itself — `other`'s
 ///! owning state gets its own, separate `deinit` call from `destroy` later.
 ///!
+///! Bindings: the framework itself calls DuckDB through the generated bindings
+///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). A State's optional
+///! `updateBatch` hook is still written against the hand-written `duckdb_v2.zig`'s
+///! `db.VectorView`; the views are handed to it through a cast of the same struct (its layout
+///! is checked at comptime), which goes away with the hand-written layer.
+///!
 ///! Usage:
 ///!   const Sum = comptime_aggregate_v2.Function("my_sum", struct {
 ///!       sum: i64,
@@ -98,17 +104,34 @@
 ///!   try Sum.register(input); // input: *const db.ExtensionInput
 const std = @import("std");
 const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
+const helpers = @import("v2_helpers");
 
-fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
+// Everything this framework does goes through the generated bindings (`v2`). The optional `updateBatch`
+// hook of a State is still written against the hand-written layer's `db.VectorView`, a different Zig
+// type for the same struct, so the views are handed to it through `UserView`. This goes away with the
+// hand-written layer.
+const UserView = db.VectorView;
+
+comptime {
+    // The two translations of `duckdb_v2_vector_view` must agree for the pointer cast below to be valid.
+    std.debug.assert(@sizeOf(UserView) == @sizeOf(v2.duckdb_v2_vector_view));
+    std.debug.assert(@alignOf(UserView) == @alignOf(v2.duckdb_v2_vector_view));
+    for (std.meta.fieldNames(v2.duckdb_v2_vector_view)) |field| {
+        std.debug.assert(@offsetOf(UserView, field) == @offsetOf(v2.duckdb_v2_vector_view, field));
+    }
+}
+
+fn duckdbV2TypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
     return switch (T) {
-        i8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT,
-        i16 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT,
-        i32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER,
-        i64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
-        f32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT,
-        f64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE,
-        bool => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN,
-        []const u8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR,
+        i8 => .LOGICAL_TYPE_ID_TINYINT,
+        i16 => .LOGICAL_TYPE_ID_SMALLINT,
+        i32 => .LOGICAL_TYPE_ID_INTEGER,
+        i64 => .LOGICAL_TYPE_ID_BIGINT,
+        f32 => .LOGICAL_TYPE_ID_FLOAT,
+        f64 => .LOGICAL_TYPE_ID_DOUBLE,
+        bool => .LOGICAL_TYPE_ID_BOOLEAN,
+        []const u8 => .LOGICAL_TYPE_ID_VARCHAR,
         else => @compileError("unsupported type for DuckDB v2 mapping: " ++ @typeName(T)),
     };
 }
@@ -167,122 +190,131 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
     _ = duckdbV2TypeId(ReturnType);
 
     return struct {
-        pub fn register(input: *const db.ExtensionInput) !void {
-            var err: db.ErrorInfoHandle = undefined;
+        pub fn register(user_input: *const db.ExtensionInput) !void {
+            // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
+            // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
+            return registerGenerated(@ptrCast(user_input));
+        }
 
-            var function: db.AggregateFunctionHandle = undefined;
-            if (db.aggregateFunctionCreateWithExtension(input.extension, &function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+        /// `register` for code that has the generated bindings' input (`duckdb_v2_dynamic`), which needs no
+        /// conversion. When the hand-written layer is gone this is `register`.
+        pub fn registerGenerated(input: *const v2.duckdb_v2_extension_input) !void {
+            var err: v2.duckdb_v2_error_info_handle = undefined;
+
+            var function: v2.duckdb_v2_aggregate_function_handle = undefined;
+            if (v2.duckdb_v2_aggregate_function_create_with_extension(input.extension, &function, &err) != .ERROR_NONE) {
                 return error.FailedToCreateFunction;
             }
-            defer _ = db.aggregateFunctionDestroy(&function);
+            defer _ = v2.duckdb_v2_aggregate_function_destroy(&function);
 
-            const fn_name = db.str(name);
-            if (db.aggregateFunctionSetName(function, &fn_name, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            const fn_name = helpers.str(name);
+            if (v2.duckdb_v2_aggregate_function_set_name(function, &fn_name, &err) != .ERROR_NONE) {
                 return error.FailedToSetName;
             }
 
-            var sig: db.FunctionSignatureHandle = undefined;
-            if (db.aggregateFunctionGetSignature(function, &sig, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var sig: v2.duckdb_v2_function_signature_handle = undefined;
+            if (v2.duckdb_v2_aggregate_function_get_signature(function, &sig, &err) != .ERROR_NONE) {
                 return error.FailedToGetSignature;
             }
 
             inline for (arg_types, 0..) |t, i| {
-                var param_type: db.LogicalTypeHandle = undefined;
-                if (db.contextCreateTypeFromId(input.context, duckdbV2TypeId(t.?), &param_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                var param_type: v2.duckdb_v2_logical_type_handle = undefined;
+                if (helpers.createTypeFromId(input.context, duckdbV2TypeId(t.?), &param_type, &err) != .ERROR_NONE) {
                     return error.FailedToCreateParamType;
                 }
-                defer _ = db.logicalTypeDestroy(&param_type);
+                defer _ = v2.duckdb_v2_logical_type_destroy(&param_type);
 
                 const param_name_buf = if (arg_names) |names| names[i] else std.fmt.comptimePrint("a{d}", .{i});
-                const param_name = db.str(param_name_buf);
-                if (db.functionSignatureAddParameter(
+                const param_name = helpers.str(param_name_buf);
+                if (v2.duckdb_v2_function_signature_add_parameter(
                     sig,
                     &param_name,
                     param_type,
                     null,
-                    db.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
+                    .FUNCTION_PARAMETER_KIND_STANDARD,
                     &err,
-                ) != db.c.DUCKDB_V2_ERROR_NONE) {
+                ) != .ERROR_NONE) {
                     return error.FailedToAddParameter;
                 }
             }
 
-            var return_type: db.LogicalTypeHandle = undefined;
-            if (db.contextCreateTypeFromId(input.context, duckdbV2TypeId(ReturnType), &return_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var return_type: v2.duckdb_v2_logical_type_handle = undefined;
+            if (helpers.createTypeFromId(input.context, duckdbV2TypeId(ReturnType), &return_type, &err) != .ERROR_NONE) {
                 return error.FailedToCreateReturnType;
             }
-            defer _ = db.logicalTypeDestroy(&return_type);
-            if (db.functionSignatureSetReturnType(sig, return_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            defer _ = v2.duckdb_v2_logical_type_destroy(&return_type);
+            if (v2.duckdb_v2_function_signature_set_return_type(sig, return_type, &err) != .ERROR_NONE) {
                 return error.FailedToSetReturnType;
             }
 
-            if (db.aggregateFunctionSetSizeCallback(function, sizeCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_aggregate_function_set_size_callback(function, sizeCallback, &err) != .ERROR_NONE) {
                 return error.FailedToSetSizeCallback;
             }
-            if (db.aggregateFunctionSetInitCallback(function, initCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_aggregate_function_set_init_callback(function, initCallback, &err) != .ERROR_NONE) {
                 return error.FailedToSetInitCallback;
             }
-            if (db.aggregateFunctionSetUpdateCallback(function, updateCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_aggregate_function_set_update_callback(function, updateCallback, &err) != .ERROR_NONE) {
                 return error.FailedToSetUpdateCallback;
             }
-            if (db.aggregateFunctionSetCombineCallback(function, combineCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_aggregate_function_set_combine_callback(function, combineCallback, &err) != .ERROR_NONE) {
                 return error.FailedToSetCombineCallback;
             }
-            if (db.aggregateFunctionSetFinalizeCallback(function, finalizeCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_aggregate_function_set_finalize_callback(function, finalizeCallback, &err) != .ERROR_NONE) {
                 return error.FailedToSetFinalizeCallback;
             }
             if (comptime has_deinit) {
-                if (db.aggregateFunctionSetDestroyCallback(function, destroyCallback, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                if (v2.duckdb_v2_aggregate_function_set_destroy_callback(function, destroyCallback, &err) != .ERROR_NONE) {
                     return error.FailedToSetDestroyCallback;
                 }
             }
 
-            if (db.aggregateFunctionRegister(function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_aggregate_function_register(function, &err) != .ERROR_NONE) {
                 return error.FailedToRegisterFunction;
             }
         }
 
-        fn sizeCallback(info: db.AggregateFunctionSizeInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-            _ = db.aggregateFunctionSizeSetStateSize(info, @sizeOf(State), err);
+        fn sizeCallback(info: v2.duckdb_v2_aggregate_function_size_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+            _ = v2.duckdb_v2_aggregate_function_size_set_state_size(info, @sizeOf(State), err);
         }
 
-        fn initCallback(info: db.AggregateFunctionInitInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-            var count: db.idx_t = 0;
-            if (db.aggregateFunctionInitGetStateCount(info, &count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            var states: [*c]?*anyopaque = null;
-            if (db.aggregateFunctionInitGetStates(info, &states, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        fn initCallback(info: v2.duckdb_v2_aggregate_function_init_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+            var count: u64 = 0;
+            if (v2.duckdb_v2_aggregate_function_init_get_state_count(info, &count, err) != .ERROR_NONE) return;
+            var states: [*]?*anyopaque = undefined;
+            if (v2.duckdb_v2_aggregate_function_init_get_states(info, &states, err) != .ERROR_NONE) return;
 
-            var i: db.idx_t = 0;
+            var i: u64 = 0;
             while (i < count) : (i += 1) {
                 const state: *State = @ptrCast(@alignCast(states[i].?));
                 state.* = State.init();
             }
         }
 
-        fn updateCallback(info: db.AggregateFunctionUpdateInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-            var row_count: db.idx_t = 0;
-            if (db.aggregateFunctionUpdateGetRowCount(info, &row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        fn updateCallback(info: v2.duckdb_v2_aggregate_function_update_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+            var row_count: u64 = 0;
+            if (v2.duckdb_v2_aggregate_function_update_get_row_count(info, &row_count, err) != .ERROR_NONE) return;
 
-            var views: [arg_types.len]db.VectorView = undefined;
+            var views: [arg_types.len]v2.duckdb_v2_vector_view = undefined;
             inline for (0..arg_types.len) |i| {
-                var arg_vec: db.VectorHandle = undefined;
-                if (db.aggregateFunctionUpdateGetArg(info, i, &arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (db.vectorFlatten(arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (db.vectorGetView(arg_vec, &views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var arg_vec: v2.duckdb_v2_vector_handle = undefined;
+                if (v2.duckdb_v2_aggregate_function_update_get_arg(info, i, &arg_vec, err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_flatten(arg_vec, err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_get_view(arg_vec, &views[i], err) != .ERROR_NONE) return;
             }
 
-            var states: [*c]?*anyopaque = null;
-            if (db.aggregateFunctionUpdateGetStates(info, &states, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            var states: [*]?*anyopaque = undefined;
+            if (v2.duckdb_v2_aggregate_function_update_get_states(info, &states, err) != .ERROR_NONE) return;
 
             if (comptime has_update_batch) {
                 if (row_count > 0 and allStatesEqual(states, row_count)) {
                     const state: *State = @ptrCast(@alignCast(states[0].?));
-                    State.updateBatch(state, &views, row_count);
+                    // SAFETY: `UserView` and the generated view are the same struct (checked at comptime above).
+                    State.updateBatch(state, @ptrCast(&views), row_count);
                     return;
                 }
             }
 
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
                 // Standard SQL aggregate semantics: a row with any NULL
                 // argument is skipped, not folded in as a zero/default.
@@ -295,24 +327,24 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
         /// True when every row in this chunk targets the same state — the
         /// case `updateBatch` exists for (an ungrouped aggregate; a GROUP
         /// BY query's rows target different states and always fail this).
-        inline fn allStatesEqual(states: [*c]?*anyopaque, row_count: db.idx_t) bool {
+        inline fn allStatesEqual(states: [*]?*anyopaque, row_count: u64) bool {
             const first = states[0];
-            var row: db.idx_t = 1;
+            var row: u64 = 1;
             while (row < row_count) : (row += 1) {
                 if (states[row] != first) return false;
             }
             return true;
         }
 
-        fn combineCallback(info: db.AggregateFunctionCombineInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-            var count: db.idx_t = 0;
-            if (db.aggregateFunctionCombineGetStateCount(info, &count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            var sources: [*c]?*anyopaque = null;
-            if (db.aggregateFunctionCombineGetSources(info, &sources, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            var targets: [*c]?*anyopaque = null;
-            if (db.aggregateFunctionCombineGetTargets(info, &targets, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        fn combineCallback(info: v2.duckdb_v2_aggregate_function_combine_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+            var count: u64 = 0;
+            if (v2.duckdb_v2_aggregate_function_combine_get_state_count(info, &count, err) != .ERROR_NONE) return;
+            var sources: [*]?*anyopaque = undefined;
+            if (v2.duckdb_v2_aggregate_function_combine_get_sources(info, &sources, err) != .ERROR_NONE) return;
+            var targets: [*]?*anyopaque = undefined;
+            if (v2.duckdb_v2_aggregate_function_combine_get_targets(info, &targets, err) != .ERROR_NONE) return;
 
-            var i: db.idx_t = 0;
+            var i: u64 = 0;
             while (i < count) : (i += 1) {
                 const source: *State = @ptrCast(@alignCast(sources[i].?));
                 const target: *State = @ptrCast(@alignCast(targets[i].?));
@@ -320,15 +352,15 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
             }
         }
 
-        fn finalizeCallback(info: db.AggregateFunctionFinalizeInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-            var count: db.idx_t = 0;
-            if (db.aggregateFunctionFinalizeGetStateCount(info, &count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            var states: [*c]?*anyopaque = null;
-            if (db.aggregateFunctionFinalizeGetStates(info, &states, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            var result_vec: db.VectorHandle = undefined;
-            if (db.aggregateFunctionFinalizeGetResult(info, &result_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            var offset: db.idx_t = 0;
-            if (db.aggregateFunctionFinalizeGetResultOffset(info, &offset, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        fn finalizeCallback(info: v2.duckdb_v2_aggregate_function_finalize_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+            var count: u64 = 0;
+            if (v2.duckdb_v2_aggregate_function_finalize_get_state_count(info, &count, err) != .ERROR_NONE) return;
+            var states: [*]?*anyopaque = undefined;
+            if (v2.duckdb_v2_aggregate_function_finalize_get_states(info, &states, err) != .ERROR_NONE) return;
+            var result_vec: v2.duckdb_v2_vector_handle = undefined;
+            if (v2.duckdb_v2_aggregate_function_finalize_get_result(info, &result_vec, err) != .ERROR_NONE) return;
+            var offset: u64 = 0;
+            if (v2.duckdb_v2_aggregate_function_finalize_get_result_offset(info, &offset, err) != .ERROR_NONE) return;
 
             if (comptime return_is_varchar) {
                 // No context handle is available in any aggregate callback
@@ -337,40 +369,40 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
                 // is unavailable here — write BytesValue directly into the
                 // vector's own arena instead. See `vectorGetArena`'s doc
                 // comment in duckdb_v2.zig.
-                var arena: db.ArenaHandle = undefined;
-                if (db.vectorGetArena(result_vec, &arena, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var arena: v2.duckdb_v2_arena_handle = undefined;
+                if (v2.duckdb_v2_vector_get_arena(result_vec, &arena, err) != .ERROR_NONE) return;
                 var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                const out: [*]db.BytesValue = @ptrCast(@alignCast(out_data));
+                if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
+                const out: [*]v2.duckdb_v2_bytes = @ptrCast(@alignCast(out_data));
 
-                var i: db.idx_t = 0;
+                var i: u64 = 0;
                 while (i < count) : (i += 1) {
                     const state: *State = @ptrCast(@alignCast(states[i].?));
                     if (finalize_is_optional) {
                         if (state.finalize()) |value| {
-                            out[offset + i] = db.makeBytesValue(arena, value, err) catch return;
+                            out[offset + i] = helpers.makeBytesValue(arena, value, err) catch return;
                         } else {
-                            if (db.vectorSetNull(result_vec, offset + i, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                            if (v2.duckdb_v2_vector_set_null(result_vec, offset + i, err) != .ERROR_NONE) return;
                         }
                     } else {
-                        out[offset + i] = db.makeBytesValue(arena, state.finalize(), err) catch return;
+                        out[offset + i] = helpers.makeBytesValue(arena, state.finalize(), err) catch return;
                     }
                 }
                 return;
             }
 
             var out_data: ?*anyopaque = null;
-            if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
             const out: [*]ReturnType = @ptrCast(@alignCast(out_data));
 
-            var i: db.idx_t = 0;
+            var i: u64 = 0;
             while (i < count) : (i += 1) {
                 const state: *State = @ptrCast(@alignCast(states[i].?));
                 if (finalize_is_optional) {
                     if (state.finalize()) |value| {
                         out[offset + i] = value;
                     } else {
-                        if (db.vectorSetNull(result_vec, offset + i, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        if (v2.duckdb_v2_vector_set_null(result_vec, offset + i, err) != .ERROR_NONE) return;
                     }
                 } else {
                     out[offset + i] = state.finalize();
@@ -378,20 +410,20 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
             }
         }
 
-        fn destroyCallback(info: db.AggregateFunctionDestroyInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-            var count: db.idx_t = 0;
-            if (db.aggregateFunctionDestroyGetStateCount(info, &count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            var states: [*c]?*anyopaque = null;
-            if (db.aggregateFunctionDestroyGetStates(info, &states, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        fn destroyCallback(info: v2.duckdb_v2_aggregate_function_destroy_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+            var count: u64 = 0;
+            if (v2.duckdb_v2_aggregate_function_destroy_get_state_count(info, &count, err) != .ERROR_NONE) return;
+            var states: [*]?*anyopaque = undefined;
+            if (v2.duckdb_v2_aggregate_function_destroy_get_states(info, &states, err) != .ERROR_NONE) return;
 
-            var i: db.idx_t = 0;
+            var i: u64 = 0;
             while (i < count) : (i += 1) {
                 const state: *State = @ptrCast(@alignCast(states[i].?));
                 state.deinit();
             }
         }
 
-        inline fn rowIsValid(views: *const [arg_types.len]db.VectorView, row: db.idx_t) bool {
+        inline fn rowIsValid(views: *const [arg_types.len]v2.duckdb_v2_vector_view, row: u64) bool {
             inline for (0..arg_types.len) |i| {
                 if (views.*[i].validity) |validity| {
                     const entry_idx = row / 64;
@@ -409,15 +441,15 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
         }
         const ArgsTuple = MakeArgsTuple();
 
-        inline fn buildArgs(views: *const [arg_types.len]db.VectorView, row: db.idx_t) ArgsTuple {
+        inline fn buildArgs(views: *const [arg_types.len]v2.duckdb_v2_vector_view, row: u64) ArgsTuple {
             var args: ArgsTuple = undefined;
             inline for (0..arg_types.len) |i| {
                 const T = arg_types[i].?;
                 if (T == []const u8) {
                     // SAFETY: views[i].data points to a flattened VARCHAR vector buffer
                     // of duckdb_v2_bytes elements; see BytesValue's own doc comment.
-                    const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i].data));
-                    args[i] = db.bytesSlice(&typed[row]);
+                    const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = helpers.bytesSlice(&typed[row]);
                 } else {
                     // SAFETY: views[i].data points to a flattened, type-matched vector buffer.
                     const typed: [*]const T = @ptrCast(@alignCast(views.*[i].data));
@@ -447,16 +479,16 @@ test "Function generates a valid Zig type for a sum aggregate" {
     });
     // Referencing .register forces analysis of its comptime-unrolled body.
     _ = &Sum.register;
-    const size_cb: db.c.duckdb_v2_aggregate_function_size_callback_fn = Sum.sizeCallback;
-    const init_cb: db.c.duckdb_v2_aggregate_function_init_callback_fn = Sum.initCallback;
-    const update_cb: db.c.duckdb_v2_aggregate_function_update_callback_fn = Sum.updateCallback;
-    const combine_cb: db.c.duckdb_v2_aggregate_function_combine_callback_fn = Sum.combineCallback;
-    const finalize_cb: db.c.duckdb_v2_aggregate_function_finalize_callback_fn = Sum.finalizeCallback;
-    try std.testing.expect(size_cb != null);
-    try std.testing.expect(init_cb != null);
-    try std.testing.expect(update_cb != null);
-    try std.testing.expect(combine_cb != null);
-    try std.testing.expect(finalize_cb != null);
+    const size_cb: v2.duckdb_v2_aggregate_function_size_callback_fn = Sum.sizeCallback;
+    const init_cb: v2.duckdb_v2_aggregate_function_init_callback_fn = Sum.initCallback;
+    const update_cb: v2.duckdb_v2_aggregate_function_update_callback_fn = Sum.updateCallback;
+    const combine_cb: v2.duckdb_v2_aggregate_function_combine_callback_fn = Sum.combineCallback;
+    const finalize_cb: v2.duckdb_v2_aggregate_function_finalize_callback_fn = Sum.finalizeCallback;
+    try std.testing.expect(@intFromPtr(size_cb) != 0);
+    try std.testing.expect(@intFromPtr(init_cb) != 0);
+    try std.testing.expect(@intFromPtr(update_cb) != 0);
+    try std.testing.expect(@intFromPtr(combine_cb) != 0);
+    try std.testing.expect(@intFromPtr(finalize_cb) != 0);
 }
 
 test "FunctionNamed supports a real per-row argument name" {
@@ -518,8 +550,8 @@ test "Function supports an optional finalize return (NULL on empty/zero-weight g
         }
     });
     _ = &WeightedAvg.register;
-    const finalize_cb: db.c.duckdb_v2_aggregate_function_finalize_callback_fn = WeightedAvg.finalizeCallback;
-    try std.testing.expect(finalize_cb != null);
+    const finalize_cb: v2.duckdb_v2_aggregate_function_finalize_callback_fn = WeightedAvg.finalizeCallback;
+    try std.testing.expect(@intFromPtr(finalize_cb) != 0);
 }
 
 test "Function supports VARCHAR as an update argument" {
@@ -591,8 +623,8 @@ test "Function supports a State that owns growable string data, freed via deinit
         }
     });
     _ = &StringAgg.register;
-    const destroy_cb: db.c.duckdb_v2_aggregate_function_destroy_callback_fn = StringAgg.destroyCallback;
-    try std.testing.expect(destroy_cb != null);
+    const destroy_cb: v2.duckdb_v2_aggregate_function_destroy_callback_fn = StringAgg.destroyCallback;
+    try std.testing.expect(@intFromPtr(destroy_cb) != 0);
 }
 
 test "Function supports an optional updateBatch fast path" {
@@ -606,12 +638,12 @@ test "Function supports an optional updateBatch fast path" {
             self.weighted_sum += x * weight;
             self.weight_sum += weight;
         }
-        pub fn updateBatch(self: *@This(), views: *const [2]db.VectorView, row_count: db.idx_t) void {
+        pub fn updateBatch(self: *@This(), views: *const [2]v2.duckdb_v2_vector_view, row_count: u64) void {
             // Trivial scalar stand-in for the test — the real SIMD kernel
             // lives in init_v2_poc.zig's live example.
             const x: [*]const f64 = @ptrCast(@alignCast(views[0].data));
             const w: [*]const f64 = @ptrCast(@alignCast(views[1].data));
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
                 self.weighted_sum += x[row] * w[row];
                 self.weight_sum += w[row];

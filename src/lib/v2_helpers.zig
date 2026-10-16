@@ -236,6 +236,27 @@ test "str views the bytes it is given" {
     try std.testing.expectEqualStrings("abc", s.ptr.?[0..s.len]);
 }
 
+/// A VARCHAR (or BLOB) value holding `text`, for writing straight into a result vector. Text of up to
+/// `DUCKDB_V2_BYTES_INLINE_LENGTH` bytes is stored inline; longer text is copied into `arena`, which
+/// the vector owns, so it lives as long as the result does.
+pub fn makeBytesValue(arena: v2.duckdb_v2_arena_handle, text: []const u8, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_bytes {
+    var b: v2.duckdb_v2_bytes = undefined;
+    if (text.len <= v2.DUCKDB_V2_BYTES_INLINE_LENGTH) {
+        b.value.inlined.length = @intCast(text.len);
+        @memcpy(b.value.inlined.inlined[0..text.len], text);
+    } else {
+        var out_ptr: [*]u8 = undefined;
+        if (v2.duckdb_v2_arena_allocate(arena, text.len, &out_ptr, err) != .ERROR_NONE) return error.DuckDbError;
+        @memcpy(out_ptr[0..text.len], text);
+        b.value.pointer.length = @intCast(text.len);
+        const prefix_len = @min(text.len, 4);
+        @memcpy(b.value.pointer.prefix[0..prefix_len], text[0..prefix_len]);
+        if (prefix_len < 4) @memset(b.value.pointer.prefix[prefix_len..4], 0);
+        b.value.pointer.ptr = out_ptr;
+    }
+    return b;
+}
+
 test "isValid: no mask means every row is valid" {
     try std.testing.expect(isValid(null, 0));
     try std.testing.expect(isValid(null, 1000));
@@ -270,4 +291,51 @@ test "bytesSlice of long bytes with no pointer is empty rather than a crash" {
     var b: v2.duckdb_v2_bytes = std.mem.zeroes(v2.duckdb_v2_bytes);
     b.value.pointer.length = 20;
     try std.testing.expectEqualStrings("", bytesSlice(&b));
+}
+
+var fake_arena: [64]u8 = undefined;
+
+fn fakeArenaAllocate(
+    arena: v2.duckdb_v2_arena_handle,
+    byte_len: u64,
+    out_ptr: *[*]u8,
+    err: ?*v2.duckdb_v2_error_info_handle,
+) callconv(.c) v2.DUCKDB_V2_ERROR {
+    _ = arena;
+    _ = err;
+    if (byte_len > fake_arena.len) return .ERROR_RESOURCE_OUT_OF_MEMORY;
+    out_ptr.* = &fake_arena;
+    return .ERROR_NONE;
+}
+
+test "makeBytesValue stores short text inline and reads it back" {
+    var err: v2.duckdb_v2_error_info_handle = undefined;
+    const arena: v2.duckdb_v2_arena_handle = @ptrFromInt(0x10);
+    const b = try makeBytesValue(arena, "short", &err);
+    try std.testing.expectEqualStrings("short", bytesSlice(&b));
+}
+
+test "makeBytesValue copies longer text into the arena, with its first four bytes as the prefix" {
+    const saved = v2.api;
+    defer v2.api = saved;
+    v2.api.duckdb_v2_arena_allocate = &fakeArenaAllocate;
+
+    var err: v2.duckdb_v2_error_info_handle = undefined;
+    const arena: v2.duckdb_v2_arena_handle = @ptrFromInt(0x10);
+    const text = "a string longer than twelve bytes";
+    const b = try makeBytesValue(arena, text, &err);
+    try std.testing.expectEqualStrings(text, bytesSlice(&b));
+    try std.testing.expectEqualStrings("a st", &b.value.pointer.prefix);
+    try std.testing.expect(@intFromPtr(b.value.pointer.ptr.?) == @intFromPtr(&fake_arena));
+}
+
+test "makeBytesValue reports a failed arena allocation" {
+    const saved = v2.api;
+    defer v2.api = saved;
+    v2.api.duckdb_v2_arena_allocate = &fakeArenaAllocate;
+
+    var err: v2.duckdb_v2_error_info_handle = undefined;
+    const arena: v2.duckdb_v2_arena_handle = @ptrFromInt(0x10);
+    const too_long: [100]u8 = @splat('x');
+    try std.testing.expectError(error.DuckDbError, makeBytesValue(arena, &too_long, &err));
 }
