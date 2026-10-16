@@ -37,6 +37,7 @@ export fn zig_ext_v2_poc_init_c_api_v2(input: *const db2.ExtensionInput) callcon
     registerAppenderTest(input, &err);
     registerAppenderNestedTest(input, &err);
     registerAppenderArrayEnumTest(input, &err);
+    registerAppenderTypesTest(input, &err);
     registerNethogsTrace(input, &err);
     registerFilterPushdownTest(input);
     registerProjectionPushdownTest(input);
@@ -2316,3 +2317,158 @@ const exampleAggInit = examples.exampleAggregateInitForPoc;
 const exampleAggUpdate = examples.exampleAggregateUpdateForPoc;
 const exampleAggCombine = examples.exampleAggregateCombineForPoc;
 const exampleAggFinalize = examples.exampleAggregateFinalizeForPoc;
+
+/// Live round-trip test for `comptime_appender_v2.Appender` over every leaf type (i8, i16, i32, i64, f32, f64,
+/// bool, VARCHAR), a LIST(VARCHAR), a one-level STRUCT and a fixed-size ARRAY of INTEGER, with explicit
+/// `flush` calls in the middle of the stream: after the first row (a chunk of one row is appended, then
+/// written to again, three rows deep, which needs it sized back up), twice after the fifth (the second with
+/// nothing buffered). `zig_v2_appender_types_test()`
+/// returns what it scans back, each column cast to VARCHAR and joined with `|`, the rows with `;`.
+fn registerAppenderTypesTest(input: *const db2.ExtensionInput, err: *db2.ErrorInfoHandle) void {
+    var function: db2.ScalarFunctionHandle = undefined;
+    if (db2.scalarFunctionCreateWithExtension(input.extension, &function, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.scalarFunctionDestroy(&function);
+
+    const fn_name = db2.str("zig_v2_appender_types_test");
+    if (db2.scalarFunctionSetName(function, &fn_name, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var varchar_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(input.context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    defer _ = db2.logicalTypeDestroy(&varchar_type);
+
+    var sig: db2.FunctionSignatureHandle = undefined;
+    if (db2.scalarFunctionGetSignature(function, &sig, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.functionSignatureSetReturnType(sig, varchar_type, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    if (db2.scalarFunctionSetExecCallback(function, appenderTypesTestExec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    _ = db2.scalarFunctionRegister(function, err);
+}
+
+const TypesRow = struct {
+    a: i8,
+    b: i16,
+    c: i32,
+    d: i64,
+    e: f32,
+    f: f64,
+    g: bool,
+    h: []const u8,
+    l: []const []const u8,
+    s: struct { x: i32, flag: bool },
+    n: [2]i32,
+};
+const TypesAppender = comptime_appender_v2.Appender(TypesRow);
+const types_columns = [_][:0]const u8{ "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "FLOAT", "DOUBLE", "BOOLEAN", "VARCHAR", "VARCHAR[]", "STRUCT(x INTEGER, flag BOOLEAN)", "INTEGER[2]" };
+
+fn appenderTypesTestExec(info: db2.ScalarFunctionExecInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
+    var row_count: db2.idx_t = 0;
+    if (db2.scalarFunctionExecGetRowCount(info, &row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var result_vec: db2.VectorHandle = undefined;
+    if (db2.scalarFunctionExecGetResult(info, &result_vec, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    if (db2.vectorSetSize(result_vec, row_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+
+    var buf: [1024]u8 = undefined;
+    const text = appenderTypesRoundTrip(context, &buf) catch "appender types round-trip FAILED";
+
+    var row: db2.idx_t = 0;
+    while (row < row_count) : (row += 1) {
+        var value: db2.ValueHandle = undefined;
+        if (db2.valueCreateVarcharWithContext(context, text, &value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+        defer _ = db2.valueDestroy(&value);
+        if (db2.vectorSetValue(result_vec, row, value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    }
+}
+
+fn appenderTypesRoundTrip(context: db2.ContextHandle, buf: []u8) ![]const u8 {
+    var e: db2.ErrorInfoHandle = undefined;
+
+    var appender = TypesAppender.create(context, &e) catch return error.CreateFailed;
+    defer appender.destroy();
+
+    const names = [_][]const u8{ "s0", "s1", "s2", "s3", "s4" };
+    var i: i64 = 1;
+    while (i <= 6) : (i += 1) {
+        var text_buf: [48]u8 = undefined;
+        const h = std.fmt.bufPrint(&text_buf, "row {d}, a longer text than twelve", .{i}) catch return error.FormatFailed;
+        appender.append(.{
+            .a = @intCast(i - 3),
+            .b = @intCast(-i * 1000),
+            .c = @intCast(i * 100000),
+            .d = i * 10_000_000_000,
+            .e = @as(f32, @floatFromInt(i)) + 0.5,
+            .f = @as(f64, @floatFromInt(i)) / 8.0,
+            .g = @mod(i, 2) == 0,
+            .h = h,
+            .l = names[0..@intCast(i - 1)],
+            .s = .{ .x = @intCast(-i), .flag = @mod(i, 3) == 0 },
+            .n = .{ @intCast(i), @intCast(-i) },
+        }, &e) catch return error.AppendFailed;
+        if (i == 1 or i == 5) appender.flush(&e) catch return error.FlushFailed;
+        if (i == 5) appender.flush(&e) catch return error.FlushFailed;
+    }
+
+    var collection = appender.finish(&e) catch return error.FinishFailed;
+    defer _ = db2.columnDataCollectionDestroy(&collection);
+
+    var types: [types_columns.len]db2.LogicalTypeHandle = undefined;
+    var made: usize = 0;
+    defer for (types[0..made]) |*ty| {
+        _ = db2.logicalTypeDestroy(ty);
+    };
+    for (types_columns, 0..) |sql_type, k| {
+        if (db2.contextCreateTypeFromText(context, sql_type, &types[k], &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+        made = k + 1;
+    }
+    var varchar_type: db2.LogicalTypeHandle = undefined;
+    if (db2.contextCreateTypeFromId(context, db2.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.TypeFailed;
+    defer _ = db2.logicalTypeDestroy(&varchar_type);
+
+    var scan_chunk: db2.DataChunkHandle = undefined;
+    if (db2.dataChunkCreateWithContext(context, &types, &scan_chunk, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ChunkFailed;
+    defer _ = db2.dataChunkDestroy(&scan_chunk);
+    var shared_state: db2.ColumnDataCollectionSharedScanStateHandle = undefined;
+    if (db2.columnDataCollectionSharedScanStateCreate(collection, &shared_state, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanStateFailed;
+    defer _ = db2.columnDataCollectionSharedScanStateDestroy(&shared_state);
+    var worker_state: db2.ColumnDataCollectionWorkerScanStateHandle = undefined;
+    if (db2.columnDataCollectionWorkerScanStateCreate(collection, &worker_state, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanStateFailed;
+    defer _ = db2.columnDataCollectionWorkerScanStateDestroy(&worker_state);
+
+    var pos: usize = 0;
+    var wrote_any = false;
+    while (true) {
+        var did_produce = false;
+        if (db2.columnDataCollectionScan(collection, shared_state, worker_state, scan_chunk, &did_produce, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+        if (!did_produce) break;
+        var chunk_size: db2.idx_t = 0;
+        if (db2.dataChunkGetSize(scan_chunk, &chunk_size, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+
+        var row: db2.idx_t = 0;
+        while (row < chunk_size) : (row += 1) {
+            if (wrote_any) pos = try appendText(buf, pos, ";");
+            wrote_any = true;
+            for (0..types_columns.len) |col| {
+                if (col > 0) pos = try appendText(buf, pos, "|");
+                var vec: db2.VectorHandle = undefined;
+                if (db2.dataChunkGetVector(scan_chunk, col, &vec, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+                var value: db2.ValueHandle = undefined;
+                if (db2.vectorGetValue(vec, row, &value, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+                defer _ = db2.valueDestroy(&value);
+                var as_text: db2.ValueHandle = undefined;
+                if (db2.valueCastWithContext(context, value, varchar_type, &as_text, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+                defer _ = db2.valueDestroy(&as_text);
+                var text: db2.Str = undefined;
+                if (db2.valueGetVarchar(as_text, &text, &e) != db2.c.DUCKDB_V2_ERROR_NONE) return error.ScanFailed;
+                pos = try appendText(buf, pos, @as([*]const u8, @ptrCast(text.ptr))[0..text.len]);
+            }
+        }
+    }
+    return buf[0..pos];
+}
+
+fn appendText(buf: []u8, pos: usize, text: []const u8) !usize {
+    if (pos + text.len > buf.len) return error.FormatFailed;
+    @memcpy(buf[pos..][0..text.len], text);
+    return pos + text.len;
+}

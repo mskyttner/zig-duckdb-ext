@@ -1407,3 +1407,17 @@ statement error
 SELECT * FROM zig_v2_nethogs_trace('zig-out/bin/does_not_exist 1', 1)
 ----
 failed to spawn/read
+
+# Every leaf type (TINYINT .. DOUBLE, BOOLEAN, VARCHAR), a LIST(VARCHAR), a STRUCT and an INTEGER[2], six rows
+# with a flush after the first row and two after the fifth (the second with nothing buffered), each column
+# read back as text. The batch after the first flush is longer than the one flushed, which is what needs the
+# chunk sized back up.
+query T
+SELECT zig_v2_appender_types_test()
+----
+-2|-1000|100000|10000000000|1.5|0.125|false|row 1, a longer text than twelve|[]|{'x': -1, 'flag': false}|[1, -1];-1|-2000|200000|20000000000|2.5|0.25|true|row 2, a longer text than twelve|[s0]|{'x': -2, 'flag': false}|[2, -2];0|-3000|300000|30000000000|3.5|0.375|false|row 3, a longer text than twelve|[s0, s1]|{'x': -3, 'flag': true}|[3, -3];1|-4000|400000|40000000000|4.5|0.5|true|row 4, a longer text than twelve|[s0, s1, s2]|{'x': -4, 'flag': false}|[4, -4];2|-5000|500000|50000000000|5.5|0.625|false|row 5, a longer text than twelve|[s0, s1, s2, s3]|{'x': -5, 'flag': false}|[5, -5];3|-6000|600000|60000000000|6.5|0.75|true|row 6, a longer text than twelve|[s0, s1, s2, s3, s4]|{'x': -6, 'flag': true}|[6, -6]
+
+query I
+SELECT length(string_split(zig_v2_appender_types_test(), ';')[3])
+----
+116
