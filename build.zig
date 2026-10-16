@@ -67,6 +67,22 @@ fn sqlQuoteLiteral(b: *std.Build, s: []const u8) []const u8 {
     return std.mem.replaceOwned(u8, b.allocator, s, "'", "''") catch @panic("OOM");
 }
 
+/// Resolves a GCC-toolchain file (e.g. `libstdc++.a`) via `g++
+/// -print-file-name=<name>` — the same query GCC's own driver uses
+/// internally — instead of hardcoding a `/usr/lib/gcc/<triple>/<version>/`
+/// path that varies by distro/GCC version. Falls back to `name` itself
+/// (unresolved) if `g++` isn't on `PATH` or the query fails; the
+/// subsequent `addObjectFile` then fails with Zig's own "file not
+/// found" error, pointing at `-Dlibstdcxx-path=`/`-Dlibgcc-eh-path=` as
+/// the fix rather than silently resolving to the wrong file.
+fn gccFileName(b: *std.Build, name: []const u8) []const u8 {
+    const stdout = switch (b.runFallible(&.{ "g++", b.fmt("-print-file-name={s}", .{name}) }, .{ .stderr_behavior = .ignore })) {
+        .success => |out| out,
+        .spawn_failed, .bad_exit_code, .crashed => return name,
+    };
+    return std.mem.trim(u8, stdout, " \t\r\n");
+}
+
 /// Append DuckDB extension metadata to an already-configured shared
 /// library, producing a `.duckdb_extension` file. Factors out the
 /// metadata-tool-executable + run-command + four-args + output-arg
@@ -213,6 +229,10 @@ pub fn build(b: *std.Build) void {
         "dist-version",
         "DuckDB client version directory for `dist` packaging (default: v1.5.6)",
     ) orelse "v1.5.6";
+
+    // `v2-static-embed-poc` link paths — see that step's own comment.
+    const libstdcxx_path_override = b.option([]const u8, "libstdcxx-path", "Path to the system libstdc++.a for `v2-static-embed-poc` (default: `g++ -print-file-name=libstdc++.a`)");
+    const libgcc_eh_path_override = b.option([]const u8, "libgcc-eh-path", "Path to the system libgcc_eh.a for `v2-static-embed-poc` (default: `g++ -print-file-name=libgcc_eh.a`)");
 
     // `demo-stipple` step parameters — see its definition below.
     const stipple_demo_url = b.option(
@@ -532,6 +552,9 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
 
+        const libstdcxx_path = libstdcxx_path_override orelse gccFileName(b, "libstdc++.a");
+        const libgcc_eh_path = libgcc_eh_path_override orelse gccFileName(b, "libgcc_eh.a");
+
         const static_embed_poc_exe = b.addExecutable(.{
             .name = "v2_static_embed_poc",
             .use_llvm = true,
@@ -568,14 +591,21 @@ pub fn build(b: *std.Build) void {
         // identical, ABI-incompatible result either way. The only way to
         // get the REAL system libstdc++ is to link its file directly,
         // bypassing that name-based redirect.
-        static_embed_poc_exe.root_module.addObjectFile(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13/libstdc++.a" });
+        //
+        // The exact path (`/usr/lib/gcc/<triple>/<version>/`) differs by
+        // distro and GCC version, so it's resolved via `g++
+        // -print-file-name=...` (the same query GCC's own driver uses
+        // internally) rather than hardcoded — `-Dlibstdcxx-path=`/
+        // `-Dlibgcc-eh-path=` override it explicitly for a host without
+        // `g++` on `PATH`, or a nonstandard toolchain layout.
+        static_embed_poc_exe.root_module.addObjectFile(.{ .cwd_relative = libstdcxx_path });
         // libstdc++ itself needs GCC's own unwinder (`_Unwind_*`, C++
         // exception-handling primitives) — a separate archive, not part
         // of libstdc++.a and not supplied by Zig's own LLVM-based
         // unwinder either (confirmed live: without this, the `_Unwind_*`
         // symbols libstdc++.a's eh_throw.o/eh_personality.o reference are
         // undefined).
-        static_embed_poc_exe.root_module.addObjectFile(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13/libgcc_eh.a" });
+        static_embed_poc_exe.root_module.addObjectFile(.{ .cwd_relative = libgcc_eh_path });
         // `addLibraryPath` + `linkSystemLibrary` (not `addObjectFile`): a
         // plain static archive added via `addObjectFile` ended up ordered
         // BEFORE the object files that reference its symbols on the
