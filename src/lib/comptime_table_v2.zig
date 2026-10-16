@@ -254,9 +254,9 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
 
         fn pushdownCallback(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
             _ = context;
-            var bind_data_ptr: *anyopaque = undefined;
+            var bind_data_ptr: ?*anyopaque = null;
             if (v2.duckdb_v2_table_function_filter_pushdown_get_bind_data(info, &bind_data_ptr, err) != .ERROR_NONE) return;
-            const state: *State = @ptrCast(@alignCast(bind_data_ptr));
+            const state: *State = @ptrCast(@alignCast(bind_data_ptr.?));
             // The hook is written against the hand-written layer's types, which are different Zig
             // types for the same pointers; they are converted here.
             // SAFETY: the same pointers, typed by two translations of the same C API; the generated
@@ -266,9 +266,9 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
 
         fn progressCallback(info: v2.duckdb_v2_table_function_progress_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
             _ = context;
-            var bind_data_ptr: *anyopaque = undefined;
+            var bind_data_ptr: ?*anyopaque = null;
             if (v2.duckdb_v2_table_function_progress_get_bind_data(info, &bind_data_ptr, err) != .ERROR_NONE) return;
-            const state: *const State = @ptrCast(@alignCast(bind_data_ptr));
+            const state: *const State = @ptrCast(@alignCast(bind_data_ptr.?));
             _ = v2.duckdb_v2_table_function_progress_set_progress(info, State.progress(state), err);
         }
 
@@ -349,9 +349,9 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
         const ColumnPtrsTuple = MakeColumnPtrsTuple();
 
         fn execCallback(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
-            var bind_data_ptr: *anyopaque = undefined;
+            var bind_data_ptr: ?*anyopaque = null;
             if (v2.duckdb_v2_table_function_exec_get_bind_data(info, &bind_data_ptr, err) != .ERROR_NONE) return;
-            const state: *State = @ptrCast(@alignCast(bind_data_ptr));
+            const state: *State = @ptrCast(@alignCast(bind_data_ptr.?));
 
             var chunk: v2.duckdb_v2_data_chunk_handle = undefined;
             if (v2.duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != .ERROR_NONE) return;
@@ -419,7 +419,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
             inline for (0..num_row_fields) |i| {
                 const T = row_field_types[i];
                 if (T != []const u8 and position_for_field[i] != null) {
-                    var out_data: *anyopaque = undefined;
+                    var out_data: ?*anyopaque = null;
                     if (v2.duckdb_v2_vector_get_data_mutable(vecs[i], &out_data, err) != .ERROR_NONE) return;
                     // SAFETY: column `i` was declared with this exact type in bindCallback.
                     ptrs[i] = @ptrCast(@alignCast(out_data));

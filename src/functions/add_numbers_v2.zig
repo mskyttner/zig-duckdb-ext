@@ -47,7 +47,7 @@ fn exec(
     if (v2.duckdb_v2_scalar_function_exec_get_result(info, &result_vec, err) != .ERROR_NONE) return;
     if (v2.duckdb_v2_vector_set_size(result_vec, row_count, err) != .ERROR_NONE) return;
 
-    var out_data: *anyopaque = undefined;
+    var out_data: ?*anyopaque = null;
     if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
     // SAFETY: the signature registered this function as (BIGINT, BIGINT) -> BIGINT, so the data of
     // each flattened vector is an array of i64.

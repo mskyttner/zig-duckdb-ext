@@ -2021,7 +2021,7 @@ pub extern fn duckdb_v2_aggregate_function_bind_set_return_type(info: duckdb_v2_
 /// - `info`: The size info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_size_get_user_data(info: duckdb_v2_aggregate_function_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_size_get_user_data(info: duckdb_v2_aggregate_function_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -2030,7 +2030,7 @@ pub extern fn duckdb_v2_aggregate_function_size_get_user_data(info: duckdb_v2_ag
 /// - `info`: The size info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_size_get_bind_data(info: duckdb_v2_aggregate_function_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_size_get_bind_data(info: duckdb_v2_aggregate_function_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the size of a single aggregate state, in bytes. The size callback
 /// must set this; DuckDB uses it to allocate state memory.
@@ -2049,7 +2049,7 @@ pub extern fn duckdb_v2_aggregate_function_size_set_state_size(info: duckdb_v2_a
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_init_get_user_data(info: duckdb_v2_aggregate_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_init_get_user_data(info: duckdb_v2_aggregate_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -2058,7 +2058,7 @@ pub extern fn duckdb_v2_aggregate_function_init_get_user_data(info: duckdb_v2_ag
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_init_get_bind_data(info: duckdb_v2_aggregate_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_init_get_bind_data(info: duckdb_v2_aggregate_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns how many aggregate states this invocation must initialize.
 /// This is the length of the array returned by
@@ -2081,7 +2081,7 @@ pub extern fn duckdb_v2_aggregate_function_init_get_state_count(info: duckdb_v2_
 /// - `info`: The init info handle.
 /// - `states` (OUT): Receives the array of aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_init_get_states(info: duckdb_v2_aggregate_function_init_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_init_get_states(info: duckdb_v2_aggregate_function_init_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the user data set via `aggregate_function_set_user_data`.
 ///
@@ -2090,7 +2090,7 @@ pub extern fn duckdb_v2_aggregate_function_init_get_states(info: duckdb_v2_aggre
 /// - `info`: The update info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_update_get_user_data(info: duckdb_v2_aggregate_function_update_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_update_get_user_data(info: duckdb_v2_aggregate_function_update_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -2099,7 +2099,7 @@ pub extern fn duckdb_v2_aggregate_function_update_get_user_data(info: duckdb_v2_
 /// - `info`: The update info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_update_get_bind_data(info: duckdb_v2_aggregate_function_update_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_update_get_bind_data(info: duckdb_v2_aggregate_function_update_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns how many input rows this invocation carries. This is the length
 /// of the argument vectors and of the state array: row i of every argument
@@ -2151,7 +2151,7 @@ pub extern fn duckdb_v2_aggregate_function_update_get_arg(info: duckdb_v2_aggreg
 /// - `info`: The update info handle.
 /// - `states` (OUT): Receives the array of aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_update_get_states(info: duckdb_v2_aggregate_function_update_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_update_get_states(info: duckdb_v2_aggregate_function_update_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the user data set via `aggregate_function_set_user_data`.
 ///
@@ -2160,7 +2160,7 @@ pub extern fn duckdb_v2_aggregate_function_update_get_states(info: duckdb_v2_agg
 /// - `info`: The combine info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_combine_get_user_data(info: duckdb_v2_aggregate_function_combine_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_combine_get_user_data(info: duckdb_v2_aggregate_function_combine_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -2169,7 +2169,7 @@ pub extern fn duckdb_v2_aggregate_function_combine_get_user_data(info: duckdb_v2
 /// - `info`: The combine info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_combine_get_bind_data(info: duckdb_v2_aggregate_function_combine_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_combine_get_bind_data(info: duckdb_v2_aggregate_function_combine_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns how many source/target state pairs this invocation must combine.
 /// This is the length of both the sources and the targets array.
@@ -2190,7 +2190,7 @@ pub extern fn duckdb_v2_aggregate_function_combine_get_state_count(info: duckdb_
 /// - `info`: The combine info handle.
 /// - `states` (OUT): Receives the array of source aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_combine_get_sources(info: duckdb_v2_aggregate_function_combine_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_combine_get_sources(info: duckdb_v2_aggregate_function_combine_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns the array of target aggregate states, one pointer per pair.
 /// Source i must be combined into target i.
@@ -2200,7 +2200,7 @@ pub extern fn duckdb_v2_aggregate_function_combine_get_sources(info: duckdb_v2_a
 /// - `info`: The combine info handle.
 /// - `states` (OUT): Receives the array of target aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_combine_get_targets(info: duckdb_v2_aggregate_function_combine_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_combine_get_targets(info: duckdb_v2_aggregate_function_combine_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the user data set via `aggregate_function_set_user_data`.
 ///
@@ -2209,7 +2209,7 @@ pub extern fn duckdb_v2_aggregate_function_combine_get_targets(info: duckdb_v2_a
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_finalize_get_user_data(info: duckdb_v2_aggregate_function_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_finalize_get_user_data(info: duckdb_v2_aggregate_function_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -2218,7 +2218,7 @@ pub extern fn duckdb_v2_aggregate_function_finalize_get_user_data(info: duckdb_v
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_finalize_get_bind_data(info: duckdb_v2_aggregate_function_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_finalize_get_bind_data(info: duckdb_v2_aggregate_function_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns how many aggregate states this invocation must finalize. This is
 /// the length of the state array and the number of rows to write to the
@@ -2239,7 +2239,7 @@ pub extern fn duckdb_v2_aggregate_function_finalize_get_state_count(info: duckdb
 /// - `info`: The finalize info handle.
 /// - `states` (OUT): Receives the array of aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_finalize_get_states(info: duckdb_v2_aggregate_function_finalize_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_finalize_get_states(info: duckdb_v2_aggregate_function_finalize_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the result vector the finalize callback must write into.
 ///
@@ -2271,7 +2271,7 @@ pub extern fn duckdb_v2_aggregate_function_finalize_get_result_offset(info: duck
 /// - `info`: The destroy info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_destroy_get_user_data(info: duckdb_v2_aggregate_function_destroy_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_destroy_get_user_data(info: duckdb_v2_aggregate_function_destroy_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -2280,7 +2280,7 @@ pub extern fn duckdb_v2_aggregate_function_destroy_get_user_data(info: duckdb_v2
 /// - `info`: The destroy info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_destroy_get_bind_data(info: duckdb_v2_aggregate_function_destroy_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_destroy_get_bind_data(info: duckdb_v2_aggregate_function_destroy_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns how many aggregate states this invocation must destroy. This is
 /// the length of the state array.
@@ -2300,7 +2300,7 @@ pub extern fn duckdb_v2_aggregate_function_destroy_get_state_count(info: duckdb_
 /// - `info`: The destroy info handle.
 /// - `states` (OUT): Receives the array of aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_aggregate_function_destroy_get_states(info: duckdb_v2_aggregate_function_destroy_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_aggregate_function_destroy_get_states(info: duckdb_v2_aggregate_function_destroy_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Registers the aggregate function, making it available for use in SQL queries.
 ///
@@ -2427,7 +2427,7 @@ pub extern fn duckdb_v2_cast_function_set_exec_callback(function: duckdb_v2_cast
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_cast_function_exec_get_user_data(info: duckdb_v2_cast_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_cast_function_exec_get_user_data(info: duckdb_v2_cast_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns how many rows this execution must convert.
 ///
@@ -2652,7 +2652,7 @@ pub extern fn duckdb_v2_copy_to_set_finalize_callback(function: duckdb_v2_copy_f
 /// - `info`: The bind info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_bind_get_user_data(info: duckdb_v2_copy_to_bind_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_bind_get_user_data(info: duckdb_v2_copy_to_bind_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the function's "bind data" from the bind callback.
 ///
@@ -2765,7 +2765,7 @@ pub extern fn duckdb_v2_copy_to_bind_get_option_value(info: duckdb_v2_copy_to_bi
 /// - `info`: The batch size info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_batch_size_get_user_data(info: duckdb_v2_copy_to_batch_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_batch_size_get_user_data(info: duckdb_v2_copy_to_batch_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... TO` bind callback.
 ///
@@ -2774,7 +2774,7 @@ pub extern fn duckdb_v2_copy_to_batch_size_get_user_data(info: duckdb_v2_copy_to
 /// - `info`: The batch size info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_batch_size_get_bind_data(info: duckdb_v2_copy_to_batch_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_batch_size_get_bind_data(info: duckdb_v2_copy_to_batch_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the number of rows a batch should carry, as the target the engine cuts batches at. The batch size
 /// callback must set this to a value greater than 0; the statement fails otherwise. DuckDB defines the `BATCH_SIZE` on omission of calling the function.
@@ -2793,7 +2793,7 @@ pub extern fn duckdb_v2_copy_to_batch_size_set_target(info: duckdb_v2_copy_to_ba
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_init_get_user_data(info: duckdb_v2_copy_to_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_init_get_user_data(info: duckdb_v2_copy_to_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... TO` bind callback.
 ///
@@ -2802,7 +2802,7 @@ pub extern fn duckdb_v2_copy_to_init_get_user_data(info: duckdb_v2_copy_to_init_
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_init_get_bind_data(info: duckdb_v2_copy_to_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_init_get_bind_data(info: duckdb_v2_copy_to_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the path of the file the init callback is preparing.
 ///
@@ -2838,7 +2838,7 @@ pub extern fn duckdb_v2_copy_to_init_set_init_data(info: duckdb_v2_copy_to_init_
 /// - `info`: The batch info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_batch_get_user_data(info: duckdb_v2_copy_to_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_batch_get_user_data(info: duckdb_v2_copy_to_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... TO` bind callback.
 ///
@@ -2847,7 +2847,7 @@ pub extern fn duckdb_v2_copy_to_batch_get_user_data(info: duckdb_v2_copy_to_batc
 /// - `info`: The batch info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_batch_get_bind_data(info: duckdb_v2_copy_to_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_batch_get_bind_data(info: duckdb_v2_copy_to_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the init data set by the function's `COPY ... TO` init callback for the file this batch belongs to.
 ///
@@ -2856,7 +2856,7 @@ pub extern fn duckdb_v2_copy_to_batch_get_bind_data(info: duckdb_v2_copy_to_batc
 /// - `info`: The batch info handle.
 /// - `data` (OUT): Receives the init data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_batch_get_init_data(info: duckdb_v2_copy_to_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_batch_get_init_data(info: duckdb_v2_copy_to_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Takes ownership of the rows of the batch to prepare.
 ///
@@ -2893,7 +2893,7 @@ pub extern fn duckdb_v2_copy_to_batch_set_batch_data(info: duckdb_v2_copy_to_bat
 /// - `info`: The flush info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_flush_get_user_data(info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_flush_get_user_data(info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... TO` bind callback.
 ///
@@ -2902,7 +2902,7 @@ pub extern fn duckdb_v2_copy_to_flush_get_user_data(info: duckdb_v2_copy_to_flus
 /// - `info`: The flush info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_flush_get_bind_data(info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_flush_get_bind_data(info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the init data set by the function's `COPY ... TO` init callback for the file this batch belongs to.
 ///
@@ -2911,7 +2911,7 @@ pub extern fn duckdb_v2_copy_to_flush_get_bind_data(info: duckdb_v2_copy_to_flus
 /// - `info`: The flush info handle.
 /// - `data` (OUT): Receives the init data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_flush_get_init_data(info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_flush_get_init_data(info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the batch data set by the function's batch callback for the batch being flushed.
 ///
@@ -2920,7 +2920,7 @@ pub extern fn duckdb_v2_copy_to_flush_get_init_data(info: duckdb_v2_copy_to_flus
 /// - `info`: The flush info handle.
 /// - `data` (OUT): Receives the batch data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_flush_get_batch_data(info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_flush_get_batch_data(info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the user data set via `copy_function_set_user_data`.
 ///
@@ -2929,7 +2929,7 @@ pub extern fn duckdb_v2_copy_to_flush_get_batch_data(info: duckdb_v2_copy_to_flu
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_finalize_get_user_data(info: duckdb_v2_copy_to_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_finalize_get_user_data(info: duckdb_v2_copy_to_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... TO` bind callback.
 ///
@@ -2938,7 +2938,7 @@ pub extern fn duckdb_v2_copy_to_finalize_get_user_data(info: duckdb_v2_copy_to_f
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_finalize_get_bind_data(info: duckdb_v2_copy_to_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_finalize_get_bind_data(info: duckdb_v2_copy_to_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the init data set by the function's `COPY ... TO` init callback for the file being finalized.
 ///
@@ -2947,7 +2947,7 @@ pub extern fn duckdb_v2_copy_to_finalize_get_bind_data(info: duckdb_v2_copy_to_f
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the init data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_finalize_get_init_data(info: duckdb_v2_copy_to_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_finalize_get_init_data(info: duckdb_v2_copy_to_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the bind callback of the `COPY ... FROM` side.
 ///
@@ -3022,7 +3022,7 @@ pub extern fn duckdb_v2_copy_from_set_progress_callback(function: duckdb_v2_copy
 /// - `info`: The bind info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_bind_get_user_data(info: duckdb_v2_copy_from_bind_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_bind_get_user_data(info: duckdb_v2_copy_from_bind_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the function's "bind data" from the bind callback.
 ///
@@ -3147,7 +3147,7 @@ pub extern fn duckdb_v2_copy_from_bind_set_cardinality(info: duckdb_v2_copy_from
 /// - `info`: The global init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_init_global_get_user_data(info: duckdb_v2_copy_from_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_init_global_get_user_data(info: duckdb_v2_copy_from_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
 ///
@@ -3156,7 +3156,7 @@ pub extern fn duckdb_v2_copy_from_init_global_get_user_data(info: duckdb_v2_copy
 /// - `info`: The global init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_init_global_get_bind_data(info: duckdb_v2_copy_from_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_init_global_get_bind_data(info: duckdb_v2_copy_from_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the function's "global state" from the global init callback.
 ///
@@ -3191,7 +3191,7 @@ pub extern fn duckdb_v2_copy_from_init_global_set_max_threads(info: duckdb_v2_co
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_init_local_get_user_data(info: duckdb_v2_copy_from_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_init_local_get_user_data(info: duckdb_v2_copy_from_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
 ///
@@ -3200,7 +3200,7 @@ pub extern fn duckdb_v2_copy_from_init_local_get_user_data(info: duckdb_v2_copy_
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_init_local_get_bind_data(info: duckdb_v2_copy_from_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_init_local_get_bind_data(info: duckdb_v2_copy_from_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the global state set by the function's global init callback.
 ///
@@ -3211,7 +3211,7 @@ pub extern fn duckdb_v2_copy_from_init_local_get_bind_data(info: duckdb_v2_copy_
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_init_local_get_global_state(info: duckdb_v2_copy_from_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_init_local_get_global_state(info: duckdb_v2_copy_from_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the function's worker-local "local state" from the local init callback.
 ///
@@ -3234,7 +3234,7 @@ pub extern fn duckdb_v2_copy_from_init_local_set_local_state(info: duckdb_v2_cop
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_exec_get_user_data(info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_exec_get_user_data(info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
 ///
@@ -3243,7 +3243,7 @@ pub extern fn duckdb_v2_copy_from_exec_get_user_data(info: duckdb_v2_copy_from_e
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_exec_get_bind_data(info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_exec_get_bind_data(info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the global state set by the function's global init callback.
 ///
@@ -3254,7 +3254,7 @@ pub extern fn duckdb_v2_copy_from_exec_get_bind_data(info: duckdb_v2_copy_from_e
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_exec_get_global_state(info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_exec_get_global_state(info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the worker-local local state set by the function's local init callback.
 ///
@@ -3263,7 +3263,7 @@ pub extern fn duckdb_v2_copy_from_exec_get_global_state(info: duckdb_v2_copy_fro
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the local state pointer for the executing thread, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_exec_get_local_state(info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_exec_get_local_state(info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the output chunk the exec callback must write the next batch of rows into.
 ///
@@ -3288,7 +3288,7 @@ pub extern fn duckdb_v2_copy_from_exec_get_output_chunk(info: duckdb_v2_copy_fro
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_progress_get_user_data(info: duckdb_v2_copy_from_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_progress_get_user_data(info: duckdb_v2_copy_from_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
 ///
@@ -3297,7 +3297,7 @@ pub extern fn duckdb_v2_copy_from_progress_get_user_data(info: duckdb_v2_copy_fr
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_progress_get_bind_data(info: duckdb_v2_copy_from_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_progress_get_bind_data(info: duckdb_v2_copy_from_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the global state set by the function's global init callback.
 ///
@@ -3309,7 +3309,7 @@ pub extern fn duckdb_v2_copy_from_progress_get_bind_data(info: duckdb_v2_copy_fr
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_from_progress_get_global_state(info: duckdb_v2_copy_from_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_from_progress_get_global_state(info: duckdb_v2_copy_from_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Reports how far the read has advanced.
 ///
@@ -3369,7 +3369,7 @@ pub extern fn duckdb_v2_copy_to_set_statistics_callback(function: duckdb_v2_copy
 /// - `info`: The statistics info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_statistics_get_user_data(info: duckdb_v2_copy_to_statistics_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_statistics_get_user_data(info: duckdb_v2_copy_to_statistics_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's `COPY ... TO` bind callback.
 ///
@@ -3378,7 +3378,7 @@ pub extern fn duckdb_v2_copy_to_statistics_get_user_data(info: duckdb_v2_copy_to
 /// - `info`: The statistics info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_statistics_get_bind_data(info: duckdb_v2_copy_to_statistics_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_statistics_get_bind_data(info: duckdb_v2_copy_to_statistics_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the init data set by the function's `COPY ... TO` init callback for the file being reported.
 ///
@@ -3387,7 +3387,7 @@ pub extern fn duckdb_v2_copy_to_statistics_get_bind_data(info: duckdb_v2_copy_to
 /// - `info`: The statistics info handle.
 /// - `data` (OUT): Receives the init data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_copy_to_statistics_get_init_data(info: duckdb_v2_copy_to_statistics_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_copy_to_statistics_get_init_data(info: duckdb_v2_copy_to_statistics_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Reports how many rows were written to the file. Reported as 0 when the callback does not set it.
 ///
@@ -3414,7 +3414,7 @@ pub extern fn duckdb_v2_copy_to_statistics_set_file_size(info: duckdb_v2_copy_to
 /// - `info`: The bind info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_function_bind_get_user_data(info: duckdb_v2_function_bind_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_function_bind_get_user_data(info: duckdb_v2_function_bind_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the function's "bind data" from the bind callback.
 ///
@@ -3587,7 +3587,7 @@ pub extern fn duckdb_v2_replacement_scan_set_user_data(scan: duckdb_v2_replaceme
 /// - `info`: The info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_replacement_scan_get_user_data(info: duckdb_v2_replacement_scan_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_replacement_scan_get_user_data(info: duckdb_v2_replacement_scan_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the name the catalog could not resolve.
 ///
@@ -3912,7 +3912,7 @@ pub extern fn duckdb_v2_scalar_function_bind_set_bind_data(info: duckdb_v2_scala
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_scalar_function_init_get_user_data(info: duckdb_v2_scalar_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_scalar_function_init_get_user_data(info: duckdb_v2_scalar_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -3921,7 +3921,7 @@ pub extern fn duckdb_v2_scalar_function_init_get_user_data(info: duckdb_v2_scala
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_scalar_function_init_get_bind_data(info: duckdb_v2_scalar_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_scalar_function_init_get_bind_data(info: duckdb_v2_scalar_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the function's worker-local "init data" from the init callback.
 ///
@@ -3943,7 +3943,7 @@ pub extern fn duckdb_v2_scalar_function_init_set_init_data(info: duckdb_v2_scala
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_scalar_function_exec_get_user_data(info: duckdb_v2_scalar_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_scalar_function_exec_get_user_data(info: duckdb_v2_scalar_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -3952,7 +3952,7 @@ pub extern fn duckdb_v2_scalar_function_exec_get_user_data(info: duckdb_v2_scala
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_scalar_function_exec_get_bind_data(info: duckdb_v2_scalar_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_scalar_function_exec_get_bind_data(info: duckdb_v2_scalar_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the worker-local init data set by the function's init callback.
 ///
@@ -3961,7 +3961,7 @@ pub extern fn duckdb_v2_scalar_function_exec_get_bind_data(info: duckdb_v2_scala
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the init data pointer for the executing thread, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_scalar_function_exec_get_init_data(info: duckdb_v2_scalar_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_scalar_function_exec_get_init_data(info: duckdb_v2_scalar_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns how many rows this execution must produce. The exec callback
 /// must write exactly this many rows to the result vector. Note that this
@@ -4329,7 +4329,7 @@ pub extern fn duckdb_v2_table_function_bind_set_order_preservation(info: duckdb_
 /// - `info`: The global init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_init_global_get_user_data(info: duckdb_v2_table_function_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_init_global_get_user_data(info: duckdb_v2_table_function_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -4338,7 +4338,7 @@ pub extern fn duckdb_v2_table_function_init_global_get_user_data(info: duckdb_v2
 /// - `info`: The global init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_init_global_get_bind_data(info: duckdb_v2_table_function_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_init_global_get_bind_data(info: duckdb_v2_table_function_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the function's "global state" from the global init callback.
 ///
@@ -4402,7 +4402,7 @@ pub extern fn duckdb_v2_table_function_init_global_get_column_index(info: duckdb
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_init_local_get_user_data(info: duckdb_v2_table_function_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_init_local_get_user_data(info: duckdb_v2_table_function_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -4411,7 +4411,7 @@ pub extern fn duckdb_v2_table_function_init_local_get_user_data(info: duckdb_v2_
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_init_local_get_bind_data(info: duckdb_v2_table_function_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_init_local_get_bind_data(info: duckdb_v2_table_function_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the global state set by the function's global init callback.
 ///
@@ -4422,7 +4422,7 @@ pub extern fn duckdb_v2_table_function_init_local_get_bind_data(info: duckdb_v2_
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_init_local_get_global_state(info: duckdb_v2_table_function_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_init_local_get_global_state(info: duckdb_v2_table_function_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Sets the function's worker-local "local state" from the local init callback.
 ///
@@ -4473,7 +4473,7 @@ pub extern fn duckdb_v2_table_function_init_local_get_column_index(info: duckdb_
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_exec_get_user_data(info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_exec_get_user_data(info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -4482,7 +4482,7 @@ pub extern fn duckdb_v2_table_function_exec_get_user_data(info: duckdb_v2_table_
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_exec_get_bind_data(info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_exec_get_bind_data(info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the global state set by the function's global init callback.
 ///
@@ -4493,7 +4493,7 @@ pub extern fn duckdb_v2_table_function_exec_get_bind_data(info: duckdb_v2_table_
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_exec_get_global_state(info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_exec_get_global_state(info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the worker-local local state set by the function's local init callback.
 ///
@@ -4502,7 +4502,7 @@ pub extern fn duckdb_v2_table_function_exec_get_global_state(info: duckdb_v2_tab
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the local state pointer for the executing thread, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_exec_get_local_state(info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_exec_get_local_state(info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the output chunk the exec callback must write the next batch of rows into.
 ///
@@ -4555,7 +4555,7 @@ pub extern fn duckdb_v2_table_function_exec_get_column_index(info: duckdb_v2_tab
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_progress_get_user_data(info: duckdb_v2_table_function_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_progress_get_user_data(info: duckdb_v2_table_function_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -4564,7 +4564,7 @@ pub extern fn duckdb_v2_table_function_progress_get_user_data(info: duckdb_v2_ta
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_progress_get_bind_data(info: duckdb_v2_table_function_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_progress_get_bind_data(info: duckdb_v2_table_function_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the global state set by the function's global init callback.
 ///
@@ -4576,7 +4576,7 @@ pub extern fn duckdb_v2_table_function_progress_get_bind_data(info: duckdb_v2_ta
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_progress_get_global_state(info: duckdb_v2_table_function_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_progress_get_global_state(info: duckdb_v2_table_function_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Reports how far the scan has advanced.
 ///
@@ -4597,7 +4597,7 @@ pub extern fn duckdb_v2_table_function_progress_set_progress(info: duckdb_v2_tab
 /// - `info`: The filter pushdown info handle.
 /// - `data` (OUT): Receives the user data pointer.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_filter_pushdown_get_user_data(info: duckdb_v2_table_function_filter_pushdown_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_filter_pushdown_get_user_data(info: duckdb_v2_table_function_filter_pushdown_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set via `function_bind_set_bind_data`, or null if none was set.
 ///
@@ -4609,7 +4609,7 @@ pub extern fn duckdb_v2_table_function_filter_pushdown_get_user_data(info: duckd
 /// - `info`: The filter pushdown info handle.
 /// - `data` (OUT): Receives the bind data pointer.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_filter_pushdown_get_bind_data(info: duckdb_v2_table_function_filter_pushdown_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_filter_pushdown_get_bind_data(info: duckdb_v2_table_function_filter_pushdown_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns the number of filter predicates offered to the function.
 ///
@@ -4686,7 +4686,7 @@ pub extern fn duckdb_v2_table_function_filter_pushdown_get_column_index(info: du
 /// - `info`: The partition data info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_partition_data_get_user_data(info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_partition_data_get_user_data(info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -4695,7 +4695,7 @@ pub extern fn duckdb_v2_table_function_partition_data_get_user_data(info: duckdb
 /// - `info`: The partition data info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_partition_data_get_bind_data(info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_partition_data_get_bind_data(info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the global state set by the function's global init callback.
 ///
@@ -4706,7 +4706,7 @@ pub extern fn duckdb_v2_table_function_partition_data_get_bind_data(info: duckdb
 /// - `info`: The partition data info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_partition_data_get_global_state(info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_partition_data_get_global_state(info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the worker-local local state set by the function's local init callback, for the thread that
 /// produced the batch this call reports on. No other thread observes it, so it needs no synchronization.
@@ -4716,7 +4716,7 @@ pub extern fn duckdb_v2_table_function_partition_data_get_global_state(info: duc
 /// - `info`: The partition data info handle.
 /// - `data` (OUT): Receives the local state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_partition_data_get_local_state(info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_partition_data_get_local_state(info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns whether a downstream operator needs this batch's ordering position.
 ///
@@ -4816,7 +4816,7 @@ pub extern fn duckdb_v2_table_function_partition_data_set_partition_value(info: 
 /// - `info`: The partitioning info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_partitioning_get_user_data(info: duckdb_v2_table_function_partitioning_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_partitioning_get_user_data(info: duckdb_v2_table_function_partitioning_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -4825,7 +4825,7 @@ pub extern fn duckdb_v2_table_function_partitioning_get_user_data(info: duckdb_v
 /// - `info`: The partitioning info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_partitioning_get_bind_data(info: duckdb_v2_table_function_partitioning_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_partitioning_get_bind_data(info: duckdb_v2_table_function_partitioning_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Returns the number of columns the optimizer is asking about: the candidate `GROUP BY` column set.
 ///
@@ -4924,7 +4924,7 @@ pub extern fn duckdb_v2_table_function_set_claim_batch_callback(function: duckdb
 /// - `info`: The claim batch info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_claim_batch_get_user_data(info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_claim_batch_get_user_data(info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data set by the function's bind callback.
 ///
@@ -4933,7 +4933,7 @@ pub extern fn duckdb_v2_table_function_claim_batch_get_user_data(info: duckdb_v2
 /// - `info`: The claim batch info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_claim_batch_get_bind_data(info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_claim_batch_get_bind_data(info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the global state set by the function's global init callback.
 ///
@@ -4944,7 +4944,7 @@ pub extern fn duckdb_v2_table_function_claim_batch_get_bind_data(info: duckdb_v2
 /// - `info`: The claim batch info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_claim_batch_get_global_state(info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_claim_batch_get_global_state(info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the local state set by the function's local init callback, for the thread claiming a batch.
 ///
@@ -4953,7 +4953,7 @@ pub extern fn duckdb_v2_table_function_claim_batch_get_global_state(info: duckdb
 /// - `info`: The claim batch info handle.
 /// - `data` (OUT): Receives the local state pointer for the claiming thread, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_claim_batch_get_local_state(info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_claim_batch_get_local_state(info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Reports whether the callback claimed a batch for the thread.
 ///
@@ -4989,7 +4989,7 @@ pub extern fn duckdb_v2_table_function_set_get_bind_info_callback(function: duck
 /// - `info`: The get bind info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_get_bind_info_get_user_data(info: duckdb_v2_table_function_get_bind_info_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_get_bind_info_get_user_data(info: duckdb_v2_table_function_get_bind_info_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Retrieves the bind data the function's bind callback set for the bound call being described.
 ///
@@ -4998,7 +4998,7 @@ pub extern fn duckdb_v2_table_function_get_bind_info_get_user_data(info: duckdb_
 /// - `info`: The get bind info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub extern fn duckdb_v2_table_function_get_bind_info_get_bind_data(info: duckdb_v2_table_function_get_bind_info_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_table_function_get_bind_info_get_bind_data(info: duckdb_v2_table_function_get_bind_info_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Attaches an identifier to a result column of the bound call, or to a field nested inside one.
 ///
@@ -8387,7 +8387,7 @@ pub extern fn duckdb_v2_vector_set_value(vector: duckdb_v2_vector_handle, row: u
 /// - `vector`: The vector.
 /// - `out_data` (OUT): Receives a mutable pointer to the data.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_vector_get_data_mutable(vector: duckdb_v2_vector_handle, out_data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_vector_get_data_mutable(vector: duckdb_v2_vector_handle, out_data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Forces a vector into FLAT representation, in place.
 ///

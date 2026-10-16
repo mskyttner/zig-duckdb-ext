@@ -707,7 +707,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             // `db.Decimal`'s doc comment) — written through the flat
             // buffer below, same as any other non-variable-width return,
             // just unwrapping `.raw` first via `writeResult`.
-            var out_data: *anyopaque = undefined;
+            var out_data: ?*anyopaque = null;
             if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
             // SAFETY: types were validated at comptime against the registered signature.
             const result: [*]WriteType = @ptrCast(@alignCast(out_data));
@@ -824,7 +824,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
             var out: [*]ReturnType = undefined;
             if (comptime !return_is_variant and !return_is_varchar) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
@@ -1001,13 +1001,13 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                     if (comptime FT == []const u8) {
                         return_child_ptrs[f] = child_vec;
                     } else {
-                        var out_data: *anyopaque = undefined;
+                        var out_data: ?*anyopaque = null;
                         if (v2.duckdb_v2_vector_get_data_mutable(child_vec, &out_data, err) != .ERROR_NONE) return;
                         return_child_ptrs[f] = @ptrCast(@alignCast(out_data));
                     }
                 }
             } else if (comptime !return_is_varchar) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
@@ -1172,7 +1172,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
             var out: [*]ReturnType = undefined;
             if (comptime !return_is_list and !return_is_array and !return_is_varchar) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
@@ -1328,7 +1328,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
             var out: [*]ReturnType = undefined;
             if (comptime !return_is_map and !return_is_varchar) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
@@ -1434,7 +1434,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
             var out: [*]ReturnType = undefined;
             if (comptime !return_is_union and !return_is_varchar) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
@@ -1532,7 +1532,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
             var tag_vec: v2.duckdb_v2_vector_handle = undefined;
             if (v2.duckdb_v2_vector_get_child(result_vec, 0, &tag_vec, err) != .ERROR_NONE) return false;
-            var tag_data: *anyopaque = undefined;
+            var tag_data: ?*anyopaque = null;
             if (v2.duckdb_v2_vector_get_data_mutable(tag_vec, &tag_data, err) != .ERROR_NONE) return false;
             const tags: [*]u8 = @ptrCast(@alignCast(tag_data));
 
@@ -1565,7 +1565,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         defer _ = v2.duckdb_v2_value_destroy(&v);
                         if (v2.duckdb_v2_vector_set_value(member_vec, row, v, err) != .ERROR_NONE) return false;
                     } else {
-                        var member_data: *anyopaque = undefined;
+                        var member_data: ?*anyopaque = null;
                         if (v2.duckdb_v2_vector_get_data_mutable(member_vec, &member_data, err) != .ERROR_NONE) return false;
                         const typed: [*]FT = @ptrCast(@alignCast(member_data));
                         typed[row] = field_value;

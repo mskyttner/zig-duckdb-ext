@@ -353,11 +353,11 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
             var out: [*]WriteType = undefined;
             var enum_out: EnumOut = undefined;
             if (comptime target_is_enum) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 enum_out = @ptrCast(@alignCast(out_data));
             } else if (comptime !target_is_varchar) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
@@ -434,11 +434,11 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
             var out: [*]WriteType = undefined;
             var enum_out: EnumOut = undefined;
             if (comptime target_is_enum) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 enum_out = @ptrCast(@alignCast(out_data));
             } else if (comptime !target_is_varchar) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
@@ -532,13 +532,13 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                     if (comptime FT == []const u8) {
                         target_child_ptrs[f] = child_vec;
                     } else {
-                        var out_data: *anyopaque = undefined;
+                        var out_data: ?*anyopaque = null;
                         if (v2.duckdb_v2_vector_get_data_mutable(child_vec, &out_data, err) != .ERROR_NONE) return;
                         target_child_ptrs[f] = @ptrCast(@alignCast(out_data));
                     }
                 }
             } else if (comptime !target_is_varchar) {
-                var out_data: *anyopaque = undefined;
+                var out_data: ?*anyopaque = null;
                 if (v2.duckdb_v2_vector_get_data_mutable(output_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }

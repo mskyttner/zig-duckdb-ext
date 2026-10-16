@@ -592,6 +592,19 @@ fn writeType(g: *Gen, w: *Io.Writer, ty: []const u8, indirection: usize, is_cons
     const is_char = std.mem.eql(u8, ty, "char");
     const is_void = std.mem.eql(u8, ty, "void");
 
+    // `void **` and `void ***` are out-parameters receiving a data pointer, which "may be null if none was
+    // set", or (three levels, the aggregate states) an array of them: the pointer that is received is
+    // nullable, and the middle level of three is the array.
+    if (is_void and indirection >= 2) {
+        for (0..indirection) |level| {
+            if (level == 0 and optional) try w.writeAll("?");
+            const innermost = level == indirection - 1;
+            try w.writeAll(if (innermost) "?*" else if (indirection == 3 and level == 1) "[*]" else "*");
+            if (innermost and is_const) try w.writeAll("const ");
+        }
+        return w.writeAll("anyopaque");
+    }
+
     for (0..indirection) |level| {
         if (level == 0 and optional) try w.writeAll("?");
         const innermost = level == indirection - 1;

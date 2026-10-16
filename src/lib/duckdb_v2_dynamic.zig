@@ -539,7 +539,7 @@ pub const Api = extern struct {
     duckdb_v2_vector_get_arena: ?*const fn (vector: duckdb_v2_vector_handle, out_arena: *duckdb_v2_arena_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_vector_get_child: ?*const fn (vector: duckdb_v2_vector_handle, index: u64, out_child: *duckdb_v2_vector_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_vector_get_child_count: ?*const fn (vector: duckdb_v2_vector_handle, out_count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_vector_get_data_mutable: ?*const fn (vector: duckdb_v2_vector_handle, out_data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_vector_get_data_mutable: ?*const fn (vector: duckdb_v2_vector_handle, out_data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_vector_get_logical_type: ?*const fn (vector: duckdb_v2_vector_handle, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_vector_get_size: ?*const fn (vector: duckdb_v2_vector_handle, out_size: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_vector_get_value: ?*const fn (vector: duckdb_v2_vector_handle, row: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -559,14 +559,14 @@ pub const Api = extern struct {
     duckdb_v2_scalar_function_destroy: ?*const fn (function: *duckdb_v2_scalar_function_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_exec_get_arg: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, index: u64, vector: *duckdb_v2_vector_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_exec_get_arg_count: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, positional_fixed: ?*u64, positional_variadic: ?*u64, named_fixed: ?*u64, named_variadic: ?*u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_scalar_function_exec_get_bind_data: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_scalar_function_exec_get_init_data: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_scalar_function_exec_get_bind_data: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_scalar_function_exec_get_init_data: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_exec_get_result: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, vector: *duckdb_v2_vector_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_exec_get_row_count: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_scalar_function_exec_get_user_data: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_scalar_function_exec_get_user_data: ?*const fn (info: duckdb_v2_scalar_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_get_signature: ?*const fn (function: duckdb_v2_scalar_function_handle, sig: *duckdb_v2_function_signature_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_scalar_function_init_get_bind_data: ?*const fn (info: duckdb_v2_scalar_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_scalar_function_init_get_user_data: ?*const fn (info: duckdb_v2_scalar_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_scalar_function_init_get_bind_data: ?*const fn (info: duckdb_v2_scalar_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_scalar_function_init_get_user_data: ?*const fn (info: duckdb_v2_scalar_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_init_set_init_data: ?*const fn (info: duckdb_v2_scalar_function_init_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_register: ?*const fn (function: duckdb_v2_scalar_function_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_set_bind_callback: ?*const fn (function: duckdb_v2_scalar_function_handle, callback: ?duckdb_v2_scalar_function_bind_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -575,29 +575,29 @@ pub const Api = extern struct {
     duckdb_v2_scalar_function_set_name: ?*const fn (function: duckdb_v2_scalar_function_handle, name: *const duckdb_v2_identifier_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_set_user_data: ?*const fn (function: duckdb_v2_scalar_function_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_bind_set_return_type: ?*const fn (info: duckdb_v2_aggregate_function_bind_info_handle, return_type: duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_combine_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_combine_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_combine_get_sources: ?*const fn (info: duckdb_v2_aggregate_function_combine_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_combine_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_combine_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_combine_get_sources: ?*const fn (info: duckdb_v2_aggregate_function_combine_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_combine_get_state_count: ?*const fn (info: duckdb_v2_aggregate_function_combine_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_combine_get_targets: ?*const fn (info: duckdb_v2_aggregate_function_combine_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_combine_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_combine_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_combine_get_targets: ?*const fn (info: duckdb_v2_aggregate_function_combine_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_combine_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_combine_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_create_with_connection: ?*const fn (connection: duckdb_v2_connection_handle, function: *duckdb_v2_aggregate_function_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_create_with_extension: ?*const fn (extension: duckdb_v2_extension_handle, function: *duckdb_v2_aggregate_function_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_destroy: ?*const fn (function: *duckdb_v2_aggregate_function_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_destroy_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_destroy_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_destroy_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_destroy_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_destroy_get_state_count: ?*const fn (info: duckdb_v2_aggregate_function_destroy_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_destroy_get_states: ?*const fn (info: duckdb_v2_aggregate_function_destroy_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_destroy_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_destroy_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_finalize_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_destroy_get_states: ?*const fn (info: duckdb_v2_aggregate_function_destroy_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_destroy_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_destroy_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_finalize_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_finalize_get_result: ?*const fn (info: duckdb_v2_aggregate_function_finalize_info_handle, vector: *duckdb_v2_vector_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_finalize_get_result_offset: ?*const fn (info: duckdb_v2_aggregate_function_finalize_info_handle, offset: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_finalize_get_state_count: ?*const fn (info: duckdb_v2_aggregate_function_finalize_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_finalize_get_states: ?*const fn (info: duckdb_v2_aggregate_function_finalize_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_finalize_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_finalize_get_states: ?*const fn (info: duckdb_v2_aggregate_function_finalize_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_finalize_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_get_signature: ?*const fn (function: duckdb_v2_aggregate_function_handle, sig: *duckdb_v2_function_signature_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_init_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_init_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_init_get_state_count: ?*const fn (info: duckdb_v2_aggregate_function_init_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_init_get_states: ?*const fn (info: duckdb_v2_aggregate_function_init_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_init_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_init_get_states: ?*const fn (info: duckdb_v2_aggregate_function_init_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_init_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_register: ?*const fn (function: duckdb_v2_aggregate_function_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_set_bind_callback: ?*const fn (function: duckdb_v2_aggregate_function_handle, callback: ?duckdb_v2_aggregate_function_bind_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_set_combine_callback: ?*const fn (function: duckdb_v2_aggregate_function_handle, callback: ?duckdb_v2_aggregate_function_combine_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -608,15 +608,15 @@ pub const Api = extern struct {
     duckdb_v2_aggregate_function_set_size_callback: ?*const fn (function: duckdb_v2_aggregate_function_handle, callback: ?duckdb_v2_aggregate_function_size_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_set_update_callback: ?*const fn (function: duckdb_v2_aggregate_function_handle, callback: ?duckdb_v2_aggregate_function_update_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_set_user_data: ?*const fn (function: duckdb_v2_aggregate_function_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_size_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_size_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_size_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_size_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_size_set_state_size: ?*const fn (info: duckdb_v2_aggregate_function_size_info_handle, size: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_update_get_arg: ?*const fn (info: duckdb_v2_aggregate_function_update_info_handle, index: u64, vector: *duckdb_v2_vector_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_update_get_arg_count: ?*const fn (info: duckdb_v2_aggregate_function_update_info_handle, positional_fixed: ?*u64, positional_variadic: ?*u64, named_fixed: ?*u64, named_variadic: ?*u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_update_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_update_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_update_get_bind_data: ?*const fn (info: duckdb_v2_aggregate_function_update_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_update_get_row_count: ?*const fn (info: duckdb_v2_aggregate_function_update_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_update_get_states: ?*const fn (info: duckdb_v2_aggregate_function_update_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_aggregate_function_update_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_update_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_update_get_states: ?*const fn (info: duckdb_v2_aggregate_function_update_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_aggregate_function_update_get_user_data: ?*const fn (info: duckdb_v2_aggregate_function_update_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_aggregate_function_set_property: ?*const fn (function: duckdb_v2_aggregate_function_handle, key: DUCKDB_V2_FUNCTION_PROPERTY_KEY, value: DUCKDB_V2_FUNCTION_PROPERTY_VALUE, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_set_property: ?*const fn (function: duckdb_v2_scalar_function_handle, key: DUCKDB_V2_FUNCTION_PROPERTY_KEY, value: DUCKDB_V2_FUNCTION_PROPERTY_VALUE, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_bind_add_result_column: ?*const fn (info: duckdb_v2_table_function_bind_info_handle, name: *const duckdb_v2_identifier_t, @"type": duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -624,23 +624,23 @@ pub const Api = extern struct {
     duckdb_v2_table_function_create_with_connection: ?*const fn (connection: duckdb_v2_connection_handle, function: *duckdb_v2_table_function_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_create_with_extension: ?*const fn (extension: duckdb_v2_extension_handle, function: *duckdb_v2_table_function_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_destroy: ?*const fn (function: *duckdb_v2_table_function_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_exec_get_bind_data: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_exec_get_global_state: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_exec_get_local_state: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_exec_get_bind_data: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_exec_get_global_state: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_exec_get_local_state: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_exec_get_output_chunk: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, chunk: *duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_exec_get_user_data: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_exec_get_user_data: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_get_signature: ?*const fn (function: duckdb_v2_table_function_handle, sig: *duckdb_v2_function_signature_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_init_global_get_bind_data: ?*const fn (info: duckdb_v2_table_function_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_init_global_get_user_data: ?*const fn (info: duckdb_v2_table_function_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_init_global_get_bind_data: ?*const fn (info: duckdb_v2_table_function_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_init_global_get_user_data: ?*const fn (info: duckdb_v2_table_function_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_init_global_set_global_state: ?*const fn (info: duckdb_v2_table_function_init_global_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_init_global_set_max_threads: ?*const fn (info: duckdb_v2_table_function_init_global_info_handle, max_threads: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_init_local_get_bind_data: ?*const fn (info: duckdb_v2_table_function_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_init_local_get_global_state: ?*const fn (info: duckdb_v2_table_function_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_init_local_get_user_data: ?*const fn (info: duckdb_v2_table_function_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_init_local_get_bind_data: ?*const fn (info: duckdb_v2_table_function_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_init_local_get_global_state: ?*const fn (info: duckdb_v2_table_function_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_init_local_get_user_data: ?*const fn (info: duckdb_v2_table_function_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_init_local_set_local_state: ?*const fn (info: duckdb_v2_table_function_init_local_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_progress_get_bind_data: ?*const fn (info: duckdb_v2_table_function_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_progress_get_global_state: ?*const fn (info: duckdb_v2_table_function_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_progress_get_user_data: ?*const fn (info: duckdb_v2_table_function_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_progress_get_bind_data: ?*const fn (info: duckdb_v2_table_function_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_progress_get_global_state: ?*const fn (info: duckdb_v2_table_function_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_progress_get_user_data: ?*const fn (info: duckdb_v2_table_function_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_progress_set_progress: ?*const fn (info: duckdb_v2_table_function_progress_info_handle, progress: f64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_register: ?*const fn (function: duckdb_v2_table_function_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_set_bind_callback: ?*const fn (function: duckdb_v2_table_function_handle, callback: ?duckdb_v2_table_function_bind_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -657,7 +657,7 @@ pub const Api = extern struct {
     duckdb_v2_cast_function_exec_get_mode: ?*const fn (info: duckdb_v2_cast_function_exec_info_handle, mode: *DUCKDB_V2_CAST_MODE, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_cast_function_exec_get_output: ?*const fn (info: duckdb_v2_cast_function_exec_info_handle, vector: *duckdb_v2_vector_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_cast_function_exec_get_row_count: ?*const fn (info: duckdb_v2_cast_function_exec_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_cast_function_exec_get_user_data: ?*const fn (info: duckdb_v2_cast_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_cast_function_exec_get_user_data: ?*const fn (info: duckdb_v2_cast_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_cast_function_register: ?*const fn (function: duckdb_v2_cast_function_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_cast_function_set_exec_callback: ?*const fn (function: duckdb_v2_cast_function_handle, callback: ?duckdb_v2_cast_function_exec_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_cast_function_set_implicit_cast_cost: ?*const fn (function: duckdb_v2_cast_function_handle, cost: i64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -703,7 +703,7 @@ pub const Api = extern struct {
     duckdb_v2_replacement_scan_create_with_instance: ?*const fn (instance: duckdb_v2_instance_handle, scan: *duckdb_v2_replacement_scan_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_destroy: ?*const fn (scan: *duckdb_v2_replacement_scan_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_get_name: ?*const fn (info: duckdb_v2_replacement_scan_info_handle, name: *duckdb_v2_qname_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_replacement_scan_get_user_data: ?*const fn (info: duckdb_v2_replacement_scan_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_replacement_scan_get_user_data: ?*const fn (info: duckdb_v2_replacement_scan_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_register: ?*const fn (scan: duckdb_v2_replacement_scan_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_set_alias: ?*const fn (info: duckdb_v2_replacement_scan_info_handle, alias: *const duckdb_v2_identifier_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_set_callback: ?*const fn (scan: duckdb_v2_replacement_scan_handle, callback: ?duckdb_v2_replacement_scan_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -734,25 +734,25 @@ pub const Api = extern struct {
     duckdb_v2_copy_from_bind_get_option_count: ?*const fn (info: duckdb_v2_copy_from_bind_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_bind_get_option_name: ?*const fn (info: duckdb_v2_copy_from_bind_info_handle, index: u64, name: *duckdb_v2_identifier_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_bind_get_option_value: ?*const fn (info: duckdb_v2_copy_from_bind_info_handle, index: u64, value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_bind_get_user_data: ?*const fn (info: duckdb_v2_copy_from_bind_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_bind_get_user_data: ?*const fn (info: duckdb_v2_copy_from_bind_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_bind_set_bind_data: ?*const fn (info: duckdb_v2_copy_from_bind_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_bind_set_cardinality: ?*const fn (info: duckdb_v2_copy_from_bind_info_handle, cardinality: u64, is_exact: bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_exec_get_bind_data: ?*const fn (info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_exec_get_global_state: ?*const fn (info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_exec_get_local_state: ?*const fn (info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_exec_get_bind_data: ?*const fn (info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_exec_get_global_state: ?*const fn (info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_exec_get_local_state: ?*const fn (info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_exec_get_output_chunk: ?*const fn (info: duckdb_v2_copy_from_exec_info_handle, chunk: *duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_exec_get_user_data: ?*const fn (info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_init_global_get_bind_data: ?*const fn (info: duckdb_v2_copy_from_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_init_global_get_user_data: ?*const fn (info: duckdb_v2_copy_from_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_exec_get_user_data: ?*const fn (info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_init_global_get_bind_data: ?*const fn (info: duckdb_v2_copy_from_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_init_global_get_user_data: ?*const fn (info: duckdb_v2_copy_from_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_init_global_set_global_state: ?*const fn (info: duckdb_v2_copy_from_init_global_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_init_global_set_max_threads: ?*const fn (info: duckdb_v2_copy_from_init_global_info_handle, max_threads: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_init_local_get_bind_data: ?*const fn (info: duckdb_v2_copy_from_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_init_local_get_global_state: ?*const fn (info: duckdb_v2_copy_from_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_init_local_get_user_data: ?*const fn (info: duckdb_v2_copy_from_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_init_local_get_bind_data: ?*const fn (info: duckdb_v2_copy_from_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_init_local_get_global_state: ?*const fn (info: duckdb_v2_copy_from_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_init_local_get_user_data: ?*const fn (info: duckdb_v2_copy_from_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_init_local_set_local_state: ?*const fn (info: duckdb_v2_copy_from_init_local_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_progress_get_bind_data: ?*const fn (info: duckdb_v2_copy_from_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_progress_get_global_state: ?*const fn (info: duckdb_v2_copy_from_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_from_progress_get_user_data: ?*const fn (info: duckdb_v2_copy_from_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_progress_get_bind_data: ?*const fn (info: duckdb_v2_copy_from_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_progress_get_global_state: ?*const fn (info: duckdb_v2_copy_from_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_from_progress_get_user_data: ?*const fn (info: duckdb_v2_copy_from_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_progress_set_progress: ?*const fn (info: duckdb_v2_copy_from_progress_info_handle, progress: f64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_set_bind_callback: ?*const fn (function: duckdb_v2_copy_function_handle, callback: ?duckdb_v2_copy_from_bind_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_from_set_exec_callback: ?*const fn (function: duckdb_v2_copy_function_handle, callback: ?duckdb_v2_copy_from_exec_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -765,12 +765,12 @@ pub const Api = extern struct {
     duckdb_v2_copy_function_register: ?*const fn (function: duckdb_v2_copy_function_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_function_set_name: ?*const fn (function: duckdb_v2_copy_function_handle, name: *const duckdb_v2_identifier_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_function_set_user_data: ?*const fn (function: duckdb_v2_copy_function_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_batch_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_batch_get_init_data: ?*const fn (info: duckdb_v2_copy_to_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_batch_get_user_data: ?*const fn (info: duckdb_v2_copy_to_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_batch_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_batch_get_init_data: ?*const fn (info: duckdb_v2_copy_to_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_batch_get_user_data: ?*const fn (info: duckdb_v2_copy_to_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_batch_set_batch_data: ?*const fn (info: duckdb_v2_copy_to_batch_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_batch_size_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_batch_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_batch_size_get_user_data: ?*const fn (info: duckdb_v2_copy_to_batch_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_batch_size_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_batch_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_batch_size_get_user_data: ?*const fn (info: duckdb_v2_copy_to_batch_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_batch_size_set_target: ?*const fn (info: duckdb_v2_copy_to_batch_size_info_handle, rows: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_batch_take_input: ?*const fn (info: duckdb_v2_copy_to_batch_info_handle, collection: *duckdb_v2_column_data_collection_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_bind_get_column_count: ?*const fn (info: duckdb_v2_copy_to_bind_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -780,18 +780,18 @@ pub const Api = extern struct {
     duckdb_v2_copy_to_bind_get_option_count: ?*const fn (info: duckdb_v2_copy_to_bind_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_bind_get_option_name: ?*const fn (info: duckdb_v2_copy_to_bind_info_handle, index: u64, name: *duckdb_v2_identifier_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_bind_get_option_value: ?*const fn (info: duckdb_v2_copy_to_bind_info_handle, index: u64, value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_bind_get_user_data: ?*const fn (info: duckdb_v2_copy_to_bind_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_bind_get_user_data: ?*const fn (info: duckdb_v2_copy_to_bind_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_bind_set_bind_data: ?*const fn (info: duckdb_v2_copy_to_bind_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_finalize_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_finalize_get_init_data: ?*const fn (info: duckdb_v2_copy_to_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_finalize_get_user_data: ?*const fn (info: duckdb_v2_copy_to_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_flush_get_batch_data: ?*const fn (info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_flush_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_flush_get_init_data: ?*const fn (info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_flush_get_user_data: ?*const fn (info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_init_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_finalize_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_finalize_get_init_data: ?*const fn (info: duckdb_v2_copy_to_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_finalize_get_user_data: ?*const fn (info: duckdb_v2_copy_to_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_flush_get_batch_data: ?*const fn (info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_flush_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_flush_get_init_data: ?*const fn (info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_flush_get_user_data: ?*const fn (info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_init_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_init_get_file_path: ?*const fn (info: duckdb_v2_copy_to_init_info_handle, path: *duckdb_v2_str, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_init_get_user_data: ?*const fn (info: duckdb_v2_copy_to_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_init_get_user_data: ?*const fn (info: duckdb_v2_copy_to_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_init_set_init_data: ?*const fn (info: duckdb_v2_copy_to_init_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_set_batch_callback: ?*const fn (function: duckdb_v2_copy_function_handle, callback: ?duckdb_v2_copy_to_batch_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_set_batch_size_callback: ?*const fn (function: duckdb_v2_copy_function_handle, callback: ?duckdb_v2_copy_to_batch_size_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -821,12 +821,12 @@ pub const Api = extern struct {
     duckdb_v2_table_function_exec_get_column_count: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_exec_get_column_index: ?*const fn (info: duckdb_v2_table_function_exec_info_handle, index: u64, column_index: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_filter_pushdown_accept: ?*const fn (info: duckdb_v2_table_function_filter_pushdown_info_handle, index: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_filter_pushdown_get_bind_data: ?*const fn (info: duckdb_v2_table_function_filter_pushdown_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_filter_pushdown_get_bind_data: ?*const fn (info: duckdb_v2_table_function_filter_pushdown_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_filter_pushdown_get_column_count: ?*const fn (info: duckdb_v2_table_function_filter_pushdown_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_filter_pushdown_get_column_index: ?*const fn (info: duckdb_v2_table_function_filter_pushdown_info_handle, index: u64, column_index: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_filter_pushdown_get_filter: ?*const fn (info: duckdb_v2_table_function_filter_pushdown_info_handle, index: u64, filter: *duckdb_v2_expression_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_filter_pushdown_get_filter_count: ?*const fn (info: duckdb_v2_table_function_filter_pushdown_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_filter_pushdown_get_user_data: ?*const fn (info: duckdb_v2_table_function_filter_pushdown_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_filter_pushdown_get_user_data: ?*const fn (info: duckdb_v2_table_function_filter_pushdown_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_init_global_get_column_count: ?*const fn (info: duckdb_v2_table_function_init_global_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_init_global_get_column_index: ?*const fn (info: duckdb_v2_table_function_init_global_info_handle, index: u64, column_index: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_init_local_get_column_count: ?*const fn (info: duckdb_v2_table_function_init_local_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -848,20 +848,20 @@ pub const Api = extern struct {
     duckdb_v2_context_get_option_by_name: ?*const fn (ctx: duckdb_v2_context_handle, name: *const duckdb_v2_identifier_t, out_option: *duckdb_v2_option_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_context_get_option_count: ?*const fn (ctx: duckdb_v2_context_handle, out_count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_instance_set_default: ?*const fn (instance: duckdb_v2_instance_handle, path: *const duckdb_v2_str, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_partition_data_get_bind_data: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_partition_data_get_global_state: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_partition_data_get_local_state: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_partition_data_get_bind_data: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_partition_data_get_global_state: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_partition_data_get_local_state: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_partition_data_get_partition_column_count: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_partition_data_get_partition_column_index: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, index: u64, column_index: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_partition_data_get_user_data: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_partition_data_get_user_data: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_partition_data_requires_batch_index: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, required: *bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_partition_data_requires_partition_columns: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, required: *bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_partition_data_set_batch_index: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, batch_index: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_partition_data_set_partition_value: ?*const fn (info: duckdb_v2_table_function_partition_data_info_handle, index: u64, value: duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_partitioning_get_bind_data: ?*const fn (info: duckdb_v2_table_function_partitioning_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_partitioning_get_bind_data: ?*const fn (info: duckdb_v2_table_function_partitioning_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_partitioning_get_partition_column_count: ?*const fn (info: duckdb_v2_table_function_partitioning_info_handle, count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_partitioning_get_partition_column_index: ?*const fn (info: duckdb_v2_table_function_partitioning_info_handle, index: u64, column_index: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_partitioning_get_user_data: ?*const fn (info: duckdb_v2_table_function_partitioning_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_partitioning_get_user_data: ?*const fn (info: duckdb_v2_table_function_partitioning_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_partitioning_set_partition_info: ?*const fn (info: duckdb_v2_table_function_partitioning_info_handle, partition_info: DUCKDB_V2_TABLE_PARTITION_INFO, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_set_partition_data_callback: ?*const fn (function: duckdb_v2_table_function_handle, callback: ?duckdb_v2_table_function_partition_data_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_set_partitioning_callback: ?*const fn (function: duckdb_v2_table_function_handle, callback: ?duckdb_v2_table_function_partitioning_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -871,7 +871,7 @@ pub const Api = extern struct {
     duckdb_v2_function_bind_get_arg_name: ?*const fn (info: duckdb_v2_function_bind_info_handle, index: u64, name: *duckdb_v2_identifier_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_function_bind_get_arg_type: ?*const fn (info: duckdb_v2_function_bind_info_handle, index: u64, @"type": *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_function_bind_get_arg_value: ?*const fn (info: duckdb_v2_function_bind_info_handle, index: u64, value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_function_bind_get_user_data: ?*const fn (info: duckdb_v2_function_bind_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_function_bind_get_user_data: ?*const fn (info: duckdb_v2_function_bind_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_function_bind_set_bind_data: ?*const fn (info: duckdb_v2_function_bind_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_bind_set_order_preservation: ?*const fn (info: duckdb_v2_table_function_bind_info_handle, order: DUCKDB_V2_ORDER_PRESERVATION, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_arrow_result_destroy: ?*const fn (result: *duckdb_v2_arrow_result_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -889,9 +889,9 @@ pub const Api = extern struct {
     duckdb_v2_scalar_function_set_resolve_types_callback: ?*const fn (function: duckdb_v2_scalar_function_handle, callback: ?duckdb_v2_scalar_function_resolve_types_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_scalar_function_bind_set_bind_data: ?*const fn (info: duckdb_v2_scalar_function_bind_info_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_set_statistics_callback: ?*const fn (function: duckdb_v2_copy_function_handle, callback: ?duckdb_v2_copy_to_statistics_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_statistics_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_statistics_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_statistics_get_init_data: ?*const fn (info: duckdb_v2_copy_to_statistics_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_copy_to_statistics_get_user_data: ?*const fn (info: duckdb_v2_copy_to_statistics_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_statistics_get_bind_data: ?*const fn (info: duckdb_v2_copy_to_statistics_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_statistics_get_init_data: ?*const fn (info: duckdb_v2_copy_to_statistics_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_copy_to_statistics_get_user_data: ?*const fn (info: duckdb_v2_copy_to_statistics_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_statistics_set_file_size: ?*const fn (info: duckdb_v2_copy_to_statistics_info_handle, file_size_bytes: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_copy_to_statistics_set_row_count: ?*const fn (info: duckdb_v2_copy_to_statistics_info_handle, row_count: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_data_chunk_get_capacity: ?*const fn (chunk: duckdb_v2_data_chunk_handle, out_capacity: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -903,14 +903,14 @@ pub const Api = extern struct {
     duckdb_v2_multi_file_function_set_name: ?*const fn (function: duckdb_v2_multi_file_function_handle, name: *duckdb_v2_str, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_multi_file_function_set_reader_type: ?*const fn (function: duckdb_v2_multi_file_function_handle, reader_type: *duckdb_v2_str, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_multi_file_function_set_single_file_function: ?*const fn (function: duckdb_v2_multi_file_function_handle, name: *duckdb_v2_str, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_claim_batch_get_bind_data: ?*const fn (info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_claim_batch_get_global_state: ?*const fn (info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_claim_batch_get_local_state: ?*const fn (info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_claim_batch_get_user_data: ?*const fn (info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_claim_batch_get_bind_data: ?*const fn (info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_claim_batch_get_global_state: ?*const fn (info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_claim_batch_get_local_state: ?*const fn (info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_claim_batch_get_user_data: ?*const fn (info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_claim_batch_set_claimed: ?*const fn (info: duckdb_v2_table_function_claim_batch_info_handle, claimed: bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_set_claim_batch_callback: ?*const fn (function: duckdb_v2_table_function_handle, callback: ?duckdb_v2_table_function_claim_batch_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_get_bind_info_get_bind_data: ?*const fn (info: duckdb_v2_table_function_get_bind_info_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_table_function_get_bind_info_get_user_data: ?*const fn (info: duckdb_v2_table_function_get_bind_info_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_get_bind_info_get_bind_data: ?*const fn (info: duckdb_v2_table_function_get_bind_info_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_table_function_get_bind_info_get_user_data: ?*const fn (info: duckdb_v2_table_function_get_bind_info_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_get_bind_info_set_column_identifier: ?*const fn (info: duckdb_v2_table_function_get_bind_info_info_handle, column_index: u64, child_path: *const u64, child_path_length: u64, identifier: duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_get_bind_info_set_option: ?*const fn (info: duckdb_v2_table_function_get_bind_info_info_handle, key: *duckdb_v2_str, value: duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_function_set_get_bind_info_callback: ?*const fn (function: duckdb_v2_table_function_handle, callback: ?duckdb_v2_table_function_get_bind_info_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -2894,7 +2894,7 @@ pub inline fn duckdb_v2_aggregate_function_bind_set_return_type(info: duckdb_v2_
 /// - `info`: The size info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_size_get_user_data(info: duckdb_v2_aggregate_function_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_size_get_user_data(info: duckdb_v2_aggregate_function_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_size_get_user_data.?(info, data, err);
 }
 
@@ -2905,7 +2905,7 @@ pub inline fn duckdb_v2_aggregate_function_size_get_user_data(info: duckdb_v2_ag
 /// - `info`: The size info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_size_get_bind_data(info: duckdb_v2_aggregate_function_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_size_get_bind_data(info: duckdb_v2_aggregate_function_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_size_get_bind_data.?(info, data, err);
 }
 
@@ -2928,7 +2928,7 @@ pub inline fn duckdb_v2_aggregate_function_size_set_state_size(info: duckdb_v2_a
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_init_get_user_data(info: duckdb_v2_aggregate_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_init_get_user_data(info: duckdb_v2_aggregate_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_init_get_user_data.?(info, data, err);
 }
 
@@ -2939,7 +2939,7 @@ pub inline fn duckdb_v2_aggregate_function_init_get_user_data(info: duckdb_v2_ag
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_init_get_bind_data(info: duckdb_v2_aggregate_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_init_get_bind_data(info: duckdb_v2_aggregate_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_init_get_bind_data.?(info, data, err);
 }
 
@@ -2966,7 +2966,7 @@ pub inline fn duckdb_v2_aggregate_function_init_get_state_count(info: duckdb_v2_
 /// - `info`: The init info handle.
 /// - `states` (OUT): Receives the array of aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_init_get_states(info: duckdb_v2_aggregate_function_init_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_init_get_states(info: duckdb_v2_aggregate_function_init_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_init_get_states.?(info, states, err);
 }
 
@@ -2977,7 +2977,7 @@ pub inline fn duckdb_v2_aggregate_function_init_get_states(info: duckdb_v2_aggre
 /// - `info`: The update info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_update_get_user_data(info: duckdb_v2_aggregate_function_update_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_update_get_user_data(info: duckdb_v2_aggregate_function_update_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_update_get_user_data.?(info, data, err);
 }
 
@@ -2988,7 +2988,7 @@ pub inline fn duckdb_v2_aggregate_function_update_get_user_data(info: duckdb_v2_
 /// - `info`: The update info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_update_get_bind_data(info: duckdb_v2_aggregate_function_update_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_update_get_bind_data(info: duckdb_v2_aggregate_function_update_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_update_get_bind_data.?(info, data, err);
 }
 
@@ -3048,7 +3048,7 @@ pub inline fn duckdb_v2_aggregate_function_update_get_arg(info: duckdb_v2_aggreg
 /// - `info`: The update info handle.
 /// - `states` (OUT): Receives the array of aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_update_get_states(info: duckdb_v2_aggregate_function_update_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_update_get_states(info: duckdb_v2_aggregate_function_update_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_update_get_states.?(info, states, err);
 }
 
@@ -3059,7 +3059,7 @@ pub inline fn duckdb_v2_aggregate_function_update_get_states(info: duckdb_v2_agg
 /// - `info`: The combine info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_combine_get_user_data(info: duckdb_v2_aggregate_function_combine_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_combine_get_user_data(info: duckdb_v2_aggregate_function_combine_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_combine_get_user_data.?(info, data, err);
 }
 
@@ -3070,7 +3070,7 @@ pub inline fn duckdb_v2_aggregate_function_combine_get_user_data(info: duckdb_v2
 /// - `info`: The combine info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_combine_get_bind_data(info: duckdb_v2_aggregate_function_combine_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_combine_get_bind_data(info: duckdb_v2_aggregate_function_combine_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_combine_get_bind_data.?(info, data, err);
 }
 
@@ -3095,7 +3095,7 @@ pub inline fn duckdb_v2_aggregate_function_combine_get_state_count(info: duckdb_
 /// - `info`: The combine info handle.
 /// - `states` (OUT): Receives the array of source aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_combine_get_sources(info: duckdb_v2_aggregate_function_combine_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_combine_get_sources(info: duckdb_v2_aggregate_function_combine_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_combine_get_sources.?(info, states, err);
 }
 
@@ -3107,7 +3107,7 @@ pub inline fn duckdb_v2_aggregate_function_combine_get_sources(info: duckdb_v2_a
 /// - `info`: The combine info handle.
 /// - `states` (OUT): Receives the array of target aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_combine_get_targets(info: duckdb_v2_aggregate_function_combine_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_combine_get_targets(info: duckdb_v2_aggregate_function_combine_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_combine_get_targets.?(info, states, err);
 }
 
@@ -3118,7 +3118,7 @@ pub inline fn duckdb_v2_aggregate_function_combine_get_targets(info: duckdb_v2_a
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_finalize_get_user_data(info: duckdb_v2_aggregate_function_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_finalize_get_user_data(info: duckdb_v2_aggregate_function_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_finalize_get_user_data.?(info, data, err);
 }
 
@@ -3129,7 +3129,7 @@ pub inline fn duckdb_v2_aggregate_function_finalize_get_user_data(info: duckdb_v
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_finalize_get_bind_data(info: duckdb_v2_aggregate_function_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_finalize_get_bind_data(info: duckdb_v2_aggregate_function_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_finalize_get_bind_data.?(info, data, err);
 }
 
@@ -3154,7 +3154,7 @@ pub inline fn duckdb_v2_aggregate_function_finalize_get_state_count(info: duckdb
 /// - `info`: The finalize info handle.
 /// - `states` (OUT): Receives the array of aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_finalize_get_states(info: duckdb_v2_aggregate_function_finalize_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_finalize_get_states(info: duckdb_v2_aggregate_function_finalize_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_finalize_get_states.?(info, states, err);
 }
 
@@ -3192,7 +3192,7 @@ pub inline fn duckdb_v2_aggregate_function_finalize_get_result_offset(info: duck
 /// - `info`: The destroy info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_destroy_get_user_data(info: duckdb_v2_aggregate_function_destroy_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_destroy_get_user_data(info: duckdb_v2_aggregate_function_destroy_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_destroy_get_user_data.?(info, data, err);
 }
 
@@ -3203,7 +3203,7 @@ pub inline fn duckdb_v2_aggregate_function_destroy_get_user_data(info: duckdb_v2
 /// - `info`: The destroy info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_destroy_get_bind_data(info: duckdb_v2_aggregate_function_destroy_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_destroy_get_bind_data(info: duckdb_v2_aggregate_function_destroy_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_destroy_get_bind_data.?(info, data, err);
 }
 
@@ -3227,7 +3227,7 @@ pub inline fn duckdb_v2_aggregate_function_destroy_get_state_count(info: duckdb_
 /// - `info`: The destroy info handle.
 /// - `states` (OUT): Receives the array of aggregate state pointers. Borrowed; valid only for the duration of the callback.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_aggregate_function_destroy_get_states(info: duckdb_v2_aggregate_function_destroy_info_handle, states: ***anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_aggregate_function_destroy_get_states(info: duckdb_v2_aggregate_function_destroy_info_handle, states: *[*]?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_aggregate_function_destroy_get_states.?(info, states, err);
 }
 
@@ -3374,7 +3374,7 @@ pub inline fn duckdb_v2_cast_function_set_exec_callback(function: duckdb_v2_cast
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_cast_function_exec_get_user_data(info: duckdb_v2_cast_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_cast_function_exec_get_user_data(info: duckdb_v2_cast_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_cast_function_exec_get_user_data.?(info, data, err);
 }
 
@@ -3633,7 +3633,7 @@ pub inline fn duckdb_v2_copy_to_set_finalize_callback(function: duckdb_v2_copy_f
 /// - `info`: The bind info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_bind_get_user_data(info: duckdb_v2_copy_to_bind_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_bind_get_user_data(info: duckdb_v2_copy_to_bind_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_bind_get_user_data.?(info, data, err);
 }
 
@@ -3764,7 +3764,7 @@ pub inline fn duckdb_v2_copy_to_bind_get_option_value(info: duckdb_v2_copy_to_bi
 /// - `info`: The batch size info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_batch_size_get_user_data(info: duckdb_v2_copy_to_batch_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_batch_size_get_user_data(info: duckdb_v2_copy_to_batch_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_batch_size_get_user_data.?(info, data, err);
 }
 
@@ -3775,7 +3775,7 @@ pub inline fn duckdb_v2_copy_to_batch_size_get_user_data(info: duckdb_v2_copy_to
 /// - `info`: The batch size info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_batch_size_get_bind_data(info: duckdb_v2_copy_to_batch_size_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_batch_size_get_bind_data(info: duckdb_v2_copy_to_batch_size_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_batch_size_get_bind_data.?(info, data, err);
 }
 
@@ -3798,7 +3798,7 @@ pub inline fn duckdb_v2_copy_to_batch_size_set_target(info: duckdb_v2_copy_to_ba
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_init_get_user_data(info: duckdb_v2_copy_to_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_init_get_user_data(info: duckdb_v2_copy_to_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_init_get_user_data.?(info, data, err);
 }
 
@@ -3809,7 +3809,7 @@ pub inline fn duckdb_v2_copy_to_init_get_user_data(info: duckdb_v2_copy_to_init_
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_init_get_bind_data(info: duckdb_v2_copy_to_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_init_get_bind_data(info: duckdb_v2_copy_to_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_init_get_bind_data.?(info, data, err);
 }
 
@@ -3851,7 +3851,7 @@ pub inline fn duckdb_v2_copy_to_init_set_init_data(info: duckdb_v2_copy_to_init_
 /// - `info`: The batch info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_batch_get_user_data(info: duckdb_v2_copy_to_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_batch_get_user_data(info: duckdb_v2_copy_to_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_batch_get_user_data.?(info, data, err);
 }
 
@@ -3862,7 +3862,7 @@ pub inline fn duckdb_v2_copy_to_batch_get_user_data(info: duckdb_v2_copy_to_batc
 /// - `info`: The batch info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_batch_get_bind_data(info: duckdb_v2_copy_to_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_batch_get_bind_data(info: duckdb_v2_copy_to_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_batch_get_bind_data.?(info, data, err);
 }
 
@@ -3873,7 +3873,7 @@ pub inline fn duckdb_v2_copy_to_batch_get_bind_data(info: duckdb_v2_copy_to_batc
 /// - `info`: The batch info handle.
 /// - `data` (OUT): Receives the init data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_batch_get_init_data(info: duckdb_v2_copy_to_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_batch_get_init_data(info: duckdb_v2_copy_to_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_batch_get_init_data.?(info, data, err);
 }
 
@@ -3916,7 +3916,7 @@ pub inline fn duckdb_v2_copy_to_batch_set_batch_data(info: duckdb_v2_copy_to_bat
 /// - `info`: The flush info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_flush_get_user_data(info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_flush_get_user_data(info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_flush_get_user_data.?(info, data, err);
 }
 
@@ -3927,7 +3927,7 @@ pub inline fn duckdb_v2_copy_to_flush_get_user_data(info: duckdb_v2_copy_to_flus
 /// - `info`: The flush info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_flush_get_bind_data(info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_flush_get_bind_data(info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_flush_get_bind_data.?(info, data, err);
 }
 
@@ -3938,7 +3938,7 @@ pub inline fn duckdb_v2_copy_to_flush_get_bind_data(info: duckdb_v2_copy_to_flus
 /// - `info`: The flush info handle.
 /// - `data` (OUT): Receives the init data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_flush_get_init_data(info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_flush_get_init_data(info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_flush_get_init_data.?(info, data, err);
 }
 
@@ -3949,7 +3949,7 @@ pub inline fn duckdb_v2_copy_to_flush_get_init_data(info: duckdb_v2_copy_to_flus
 /// - `info`: The flush info handle.
 /// - `data` (OUT): Receives the batch data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_flush_get_batch_data(info: duckdb_v2_copy_to_flush_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_flush_get_batch_data(info: duckdb_v2_copy_to_flush_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_flush_get_batch_data.?(info, data, err);
 }
 
@@ -3960,7 +3960,7 @@ pub inline fn duckdb_v2_copy_to_flush_get_batch_data(info: duckdb_v2_copy_to_flu
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_finalize_get_user_data(info: duckdb_v2_copy_to_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_finalize_get_user_data(info: duckdb_v2_copy_to_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_finalize_get_user_data.?(info, data, err);
 }
 
@@ -3971,7 +3971,7 @@ pub inline fn duckdb_v2_copy_to_finalize_get_user_data(info: duckdb_v2_copy_to_f
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_finalize_get_bind_data(info: duckdb_v2_copy_to_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_finalize_get_bind_data(info: duckdb_v2_copy_to_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_finalize_get_bind_data.?(info, data, err);
 }
 
@@ -3982,7 +3982,7 @@ pub inline fn duckdb_v2_copy_to_finalize_get_bind_data(info: duckdb_v2_copy_to_f
 /// - `info`: The finalize info handle.
 /// - `data` (OUT): Receives the init data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_finalize_get_init_data(info: duckdb_v2_copy_to_finalize_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_finalize_get_init_data(info: duckdb_v2_copy_to_finalize_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_finalize_get_init_data.?(info, data, err);
 }
 
@@ -4069,7 +4069,7 @@ pub inline fn duckdb_v2_copy_from_set_progress_callback(function: duckdb_v2_copy
 /// - `info`: The bind info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_bind_get_user_data(info: duckdb_v2_copy_from_bind_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_bind_get_user_data(info: duckdb_v2_copy_from_bind_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_bind_get_user_data.?(info, data, err);
 }
 
@@ -4214,7 +4214,7 @@ pub inline fn duckdb_v2_copy_from_bind_set_cardinality(info: duckdb_v2_copy_from
 /// - `info`: The global init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_init_global_get_user_data(info: duckdb_v2_copy_from_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_init_global_get_user_data(info: duckdb_v2_copy_from_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_init_global_get_user_data.?(info, data, err);
 }
 
@@ -4225,7 +4225,7 @@ pub inline fn duckdb_v2_copy_from_init_global_get_user_data(info: duckdb_v2_copy
 /// - `info`: The global init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_init_global_get_bind_data(info: duckdb_v2_copy_from_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_init_global_get_bind_data(info: duckdb_v2_copy_from_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_init_global_get_bind_data.?(info, data, err);
 }
 
@@ -4266,7 +4266,7 @@ pub inline fn duckdb_v2_copy_from_init_global_set_max_threads(info: duckdb_v2_co
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_init_local_get_user_data(info: duckdb_v2_copy_from_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_init_local_get_user_data(info: duckdb_v2_copy_from_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_init_local_get_user_data.?(info, data, err);
 }
 
@@ -4277,7 +4277,7 @@ pub inline fn duckdb_v2_copy_from_init_local_get_user_data(info: duckdb_v2_copy_
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_init_local_get_bind_data(info: duckdb_v2_copy_from_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_init_local_get_bind_data(info: duckdb_v2_copy_from_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_init_local_get_bind_data.?(info, data, err);
 }
 
@@ -4290,7 +4290,7 @@ pub inline fn duckdb_v2_copy_from_init_local_get_bind_data(info: duckdb_v2_copy_
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_init_local_get_global_state(info: duckdb_v2_copy_from_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_init_local_get_global_state(info: duckdb_v2_copy_from_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_init_local_get_global_state.?(info, data, err);
 }
 
@@ -4317,7 +4317,7 @@ pub inline fn duckdb_v2_copy_from_init_local_set_local_state(info: duckdb_v2_cop
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_exec_get_user_data(info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_exec_get_user_data(info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_exec_get_user_data.?(info, data, err);
 }
 
@@ -4328,7 +4328,7 @@ pub inline fn duckdb_v2_copy_from_exec_get_user_data(info: duckdb_v2_copy_from_e
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_exec_get_bind_data(info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_exec_get_bind_data(info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_exec_get_bind_data.?(info, data, err);
 }
 
@@ -4341,7 +4341,7 @@ pub inline fn duckdb_v2_copy_from_exec_get_bind_data(info: duckdb_v2_copy_from_e
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_exec_get_global_state(info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_exec_get_global_state(info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_exec_get_global_state.?(info, data, err);
 }
 
@@ -4352,7 +4352,7 @@ pub inline fn duckdb_v2_copy_from_exec_get_global_state(info: duckdb_v2_copy_fro
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the local state pointer for the executing thread, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_exec_get_local_state(info: duckdb_v2_copy_from_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_exec_get_local_state(info: duckdb_v2_copy_from_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_exec_get_local_state.?(info, data, err);
 }
 
@@ -4381,7 +4381,7 @@ pub inline fn duckdb_v2_copy_from_exec_get_output_chunk(info: duckdb_v2_copy_fro
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_progress_get_user_data(info: duckdb_v2_copy_from_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_progress_get_user_data(info: duckdb_v2_copy_from_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_progress_get_user_data.?(info, data, err);
 }
 
@@ -4392,7 +4392,7 @@ pub inline fn duckdb_v2_copy_from_progress_get_user_data(info: duckdb_v2_copy_fr
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_progress_get_bind_data(info: duckdb_v2_copy_from_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_progress_get_bind_data(info: duckdb_v2_copy_from_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_progress_get_bind_data.?(info, data, err);
 }
 
@@ -4406,7 +4406,7 @@ pub inline fn duckdb_v2_copy_from_progress_get_bind_data(info: duckdb_v2_copy_fr
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_from_progress_get_global_state(info: duckdb_v2_copy_from_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_from_progress_get_global_state(info: duckdb_v2_copy_from_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_from_progress_get_global_state.?(info, data, err);
 }
 
@@ -4476,7 +4476,7 @@ pub inline fn duckdb_v2_copy_to_set_statistics_callback(function: duckdb_v2_copy
 /// - `info`: The statistics info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_statistics_get_user_data(info: duckdb_v2_copy_to_statistics_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_statistics_get_user_data(info: duckdb_v2_copy_to_statistics_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_statistics_get_user_data.?(info, data, err);
 }
 
@@ -4487,7 +4487,7 @@ pub inline fn duckdb_v2_copy_to_statistics_get_user_data(info: duckdb_v2_copy_to
 /// - `info`: The statistics info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_statistics_get_bind_data(info: duckdb_v2_copy_to_statistics_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_statistics_get_bind_data(info: duckdb_v2_copy_to_statistics_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_statistics_get_bind_data.?(info, data, err);
 }
 
@@ -4498,7 +4498,7 @@ pub inline fn duckdb_v2_copy_to_statistics_get_bind_data(info: duckdb_v2_copy_to
 /// - `info`: The statistics info handle.
 /// - `data` (OUT): Receives the init data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_copy_to_statistics_get_init_data(info: duckdb_v2_copy_to_statistics_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_copy_to_statistics_get_init_data(info: duckdb_v2_copy_to_statistics_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_copy_to_statistics_get_init_data.?(info, data, err);
 }
 
@@ -4531,7 +4531,7 @@ pub inline fn duckdb_v2_copy_to_statistics_set_file_size(info: duckdb_v2_copy_to
 /// - `info`: The bind info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_function_bind_get_user_data(info: duckdb_v2_function_bind_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_function_bind_get_user_data(info: duckdb_v2_function_bind_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_function_bind_get_user_data.?(info, data, err);
 }
 
@@ -4728,7 +4728,7 @@ pub inline fn duckdb_v2_replacement_scan_set_user_data(scan: duckdb_v2_replaceme
 /// - `info`: The info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_replacement_scan_get_user_data(info: duckdb_v2_replacement_scan_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_replacement_scan_get_user_data(info: duckdb_v2_replacement_scan_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_replacement_scan_get_user_data.?(info, data, err);
 }
 
@@ -5097,7 +5097,7 @@ pub inline fn duckdb_v2_scalar_function_bind_set_bind_data(info: duckdb_v2_scala
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_scalar_function_init_get_user_data(info: duckdb_v2_scalar_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_scalar_function_init_get_user_data(info: duckdb_v2_scalar_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_scalar_function_init_get_user_data.?(info, data, err);
 }
 
@@ -5108,7 +5108,7 @@ pub inline fn duckdb_v2_scalar_function_init_get_user_data(info: duckdb_v2_scala
 /// - `info`: The init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_scalar_function_init_get_bind_data(info: duckdb_v2_scalar_function_init_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_scalar_function_init_get_bind_data(info: duckdb_v2_scalar_function_init_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_scalar_function_init_get_bind_data.?(info, data, err);
 }
 
@@ -5134,7 +5134,7 @@ pub inline fn duckdb_v2_scalar_function_init_set_init_data(info: duckdb_v2_scala
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_scalar_function_exec_get_user_data(info: duckdb_v2_scalar_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_scalar_function_exec_get_user_data(info: duckdb_v2_scalar_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_scalar_function_exec_get_user_data.?(info, data, err);
 }
 
@@ -5145,7 +5145,7 @@ pub inline fn duckdb_v2_scalar_function_exec_get_user_data(info: duckdb_v2_scala
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_scalar_function_exec_get_bind_data(info: duckdb_v2_scalar_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_scalar_function_exec_get_bind_data(info: duckdb_v2_scalar_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_scalar_function_exec_get_bind_data.?(info, data, err);
 }
 
@@ -5156,7 +5156,7 @@ pub inline fn duckdb_v2_scalar_function_exec_get_bind_data(info: duckdb_v2_scala
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the init data pointer for the executing thread, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_scalar_function_exec_get_init_data(info: duckdb_v2_scalar_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_scalar_function_exec_get_init_data(info: duckdb_v2_scalar_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_scalar_function_exec_get_init_data.?(info, data, err);
 }
 
@@ -5576,7 +5576,7 @@ pub inline fn duckdb_v2_table_function_bind_set_order_preservation(info: duckdb_
 /// - `info`: The global init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_init_global_get_user_data(info: duckdb_v2_table_function_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_init_global_get_user_data(info: duckdb_v2_table_function_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_init_global_get_user_data.?(info, data, err);
 }
 
@@ -5587,7 +5587,7 @@ pub inline fn duckdb_v2_table_function_init_global_get_user_data(info: duckdb_v2
 /// - `info`: The global init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_init_global_get_bind_data(info: duckdb_v2_table_function_init_global_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_init_global_get_bind_data(info: duckdb_v2_table_function_init_global_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_init_global_get_bind_data.?(info, data, err);
 }
 
@@ -5661,7 +5661,7 @@ pub inline fn duckdb_v2_table_function_init_global_get_column_index(info: duckdb
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_init_local_get_user_data(info: duckdb_v2_table_function_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_init_local_get_user_data(info: duckdb_v2_table_function_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_init_local_get_user_data.?(info, data, err);
 }
 
@@ -5672,7 +5672,7 @@ pub inline fn duckdb_v2_table_function_init_local_get_user_data(info: duckdb_v2_
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_init_local_get_bind_data(info: duckdb_v2_table_function_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_init_local_get_bind_data(info: duckdb_v2_table_function_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_init_local_get_bind_data.?(info, data, err);
 }
 
@@ -5685,7 +5685,7 @@ pub inline fn duckdb_v2_table_function_init_local_get_bind_data(info: duckdb_v2_
 /// - `info`: The local init info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_init_local_get_global_state(info: duckdb_v2_table_function_init_local_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_init_local_get_global_state(info: duckdb_v2_table_function_init_local_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_init_local_get_global_state.?(info, data, err);
 }
 
@@ -5744,7 +5744,7 @@ pub inline fn duckdb_v2_table_function_init_local_get_column_index(info: duckdb_
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_exec_get_user_data(info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_exec_get_user_data(info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_exec_get_user_data.?(info, data, err);
 }
 
@@ -5755,7 +5755,7 @@ pub inline fn duckdb_v2_table_function_exec_get_user_data(info: duckdb_v2_table_
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_exec_get_bind_data(info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_exec_get_bind_data(info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_exec_get_bind_data.?(info, data, err);
 }
 
@@ -5768,7 +5768,7 @@ pub inline fn duckdb_v2_table_function_exec_get_bind_data(info: duckdb_v2_table_
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_exec_get_global_state(info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_exec_get_global_state(info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_exec_get_global_state.?(info, data, err);
 }
 
@@ -5779,7 +5779,7 @@ pub inline fn duckdb_v2_table_function_exec_get_global_state(info: duckdb_v2_tab
 /// - `info`: The exec info handle.
 /// - `data` (OUT): Receives the local state pointer for the executing thread, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_exec_get_local_state(info: duckdb_v2_table_function_exec_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_exec_get_local_state(info: duckdb_v2_table_function_exec_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_exec_get_local_state.?(info, data, err);
 }
 
@@ -5840,7 +5840,7 @@ pub inline fn duckdb_v2_table_function_exec_get_column_index(info: duckdb_v2_tab
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_progress_get_user_data(info: duckdb_v2_table_function_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_progress_get_user_data(info: duckdb_v2_table_function_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_progress_get_user_data.?(info, data, err);
 }
 
@@ -5851,7 +5851,7 @@ pub inline fn duckdb_v2_table_function_progress_get_user_data(info: duckdb_v2_ta
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_progress_get_bind_data(info: duckdb_v2_table_function_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_progress_get_bind_data(info: duckdb_v2_table_function_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_progress_get_bind_data.?(info, data, err);
 }
 
@@ -5865,7 +5865,7 @@ pub inline fn duckdb_v2_table_function_progress_get_bind_data(info: duckdb_v2_ta
 /// - `info`: The progress info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_progress_get_global_state(info: duckdb_v2_table_function_progress_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_progress_get_global_state(info: duckdb_v2_table_function_progress_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_progress_get_global_state.?(info, data, err);
 }
 
@@ -5890,7 +5890,7 @@ pub inline fn duckdb_v2_table_function_progress_set_progress(info: duckdb_v2_tab
 /// - `info`: The filter pushdown info handle.
 /// - `data` (OUT): Receives the user data pointer.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_filter_pushdown_get_user_data(info: duckdb_v2_table_function_filter_pushdown_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_filter_pushdown_get_user_data(info: duckdb_v2_table_function_filter_pushdown_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_filter_pushdown_get_user_data.?(info, data, err);
 }
 
@@ -5904,7 +5904,7 @@ pub inline fn duckdb_v2_table_function_filter_pushdown_get_user_data(info: duckd
 /// - `info`: The filter pushdown info handle.
 /// - `data` (OUT): Receives the bind data pointer.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_filter_pushdown_get_bind_data(info: duckdb_v2_table_function_filter_pushdown_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_filter_pushdown_get_bind_data(info: duckdb_v2_table_function_filter_pushdown_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_filter_pushdown_get_bind_data.?(info, data, err);
 }
 
@@ -5993,7 +5993,7 @@ pub inline fn duckdb_v2_table_function_filter_pushdown_get_column_index(info: du
 /// - `info`: The partition data info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_partition_data_get_user_data(info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_partition_data_get_user_data(info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_partition_data_get_user_data.?(info, data, err);
 }
 
@@ -6004,7 +6004,7 @@ pub inline fn duckdb_v2_table_function_partition_data_get_user_data(info: duckdb
 /// - `info`: The partition data info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_partition_data_get_bind_data(info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_partition_data_get_bind_data(info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_partition_data_get_bind_data.?(info, data, err);
 }
 
@@ -6017,7 +6017,7 @@ pub inline fn duckdb_v2_table_function_partition_data_get_bind_data(info: duckdb
 /// - `info`: The partition data info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_partition_data_get_global_state(info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_partition_data_get_global_state(info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_partition_data_get_global_state.?(info, data, err);
 }
 
@@ -6029,7 +6029,7 @@ pub inline fn duckdb_v2_table_function_partition_data_get_global_state(info: duc
 /// - `info`: The partition data info handle.
 /// - `data` (OUT): Receives the local state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_partition_data_get_local_state(info: duckdb_v2_table_function_partition_data_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_partition_data_get_local_state(info: duckdb_v2_table_function_partition_data_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_partition_data_get_local_state.?(info, data, err);
 }
 
@@ -6143,7 +6143,7 @@ pub inline fn duckdb_v2_table_function_partition_data_set_partition_value(info: 
 /// - `info`: The partitioning info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_partitioning_get_user_data(info: duckdb_v2_table_function_partitioning_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_partitioning_get_user_data(info: duckdb_v2_table_function_partitioning_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_partitioning_get_user_data.?(info, data, err);
 }
 
@@ -6154,7 +6154,7 @@ pub inline fn duckdb_v2_table_function_partitioning_get_user_data(info: duckdb_v
 /// - `info`: The partitioning info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_partitioning_get_bind_data(info: duckdb_v2_table_function_partitioning_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_partitioning_get_bind_data(info: duckdb_v2_table_function_partitioning_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_partitioning_get_bind_data.?(info, data, err);
 }
 
@@ -6267,7 +6267,7 @@ pub inline fn duckdb_v2_table_function_set_claim_batch_callback(function: duckdb
 /// - `info`: The claim batch info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_claim_batch_get_user_data(info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_claim_batch_get_user_data(info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_claim_batch_get_user_data.?(info, data, err);
 }
 
@@ -6278,7 +6278,7 @@ pub inline fn duckdb_v2_table_function_claim_batch_get_user_data(info: duckdb_v2
 /// - `info`: The claim batch info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_claim_batch_get_bind_data(info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_claim_batch_get_bind_data(info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_claim_batch_get_bind_data.?(info, data, err);
 }
 
@@ -6291,7 +6291,7 @@ pub inline fn duckdb_v2_table_function_claim_batch_get_bind_data(info: duckdb_v2
 /// - `info`: The claim batch info handle.
 /// - `data` (OUT): Receives the global state pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_claim_batch_get_global_state(info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_claim_batch_get_global_state(info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_claim_batch_get_global_state.?(info, data, err);
 }
 
@@ -6302,7 +6302,7 @@ pub inline fn duckdb_v2_table_function_claim_batch_get_global_state(info: duckdb
 /// - `info`: The claim batch info handle.
 /// - `data` (OUT): Receives the local state pointer for the claiming thread, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_claim_batch_get_local_state(info: duckdb_v2_table_function_claim_batch_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_claim_batch_get_local_state(info: duckdb_v2_table_function_claim_batch_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_claim_batch_get_local_state.?(info, data, err);
 }
 
@@ -6344,7 +6344,7 @@ pub inline fn duckdb_v2_table_function_set_get_bind_info_callback(function: duck
 /// - `info`: The get bind info handle.
 /// - `data` (OUT): Receives the user data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_get_bind_info_get_user_data(info: duckdb_v2_table_function_get_bind_info_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_get_bind_info_get_user_data(info: duckdb_v2_table_function_get_bind_info_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_get_bind_info_get_user_data.?(info, data, err);
 }
 
@@ -6355,7 +6355,7 @@ pub inline fn duckdb_v2_table_function_get_bind_info_get_user_data(info: duckdb_
 /// - `info`: The get bind info handle.
 /// - `data` (OUT): Receives the bind data pointer, or null if none was set.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_table_function_get_bind_info_get_bind_data(info: duckdb_v2_table_function_get_bind_info_info_handle, data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_table_function_get_bind_info_get_bind_data(info: duckdb_v2_table_function_get_bind_info_info_handle, data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_table_function_get_bind_info_get_bind_data.?(info, data, err);
 }
 
@@ -10154,7 +10154,7 @@ pub inline fn duckdb_v2_vector_set_value(vector: duckdb_v2_vector_handle, row: u
 /// - `vector`: The vector.
 /// - `out_data` (OUT): Receives a mutable pointer to the data.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_vector_get_data_mutable(vector: duckdb_v2_vector_handle, out_data: **anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_vector_get_data_mutable(vector: duckdb_v2_vector_handle, out_data: *?*anyopaque, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_vector_get_data_mutable.?(vector, out_data, err);
 }
 
