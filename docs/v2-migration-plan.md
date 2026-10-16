@@ -1743,6 +1743,102 @@ running DuckDB's own amalgamation-generation tooling — a materially
 bigger step than reusing an already-vendored file, explicitly deferred
 for now (recorded here, not attempted) rather than started speculatively.
 
+**Follow-up, 2026-10-16: the full CMake `bundle-library` build (not
+just a single amalgamated file) confirmed working with `zig c++`, after
+finding and fixing two new real blockers.** Prompted by
+`../zuckdb.zig`'s own README, which documents a third way to get a
+static `libduckdb.a`: `git clone -b v1.5.2 duckdb`, `export CXX="zig
+c++"`, `DUCKDB_EXTENSIONS='json' make bundle-library` (DuckDB's own
+CMake/Makefile build, using the `bundle-library` target that merges the
+engine + requested extensions' static archives into one
+`libduckdb_bundle.a` — the exact target this project's own "linking
+static archives by hand" research covered conceptually, now exercised
+as a real build). Tried this for real, in `../zuckdb.zig` (a sibling
+Zig DuckDB *client* library project, not part of this repo).
+
+**Bug 1, found and fixed: Zig's `c++` driver unconditionally injects
+`-Werror=date-time` whenever any optimization flag is present** —
+confirmed via `zig c++ -O3 -c t.cpp -###`, and bisected to `-O3` alone
+(not `-DNDEBUG`/`-std=c++11`/`-fPIC`) with a two-line reproduction.
+System `g++ -O3` on the identical file compiles clean, confirming this
+is Zig-specific, not a real DuckDB bug — almost certainly a deliberate
+reproducible-builds safeguard (Zig's compilation-cache model assumes
+identical inputs produce identical outputs, which `__DATE__`/`__TIME__`
+break). This breaks DuckDB's vendored `third_party/pcg/pcg_extras.hpp`,
+which uses `__DATE__ __TIME__ __FILE__` as a compile-time RNG seed —
+explaining in hindsight why the single-amalgamated-file compile above
+never hit it: that command used `-w` (suppress all warnings), which
+does override even this Zig-injected `-Werror`, confirmed directly
+(`zig c++ -O3 -w -c t.cpp` succeeds). DuckDB's CMake build never passes
+`-w` anywhere, so it hit the error at `-Werror,-Wdate-time` on
+`src/common/CMakeFiles/duckdb_common.dir/ub_duckdb_common.cpp.o`
+(`2 errors generated`). Fixed by seeding `CXXFLAGS="-Wno-error=date-time"`
+in the environment *before* the first `cmake` configure (it only
+re-derives `CMAKE_CXX_FLAGS` from `CXXFLAGS` on first configure of a
+fresh build dir, so a `rm -rf build/release` was needed first) —
+confirmed seeded correctly via each target's own generated `flags.make`.
+
+**Bug 2, found and fixed: Zig's `ld.lld` doesn't support the
+`--exclude-libs` linker flag** DuckDB's CMake passes when linking a
+*loadable* `.duckdb_extension` shared library (`error: unsupported
+linker arg: --exclude-libs`, on `json.duckdb_extension` and
+`parquet.duckdb_extension`). This only affects the loadable shared-lib
+sub-targets (`json_loadable_extension`, `parquet_loadable_extension`)
+— `bundle-library` itself only needs each extension's plain *static*
+archive (`libjson_extension.a`, `libparquet_extension.a`, etc.), a
+separate CMake target that doesn't hit this flag at all and in fact had
+already built successfully for `json` before the two broken loadable
+targets aborted the overall `make all` (GNU Make lets already-running
+jobs finish but stops scheduling new ones once something fails, so
+`parquet`/`core_functions`/`jemalloc`'s own static-archive targets
+simply never got a turn to run). Fixed without patching DuckDB's
+CMakeLists.txt or chasing an `ld.lld` flag workaround: ran `cmake
+--build . --target core_functions_extension parquet_extension
+jemalloc_extension` directly (the exact static-only target names,
+confirmed by listing each extension's `CMakeFiles/*.dir` — distinct
+from the `*_loadable_extension` ones), which completed cleanly and
+produced all 4 extensions' static archives. Then ran `make bundle-setup`
+and `make bundle-library-o` directly (skipping `bundle-library`'s own
+`release` prerequisite, since every artifact it actually copies —
+`src/libduckdb_static.a`, `extension/libduckdb_generated_extension_loader.a`,
+the third-party static libs, each extension's static archive — already
+existed) to produce the final `libduckdb_bundle.a` (954MB, 533 objects).
+
+**Link-tested for real, end to end**, not just "the archive file
+exists": copied it to `lib/libduckdb.a` + `duckdb.h` to `lib/` per the
+README's own instructions, then wrote a minimal C program (the exact
+`duckdb_open`/`duckdb_connect`/`duckdb_query` example from
+`duckdb-install-scripts`' own README) querying `SELECT 42`. Linking it
+with the system `cc`/`-lstdc++` reproduced the exact same libstdc++-vs-
+Zig's-bundled-libc++ ABI mismatch this project already documented for
+static-embed-poc (confirmed by the undefined-reference symbols
+themselves: `std::__1::...`, libc++'s mangled namespace, not
+libstdc++'s `__cxx11`) — expected, since every object in this archive
+was compiled by `zig c++`. Relinked with `zig c++` itself instead of
+system `cc` (consistent toolchain end to end, matching the single-file
+test's own `-lc++`-not-`-lstdc++` finding above) — linked clean, ran,
+and printed `result: 42`. A genuinely working, from-source, `zig
+c++`-built static DuckDB, through the *real* CMake/`bundle-library`
+pipeline (multiple extensions, the generated extension loader, full
+third-party dependency set), not just a single translation unit.
+
+**Relevance to this project's own v2 static-linking research**: this
+was performed against v1.5.2 (the version `zuckdb.zig`'s own README
+pins, and `bundle-library` itself doesn't exist in DuckDB 2.0 — it was
+explicitly removed per `duckdb.org/docs/preview/dev/building/linking_extensions`,
+replaced by the per-extension-archive + `duckdb_register_static_extension`
+model this project's own static-linking section already covers). So
+this doesn't directly produce a v2-compatible artifact — but it's a
+real, concrete validation that `zig c++` *can* successfully drive
+DuckDB's actual CMake build end to end (not just a hand-rolled
+single-file compile) once these two new Zig-toolchain-specific
+blockers are worked around, and both fixes (seed `-Wno-error=date-time`
+before first configure; build static-only extension targets directly
+rather than the broken `all`/loadable-extension targets) would apply
+identically to a hypothetical from-source build against the real
+pinned v2.0.0 commit, if that's ever attempted instead of using the
+official prebuilt `libduckdb_static.a`.
+
 ### 6a. WASM support (speculative, not started — not currently feasible as a straight port)
 
 Investigated whether this extension could target `duckdb-wasm` (browser
