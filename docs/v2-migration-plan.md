@@ -1853,15 +1853,16 @@ global switch exists yet.
   `add_numbers_v2.zig`, `ct_add_numbers_v2.zig` and `ct_tokenize_v2.zig`, and
   with the last two the comptime frameworks they use, **`comptime_scalar_v2`
   and `comptime_table_v2`**, then **`comptime_cast_v2`** and
-  **`comptime_aggregate_v2`** (every PoC function built on them moves too). The
-  other five function modules (`tp_bar`, `tokenize`, `tp_line`, `tp_treemap`,
-  `tp_snakemap`) and the appender framework still use the hand-written
-  `duckdb_v2.zig`. What the migrated code needs to read vectors
+  **`comptime_aggregate_v2`** and **`comptime_appender_v2`** (every PoC function
+  built on them moves too). That is every framework. The five function modules
+  `tp_bar`, `tokenize`, `tp_line`, `tp_treemap` and `tp_snakemap`, and the PoC
+  code itself, still use the hand-written `duckdb_v2.zig`. What the migrated code needs to read vectors
   and build parametrised types lives in `src/lib/v2_helpers.zig` (a module of
   its own, since the frameworks are modules too): `isValid`, `bytesSlice`,
   `str`, the slice forms of the calls that take a pointer and a count or a
   `str`, `makeBytesValue` (the arena-backed VARCHAR value an aggregate's finalize
-  writes), and the LIST/ARRAY/MAP/DECIMAL/STRUCT/UNION type creators.
+  writes), the STRUCT value and column-data-collection / data-chunk creators in
+  their slice forms, and the LIST/ARRAY/MAP/DECIMAL/STRUCT/UNION type creators.
   `db.initApi` fills both function tables from its single `get_api` call
   (`get_api` may only be called once).
 - **The frameworks' public surface is unchanged, with an explicit boundary.**
@@ -1875,7 +1876,7 @@ global switch exists yet.
 - **How the frameworks were verified.** They had almost no runtime tests: the
   real extension used one scalar and one table function through them, and
   everything else was compile-time. `test/sql/zig_ext_v2_poc.test` (new step
-  `sqllogictest-v2-poc`, task `sqllogictest:v2:poc`, now 220 blocks) pins their
+  `sqllogictest-v2-poc`, task `sqllogictest:v2:poc`, now 237 blocks) pins their
   behavior through the proof-of-concept extension — numeric, VARCHAR, STRUCT,
   VARIANT, TIMESTAMP, BLOB, DECIMAL, ENUM, LIST, ARRAY, MAP and UNION scalars,
   matmul at odd sizes, range/repeat tables across batch boundaries, filter and
@@ -1883,8 +1884,8 @@ global switch exists yet.
   NULL rows, TRY_CAST), and the aggregates (additive and non-additive combine,
   NULL-returning finalize, VARCHAR arguments and results, a heap-owning state,
   the SIMD `updateBatch` path at row counts around the vector width, a 3x3
-  covariance text, as window functions, under ROLLUP, and with `ORDER BY` inside)
-  — with big or nested results compared by `md5()` of an aggregated string whose
+  covariance text, as window functions, under ROLLUP, and with `ORDER BY` inside),
+  and the Appender (four live round trips and `zig_v2_nethogs_trace`) — with big or nested results compared by `md5()` of an aggregated string whose
   expected value was computed independently in Python. Each framework's suite
   passed against the old code first and passes unchanged on the ported one;
   mutating the frameworks or helpers (type creation, byte reads, NULL handling,
@@ -1894,8 +1895,10 @@ global switch exists yet.
   suite itself. Not covered, before or after: the value a table `progress` hook
   reports, MAP types whose key and value types differ, the TRY branch of the
   cast framework's STRUCT and VARIANT paths (no PoC cast of those shapes ever
-  returns `null`), and that an aggregate's `deinit` actually runs (a leak is not
-  observable from SQL). Constraints of the runner and of DuckDB worth knowing:
+  returns `null`), that an aggregate's `deinit` actually runs (a leak is not
+  observable from SQL), and the Appender's ENUM and ARRAY columns beyond the one
+  each the PoC uses (ENUM with other member counts, ARRAY of leaf types other
+  than INTEGER/DOUBLE: only the pure mappings are unit-tested). Constraints of the runner and of DuckDB worth knowing:
   DuckDB ends the CLI session on an INTERNAL error, so a `.test` file can hold at
   most one such case, as its last block; a function that returns a result
   *offset* into the output vector is only called that way for an aggregate with
@@ -1964,13 +1967,32 @@ global switch exists yet.
   (`1a65db1`) with failing tests first, and the hand-written copy, left without a
   caller by the port, removed. Custom aggregates also run as window functions and
   under ROLLUP, which is now pinned.
-- **Not done:** the five hand-written function modules and the appender
-  framework, then the PoC code itself, and finally removing `duckdb_v2.zig` and
-  the `register`/`db.*` compatibility layer; a build option that binds
-  `duckdb_v2_api` for the frameworks. `ct_add_numbers` (v1 and v2) and v1's
-  `zig_add_numbers` still trap on overflow, now for the comptime framework as a
-  design question: the framework calls a user function that returns a plain
-  `i64`, so it has no way to report an error.
+- **`comptime_appender_v2`: ported (`1404007`).** A different kind of framework:
+  not registered with DuckDB but a type that extension code calls (`create`,
+  `append`, `flush`, `finish`), and its callers hold the hand-written layer's
+  handles. So those four keep their signatures and convert at the edge to
+  `createGenerated`, `appendGenerated`, `flushGenerated` and `finishGenerated`;
+  `duckdbV2TypeId`, which callers use to build the same column types, still
+  returns the hand-written `LogicalTypeId`. The baseline (`7e2af0a`) pinned the
+  PoC's three live round trips and `zig_v2_nethogs_trace` (against the
+  synthetic nethogs' own output, parsed independently); mutating them showed
+  what they did not reach, so a fourth round trip, `zig_v2_appender_types_test`
+  (`b9e2d17`), covers every leaf type, LIST(VARCHAR), a STRUCT, an ARRAY and
+  explicit flushes — and the first version of it still let the appender's
+  re-sizing of its chunk after a flush be removed unnoticed, because it flushed
+  after three rows and then appended fewer than three; the vectors only run out
+  when a later batch is *longer* than the flushed one. The generator's array
+  rule also learned "Pointer to an array of" (`589842f`).
+- **Not done:** the five function modules `tp_bar`, `tokenize`, `tp_line`,
+  `tp_treemap` and `tp_snakemap`, then the PoC code itself, and finally removing
+  `duckdb_v2.zig` and the `register`/`create`/`db.*` compatibility layer (every
+  framework keeps a conversion wrapper for callers still on the hand-written
+  handles, and `UserContext`/`UserValue`/`db.VectorView`-style boundary casts for
+  what a user function receives); a build option that binds `duckdb_v2_api` for
+  the frameworks. `ct_add_numbers` (v1 and v2) and v1's `zig_add_numbers` still
+  trap on overflow, now for the comptime framework as a design question: the
+  framework calls a user function that returns a plain `i64`, so it has no way
+  to report an error.
 
 ### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
 

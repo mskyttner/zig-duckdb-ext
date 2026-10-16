@@ -43,6 +43,12 @@
 ///!     transferred that out. Safe (and required) to call even after
 ///!     `finish`.
 ///!
+///! Bindings: the Appender calls DuckDB through the generated bindings (`duckdb_v2_dynamic`, plus
+///! the helpers in `v2_helpers.zig`). Its methods `create`, `append`, `flush` and `finish` take and
+///! return the hand-written `duckdb_v2.zig`'s handles, which is what its callers hold, and convert
+///! them; `createGenerated`, `appendGenerated`, `flushGenerated` and `finishGenerated` take the
+///! generated bindings' handles directly.
+///!
 ///! Usage:
 ///!   const Row = struct { id: i64, name: []const u8 };
 ///!   var appender = try comptime_appender_v2.Appender(Row).create(context, &err);
