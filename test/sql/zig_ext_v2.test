@@ -228,3 +228,423 @@ query I
 SELECT tp_bar(0.5, 'X', '.', 10)
 ----
 XXXXX.....
+
+# ── tp_bar (hand-written, named parameters and defaults) ─────────────────
+
+# All three defaults.
+query T
+SELECT tp_bar(0.5)
+----
+████████░░░░░░░
+
+# Named parameters, in and out of order.
+query T
+SELECT tp_bar(0.5, "on" := 'X', "off" := '.', width := 10)
+----
+XXXXX.....
+
+query T
+SELECT tp_bar(0.25, width := 8, "off" := '-', "on" := '#')
+----
+##------
+
+# One parameter given, the others defaulted.
+query T
+SELECT tp_bar(0.5, width := 4)
+----
+██░░
+
+# Values outside [0, 1] are clamped.
+query T
+SELECT tp_bar(2.0, 'X', '.', 4) || '|' || tp_bar(-1.0, 'X', '.', 4)
+----
+XXXX|....
+
+# Multi-byte on/off glyphs and multi-character strings.
+query T
+SELECT tp_bar(0.5, 'XY', 'ab', 4)
+----
+XYXYabab
+
+# Non-positive width or an empty glyph gives the empty string.
+query T
+SELECT tp_bar(0.5, 'X', '.', 0) || '|' || tp_bar(0.5, 'X', '.', -3) || '|' || tp_bar(0.5, '', '.', 4) || '|' || tp_bar(0.5, 'X', '', 4)
+----
+|||
+
+# The width is capped so the result fits the 4096-byte scratch buffer.
+query T
+SELECT length(tp_bar(0.5, 'X', '.', 100000))
+----
+4096
+
+# A NULL in any one argument gives NULL.
+query T
+SELECT tp_bar(NULL) IS NULL, tp_bar(0.5, NULL) IS NULL, tp_bar(0.5, 'X', NULL) IS NULL, tp_bar(0.5, 'X', '.', NULL) IS NULL
+----
+true
+true
+true
+true
+
+# Over more than one 64-row validity word and more than one vector.
+query T
+SELECT md5(string_agg(tp_bar((i % 11) / 10.0, '#', '-', 10), '|' ORDER BY i)) FROM generate_series(0, 299) t(i) WHERE i % 13 <> 0
+----
+121d8cbad622ed2707c9ed2cef32e8bd
+
+# NULLs in each of the four arguments on different rows, across more than one 64-row validity word.
+query T
+SELECT md5(string_agg(coalesce(tp_bar(CASE WHEN i % 5 = 0 THEN NULL ELSE (i % 9) / 8.0 END, CASE WHEN i % 7 = 1 THEN NULL ELSE 'ab' END, CASE WHEN i % 11 = 2 THEN NULL ELSE 'cd' END, CASE WHEN i % 13 = 3 THEN NULL ELSE i % 6 END), '~'), '|' ORDER BY i)) FROM generate_series(0, 299) t(i)
+----
+5a32490cfa2c2e14080ac7ada4c69a7c
+
+# More rows than one vector.
+query T
+SELECT count(*) FROM generate_series(1, 5000) t(i) WHERE tp_bar(i / 5000.0, 'X', '.', 5) <> 'XXXXX'
+----
+4499
+
+# ── zig_tokenize (hand-written table function) ──────────────────────────
+
+query I
+SELECT token_pos FROM zig_tokenize('alice,bob,charlie', ',')
+----
+0
+1
+2
+
+query T
+SELECT token FROM zig_tokenize('alice,bob,charlie', ',')
+----
+alice
+bob
+charlie
+
+# A multi-character delimiter.
+query T
+SELECT token FROM zig_tokenize('one::two::three', '::')
+----
+one
+two
+three
+
+# A trailing delimiter gives a trailing empty token.
+query T
+SELECT token FROM zig_tokenize('a,b,', ',')
+----
+a
+b
+(empty)
+
+query T
+SELECT token FROM zig_tokenize(',a,b', ',')
+----
+(empty)
+a
+b
+
+query T
+SELECT token FROM zig_tokenize('a,,b', ',')
+----
+a
+(empty)
+b
+
+# No delimiter in the input.
+query T
+SELECT token FROM zig_tokenize('hello world', ',')
+----
+hello world
+
+query T
+SELECT token FROM zig_tokenize('', ',')
+----
+(empty)
+
+# An empty delimiter leaves the input whole.
+query T
+SELECT token FROM zig_tokenize('hello', '')
+----
+hello
+
+# Multi-byte UTF-8 tokens.
+query T
+SELECT token FROM zig_tokenize('naïve,日本語,🦆', ',')
+----
+naïve
+日本語
+🦆
+
+# Both columns of one row stay together.
+query IT
+SELECT token_pos, token FROM zig_tokenize('the,quick,brown,fox', ',') WHERE length(token) > 3
+----
+1
+quick
+2
+brown
+
+# Used as the inner side of a join.
+query T
+SELECT count(*) FROM zig_tokenize('a,b', ',') t, generate_series(1, 3) g(i)
+----
+6
+
+# Just under one 2048-row output batch.
+query T
+SELECT md5(string_agg(token_pos::VARCHAR || ':' || token, '|' ORDER BY token_pos)) FROM zig_tokenize(array_to_string(list_transform(range(2047), lambda i: 'tok' || i::VARCHAR), ','), ',')
+----
+308cd62e46f1a3df451593db12e5fff6
+
+# Exactly one batch.
+query T
+SELECT md5(string_agg(token_pos::VARCHAR || ':' || token, '|' ORDER BY token_pos)) FROM zig_tokenize(array_to_string(list_transform(range(2048), lambda i: 'tok' || i::VARCHAR), ','), ',')
+----
+6d0bf8d8b2ac0b5944921053a5b74e42
+
+# One row over a batch.
+query T
+SELECT md5(string_agg(token_pos::VARCHAR || ':' || token, '|' ORDER BY token_pos)) FROM zig_tokenize(array_to_string(list_transform(range(2049), lambda i: 'tok' || i::VARCHAR), ','), ',')
+----
+4b1c4b8a345b56d8f74f091885ba8747
+
+# Exactly two batches.
+query T
+SELECT md5(string_agg(token_pos::VARCHAR || ':' || token, '|' ORDER BY token_pos)) FROM zig_tokenize(array_to_string(list_transform(range(4096), lambda i: 'tok' || i::VARCHAR), ','), ',')
+----
+83c4ec47efc387928a7a0f4022c7aecf
+
+# Several batches.
+query T
+SELECT md5(string_agg(token_pos::VARCHAR || ':' || token, '|' ORDER BY token_pos)) FROM zig_tokenize(array_to_string(list_transform(range(5000), lambda i: 'tok' || i::VARCHAR), ','), ',')
+----
+51e04d52e157126851ade9ab3b5e6bd8
+
+query T
+SELECT count(*) || ':' || max(token_pos) || ':' || min(token_pos) FROM zig_tokenize(array_to_string(list_transform(range(5000), lambda i: 'x'), ','), ',')
+----
+5000:4999:0
+
+# A single very long token.
+query T
+SELECT length(token) FROM zig_tokenize(repeat('y', 100000), ',')
+----
+100000
+
+# Only the trailing empty token.
+query T
+SELECT count(*) FROM zig_tokenize(repeat('ab,', 1000), ',') WHERE token = ''
+----
+1
+
+# A NULL argument is rejected at bind time.
+statement error
+SELECT * FROM zig_tokenize(NULL, ',')
+----
+Invalid Input Error: value is NULL
+
+statement error
+SELECT * FROM zig_tokenize('a,b', NULL)
+----
+Invalid Input Error: value is NULL
+
+# ── tp_line / tp_snakemap (the cases the v1 suite pins) ─────────────────
+# Both render multi-line art (embedded newlines, ANSI escapes for tp_snakemap); the runner
+# prints newlines as `\n`, and md5(...) stands in where ANSI escapes would be noise.
+
+query T
+SELECT tp_line(NULL)
+----
+NULL
+
+query T
+SELECT tp_line([]::DOUBLE[])
+----
+(empty)
+
+query T
+SELECT tp_line([1.0, 2.0, 4.0, 3.0, 5.0, 2.0, 3.0])
+----
+ 5.00 ┤   ╭╮  \n 4.50 ┤   ││  \n 4.00 ┤ ╭╮││  \n 3.50 ┤ ││││  \n 3.00 ┤ │╰╯│╭ \n 2.50 ┤ │  ││ \n 2.00 ┤╭╯  ╰╯ \n 1.50 ┤│      \n 1.00 ┼╯      \n 0.50 ┤       \n 0.00 ┤       \n\n
+
+query T
+SELECT tp_line([0.0, 1.0, 0.0, -1.0, 0.0])
+----
+  1.00 ┤╭╮   \n  0.80 ┤││   \n  0.60 ┤││   \n  0.40 ┤││   \n  0.20 ┤││   \n  0.00 ┼╯╰╮╭ \n -0.20 ┤  ││ \n -0.40 ┤  ││ \n -0.60 ┤  ││ \n -0.80 ┤  ││ \n -1.00 ┤  ╰╯ \n\n
+
+query T
+SELECT tp_line([1.0, 3.0, 2.0, 4.0, 1.0], height := 5.0)
+----
+ 4.00 ┤  ╭╮ \n 3.20 ┤╭╮││ \n 2.40 ┤│╰╯│ \n 1.60 ┤│  │ \n 0.80 ┼╯  ╰ \n 0.00 ┤     \n\n
+
+query T
+SELECT tp_line((SELECT list(v::DOUBLE ORDER BY i) FROM (VALUES (1, 1.0), (2, 3.0), (3, 2.0), (4, 4.0), (5, 1.0)) t(i, v)))
+----
+ 4.00 ┤  ╭╮ \n 3.60 ┤  ││ \n 3.20 ┤╭╮││ \n 2.80 ┤││││ \n 2.40 ┤││││ \n 2.00 ┤│╰╯│ \n 1.60 ┤│  │ \n 1.20 ┼╯  ╰ \n 0.80 ┤     \n 0.40 ┤     \n 0.00 ┤     \n\n
+
+query T
+SELECT tp_snakemap(NULL, ['a'], ['g'], width := 40, height := 20)
+----
+NULL
+
+# These three still carry ANSI color escapes (tp_snakemap's default
+# no_color := false) — as literal JSON escapes (`\u001b[38;5;7m`, ...) that
+# would be a wall of noise nobody could usefully read in a diff, not a
+# readability win. md5(...) stays the right call for exactly these three;
+# the no_color case right after this needs no such treatment, since
+# without ANSI codes its literal text is perfectly readable.
+
+query T
+SELECT md5(tp_snakemap([10.0, 20.0, 30.0, 5.0, 15.0, 25.0], ['a', 'b', 'c', 'x', 'y', 'z'], ['G1', 'G1', 'G1', 'G2', 'G2', 'G2'], width := 40, height := 20))
+----
+f881456020a2838d4a7505fd759c7a69
+
+query T
+SELECT md5(tp_snakemap([1.0, 2.0, 3.0, 4.0], ['p', 'q', 'r', 's'], ['Alpha', 'Alpha', 'Beta', 'Beta']))
+----
+fd86c25ba66e6f555690f5ee0722767e
+
+query T
+SELECT tp_snakemap([10.0, 20.0, 30.0, 5.0, 15.0, 25.0], ['a', 'b', 'c', 'x', 'y', 'z'], ['G1', 'G1', 'G1', 'G2', 'G2', 'G2'], width := 40, height := 20, no_color := true)
+----
+╔══════════════════════════════════════╗\n║┏━G1━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓║\n║┃░░░░░░░░░░░░░░░░░a░░░░░░░░░░░░░░░░░░┃║\n║┃┌──────────────────────╴░░░░░░░░░░░░┃║\n║┃│b▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒╶──────────┐┃║\n║┃└──────────────────────────────────┘┃║\n║┃┌c─────────────────────────────────┐┃║\n║┃│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│┃║\n║┃│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│┃║\n║┃└──────────────────────────────────┘┃║\n║┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛║\n║░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒║\n║┏━G2━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓║\n║┃░░░░░░░░░x░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒┃║\n║┃▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒y▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒┃║\n║┃▒▒▒▒▒▒▒▒╶──────────────────────────┐┃║\n║┃┌z─────╴▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│┃║\n║┃└──────────────────────────────────┘┃║\n║┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛║\n╚══════════════════════════════════════╝\n
+
+
+# ── tp_line (additional cases) ───────────────────────────────────────────
+
+# Different lists on different rows (offsets into the shared child vector), NULL and empty lists among them, across more than one 64-row validity word.
+query T
+SELECT md5(string_agg(tp_line(CASE i % 4 WHEN 0 THEN [1.0, 2.0, 4.0, 3.0, 5.0, 2.0, 3.0] WHEN 1 THEN [0.0, 1.0, 0.0, -1.0, 0.0] WHEN 2 THEN NULL ELSE []::DOUBLE[] END), '#' ORDER BY i)) FROM generate_series(1, 200) t(i)
+----
+b6c6e399e21cbd7e4214f8a8955d7d4f
+
+# A NULL height gives NULL.
+query T
+SELECT tp_line([1.0, 2.0], NULL) IS NULL
+----
+true
+
+# A NULL element is drawn as NaN, not read as a value.
+query T
+SELECT md5(tp_line([1.0, NULL, 3.0, 2.0]))
+----
+199932ee816a33df18813b7ad796690d
+
+# A flat series.
+query T
+SELECT md5(tp_line([5.0, 5.0, 5.0]))
+----
+b12201acc0af14f6fd7f6b8995947dc1
+
+# Heights below the minimum are clamped (all three are the same chart).
+query T
+SELECT md5(tp_line([1.0, 2.0, 3.0], 0.0)) || md5(tp_line([1.0, 2.0, 3.0], -3.0)) || md5(tp_line([1.0, 2.0, 3.0], height := 1.0))
+----
+e6d416d7dad0827c54ca834f669a6162e6d416d7dad0827c54ca834f669a6162e6d416d7dad0827c54ca834f669a6162
+
+# Heights above the maximum are clamped (both are the same chart).
+query T
+SELECT md5(tp_line([1.0, 2.0, 3.0], height := 500.0)) || md5(tp_line([1.0, 2.0, 3.0], 'inf'::DOUBLE))
+----
+5ce6150146a2efab850d3baf9d26a2c85ce6150146a2efab850d3baf9d26a2c8
+
+# Lists longer than 255 elements are truncated.
+query T
+SELECT md5(tp_line((SELECT list(i::DOUBLE % 17 ORDER BY i) FROM generate_series(1, 400) t(i))))
+----
+390c36bf32f488366c156f02829ab377
+
+# ── tp_treemap ───────────────────────────────────────────────────────────
+# Expectations are the md5 of the v1 extension's output for the same call.
+
+query T
+SELECT md5(tp_treemap([10.0, 20.0, 30.0, 5.0], ['a', 'b', 'c', 'd'], 40, 12))
+----
+e76f50cfadb75bd5eb9ebe1cad84912c
+
+# The default width and height.
+query T
+SELECT md5(tp_treemap([10.0, 20.0, 30.0, 5.0], ['a', 'b', 'c', 'd']))
+----
+c471340e8f819c55f8254e516642fa9a
+
+# Named parameters, out of order.
+query T
+SELECT md5(tp_treemap([10.0, 20.0, 30.0, 5.0], ['a', 'b', 'c', 'd'], height := 6, width := 30))
+----
+f19521eb06d236075c618d9d1aa98b64
+
+# Fewer labels than values.
+query T
+SELECT md5(tp_treemap([10.0, 20.0, 30.0, 5.0], ['a', 'b']))
+----
+613fe83623f67d821076b8de015d5db1
+
+# More labels than values.
+query T
+SELECT md5(tp_treemap([10.0, 20.0, 30.0, 5.0], ['a', 'b', 'c', 'd', 'e', 'f'], 30, 10))
+----
+edad761456f41b6f1c065e7948720baf
+
+# Width and height are capped.
+query T
+SELECT md5(tp_treemap([1.0, 2.0, 3.0], ['a', 'b', 'c'], 1000, 1000))
+----
+db1c1f5bfad692756b52d5389c6f6c78
+
+# An empty list, or a non-positive width or height, gives the empty string.
+query T
+SELECT tp_treemap([]::DOUBLE[], []::VARCHAR[]) = '' AND tp_treemap([1.0], ['a'], 0, 5) = '' AND tp_treemap([1.0], ['a'], 5, -1) = ''
+----
+true
+
+# A NULL in any one argument gives NULL.
+query IIII
+SELECT tp_treemap(NULL, ['a']) IS NULL, tp_treemap([1.0], NULL) IS NULL, tp_treemap([1.0], ['a'], NULL, 5) IS NULL, tp_treemap([1.0], ['a'], 5, NULL) IS NULL
+----
+true
+true
+true
+true
+
+# Different lists and labels on different rows, NULLs among them, across more than one 64-row validity word.
+query T
+SELECT md5(string_agg(tp_treemap(CASE i % 3 WHEN 0 THEN [1.0, 2.0, 3.0] WHEN 1 THEN [5.0, 1.0] ELSE NULL END, CASE i % 3 WHEN 0 THEN ['x', 'y', 'z'] WHEN 1 THEN ['p', 'q'] ELSE ['n'] END, 20, 8), '#' ORDER BY i)) FROM generate_series(1, 200) t(i)
+----
+2f6d2816c957f012f0013f3c8cbff7e5
+
+# ── tp_snakemap (additional cases) ───────────────────────────────────────
+# Expectations are the md5 of the v1 extension's output for the same call.
+
+# Fewer labels and groups than values.
+query T
+SELECT md5(tp_snakemap([1.0, 2.0, 3.0], ['a'], ['g'], no_color := true, width := 30, height := 10))
+----
+9979c72b5cf9e9c8c2da3f739b0c6b89
+
+# Explicit no_color := false.
+query T
+SELECT md5(tp_snakemap([1.0, 2.0, 3.0], ['a', 'b', 'c'], ['g', 'g', 'h'], width := 30, height := 10, no_color := false))
+----
+d1dca07a87ed39368f45ce44bffc12ee
+
+# A non-positive width, or an empty list, gives the empty string.
+query T
+SELECT tp_snakemap([1.0], ['a'], ['g'], width := 0) = '' AND tp_snakemap([]::DOUBLE[], []::VARCHAR[], []::VARCHAR[]) = ''
+----
+true
+
+# A NULL in any one argument gives NULL.
+query III
+SELECT tp_snakemap([1.0], ['a'], ['g'], no_color := NULL) IS NULL, tp_snakemap([1.0], ['a'], NULL) IS NULL, tp_snakemap([1.0], ['a'], ['g'], height := NULL) IS NULL
+----
+true
+true
+true
+
+# Different lists, labels, groups and no_color on different rows, NULLs among them, across more than one 64-row validity word.
+query T
+SELECT md5(string_agg(tp_snakemap(CASE i % 3 WHEN 0 THEN [1.0, 2.0, 3.0] WHEN 1 THEN [5.0, 1.0] ELSE NULL END, CASE i % 3 WHEN 0 THEN ['x', 'y', 'z'] WHEN 1 THEN ['p', 'q'] ELSE ['n'] END, CASE i % 3 WHEN 0 THEN ['g', 'g', 'h'] WHEN 1 THEN ['k', 'k'] ELSE ['n'] END, 30, 10, i % 2 = 0), '#' ORDER BY i)) FROM generate_series(1, 200) t(i)
+----
+d5c41e17c4269d8dc066893fed3c449c
