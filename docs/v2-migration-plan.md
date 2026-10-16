@@ -1599,6 +1599,102 @@ as a real, reproducible, clearly-documented demonstration of exactly
 this boundary (its own doc comment records the full chain above), not
 promoted further.
 
+### Follow-up: the non-vtable direct-link binding mode is real, built, and working (done, 2026-10-16)
+
+Prompted by a real commit in `duckdb/extension-template-c`
+(`0718cc424a8214e085d1910329b800a0c738e645`) mentioning
+`build_*_extension_capi[_unstable]` CMake helpers that "help DuckDB's
+generated loader statically link and auto-register a C API extension."
+Read the actual DuckDB CMake source at the pinned commit
+(`extension/extension_build_tools.cmake`) and the real
+`duckdb_extension_v2.h` header (not guessed) to confirm exactly what
+these helpers do — and they turn out to be the real, concrete
+implementation of "mechanism 1," the "substantial, well-scoped
+follow-up project" the section above had deferred as out of scope.
+
+**Confirmed directly in the header**: every `duckdb_v2_xxx(...)` call
+site is wrapped in `#ifndef DUCKDB_BUILD_STATIC_EXTENSION`:
+```c
+#ifndef DUCKDB_BUILD_STATIC_EXTENSION
+#define duckdb_v2_scalar_function_create_with_extension \
+    duckdb_ext_api.duckdb_v2_scalar_function_create_with_extension
+// ...hundreds more...
+#endif
+```
+and the entrypoint-init macro collapses to a no-op under that same
+define:
+```c
+#ifdef DUCKDB_BUILD_STATIC_EXTENSION
+#define DUCKDB_EXTENSION_GLOBAL
+#define DUCKDB_EXTENSION_API_INIT(input, minimum_api_version)   // nothing
+#else
+#define DUCKDB_EXTENSION_GLOBAL duckdb_ext_api_v2 duckdb_ext_api = {0};
+#define DUCKDB_EXTENSION_API_INIT(input, minimum_api_version) \
+    duckdb_ext_api_v2 *res = (duckdb_ext_api_v2 *)(input)->get_api(...); \
+    if (!res) { return; }; \
+    duckdb_ext_api = *res;
+#endif
+```
+`extension_build_tools.cmake`'s `build_static_extension_capi_internal`
+applies this define to the extension's own compiled sources
+(`target_compile_definitions(${NAME}_extension PRIVATE
+DUCKDB_BUILD_STATIC_EXTENSION)`). So under static linking, every
+`duckdb_v2_*` call in the extension's own code is a plain, directly-
+linked C symbol — no vtable, no `get_api`, no runtime fetch at all.
+Confirmed these are real, defined, globally-exported symbols in the
+real `libduckdb_static.a` via `nm` (`T duckdb_v2_scalar_function_create_with_extension`,
+and 14 others checked the same way) — not just a theoretical
+possibility.
+
+**Built it for real**: `src/static_embed_poc_direct_main.zig` (new
+`zig build v2-static-embed-poc-direct` step) — the direct-link
+counterpart to `static_embed_poc_main.zig`. Declares and calls the real
+`duckdb_v2_*` symbols directly, translated from `duckdb_v2.h` (the
+*full*, host-embedding header, which has real top-level `extern`
+prototypes for every function — unlike `duckdb_extension_v2.h`, which
+only ever declares them as vtable struct fields, and unlike this
+project's own `duckdb_v2.zig`, which intentionally only implements the
+dynamic/vtable path). Reused the already-pinned
+`duckdb_static_libs_v2_linux_amd64` dependency for both
+`libduckdb_static.a` and `duckdb_v2.h` — no new dependency needed.
+Registers a zero-arg `direct_hello() -> VARCHAR` scalar function via
+`duckdb_v2_scalar_function_create_with_extension`/`_set_name`/
+`_get_signature`/`_register`, with the exec callback writing a constant
+string per row via `duckdb_v2_value_create_varchar_with_context` +
+`duckdb_v2_vector_set_value` — the same minimal vertical slice
+`duckdb_v2_examples.zig`'s own hand-written `hello` example already
+proved for the dynamic path, now proving the direct-link path instead.
+The entrypoint never touches `input.get_api` anywhere, matching
+`DUCKDB_EXTENSION_API_INIT`'s own no-op definition under static
+linking.
+
+**Result, first attempt (after fixing two real `duckdb_v2_str` field-
+name mistakes — it's `{ptr, len}`, not `{data, length}`, confirmed
+directly in `duckdb_v2.h`'s own struct definition)**:
+```
+duckdb_register_static_extension -> 0
+query result: Hello, static-direct world!
+```
+A genuinely working, statically-linked v2 C-API scalar function — the
+first one this project has produced. `task check:all`, `zig build
+v2-check`/`ext-v2`, and the original `v2-static-embed-poc` (still
+failing with its own already-documented, unchanged error — confirming
+this change didn't regress anything) all still pass.
+
+**What this does and doesn't change**: this definitively resolves the
+"out of scope, substantial follow-up project" framing from the section
+above — the direct-link binding mode is not a vague future direction
+anymore, it's a working, reproducible pattern with one real function
+proving it end to end. What it does NOT do: port this project's actual
+functions (the comptime scalar/table/aggregate frameworks, the real
+`zig_ext_v2` extension) to this binding mode — that's a second, larger
+step (writing direct-link equivalents for the ~30-40 `duckdb_v2_*`
+functions those frameworks actually use, likely as a second
+comptime-switched mode in `duckdb_v2.zig` itself rather than a
+hand-written parallel file), not attempted here. This POC's job was the
+same as the first one's: establish whether the path is real, not build
+the production version of it.
+
 **Follow-up, 2026-10-16: cross-checked against DuckDB's own official
 docs, and a real improvement found.** Read both
 `github.com/duckdb/duckdb/blob/main/extension/README.md#linking-the-static-archives-by-hand`

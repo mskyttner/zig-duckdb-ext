@@ -623,6 +623,51 @@ pub fn build(b: *std.Build) void {
 
         const static_embed_poc_step = b.step("v2-static-embed-poc", "Build and run the real static-extension-registration link test");
         static_embed_poc_step.dependOn(&run_static_embed_poc.step);
+
+        // ── v2 static-extension registration, take 2: the real *direct*,
+        // non-vtable binding mode the first POC above identified as
+        // missing — see src/static_embed_poc_direct_main.zig's own doc
+        // comment for the full chain confirming this is real, not
+        // speculative (`DUCKDB_BUILD_STATIC_EXTENSION`'s actual effect on
+        // `duckdb_extension_v2.h`, `nm`-confirmed real exported symbols).
+        // Translated from `duckdb_v2.h` (the full host-embedding header,
+        // with real top-level `extern` prototypes for every function) —
+        // NOT `duckdb_extension_v2.h` (which only ever declares them as
+        // vtable struct fields), and NOT `duckdb_v2_mod`
+        // (`duckdb_v2.zig`), which intentionally only implements the
+        // dynamic/vtable path.
+        const duckdb_v2_full_c: Translator = .init(translate_c_dep, .{
+            .name = "duckdb_v2_full_c",
+            .c_source_file = static_libs_dep.path("duckdb_v2.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const static_embed_poc_direct_exe = b.addExecutable(.{
+            .name = "v2_static_embed_poc_direct",
+            .use_llvm = true,
+            .use_lld = true,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/static_embed_poc_direct_main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        static_embed_poc_direct_exe.root_module.addImport("duckdb_v2_full_c", duckdb_v2_full_c.mod);
+        static_embed_poc_direct_exe.root_module.addImport("duckdb_static", duckdb_static_mod);
+        static_embed_poc_direct_exe.root_module.addImport("duckdb_full_c", duckdb_full_c.mod);
+        static_embed_poc_direct_exe.root_module.link_libc = true;
+        static_embed_poc_direct_exe.root_module.addObjectFile(.{ .cwd_relative = libstdcxx_path });
+        static_embed_poc_direct_exe.root_module.addObjectFile(.{ .cwd_relative = libgcc_eh_path });
+        static_embed_poc_direct_exe.root_module.addLibraryPath(static_libs_dep.path("."));
+        static_embed_poc_direct_exe.root_module.linkSystemLibrary("duckdb_static", .{});
+
+        const install_static_embed_poc_direct = b.addInstallArtifact(static_embed_poc_direct_exe, .{});
+        const run_static_embed_poc_direct = b.addRunArtifact(static_embed_poc_direct_exe);
+        run_static_embed_poc_direct.step.dependOn(&install_static_embed_poc_direct.step);
+
+        const static_embed_poc_direct_step = b.step("v2-static-embed-poc-direct", "Build and run the direct (non-vtable) static-extension binding link test");
+        static_embed_poc_direct_step.dependOn(&run_static_embed_poc_direct.step);
     }
 
     // ── v2 proof-of-concept: image-to-braille-art demo (zignal dependency,
