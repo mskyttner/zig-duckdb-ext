@@ -46,6 +46,11 @@ tasks:
     cmds:
       - zig build sqllogictest-v2
 
+  sqllogictest:v2:poc:
+    desc: "SQL tests of the comptime scalar/table frameworks, through the v2 proof-of-concept extension (test/sql/zig_ext_v2_poc.test)"
+    cmds:
+      - zig build sqllogictest-v2-poc
+
   demo:hello:
     desc: "Demo zig_hello scalar function"
     deps: [build]

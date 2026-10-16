@@ -1232,4 +1232,16 @@ pub fn build(b: *std.Build) void {
         const sqllogictest_v2_step = b.step("sqllogictest-v2", "Run SQL logic tests against the real v2 extension");
         sqllogictest_v2_step.dependOn(&run.step);
     }
+    {
+        // The proof-of-concept extension carries the comptime scalar/table frameworks' broadest
+        // coverage (STRUCT, LIST, MAP, UNION, DECIMAL, ENUM, VARIANT, pushdown, ...), which the
+        // real extension does not use.
+        const run = b.addRunArtifact(sqllogictest_tool);
+        if (duckdb_cli_v2) |cli| run.addFileArg(cli) else run.addArg("duckdb");
+        run.addFileArg(v2_poc_output);
+        run.addFileArg(b.path("test/sql/zig_ext_v2_poc.test"));
+
+        const sqllogictest_v2_poc_step = b.step("sqllogictest-v2-poc", "Run SQL logic tests against the v2 proof-of-concept extension (comptime scalar/table frameworks)");
+        sqllogictest_v2_poc_step.dependOn(&run.step);
+    }
 }

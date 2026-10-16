@@ -1,0 +1,607 @@
+# name: test/sql/zig_ext_v2_poc.test
+# description: Behavior of the comptime scalar and table frameworks, through the v2 proof-of-concept extension
+# group: [zig_ext_v2_poc]
+#
+# The proof-of-concept extension is where the frameworks' broadest coverage lives (STRUCT, LIST, ARRAY,
+# MAP, UNION, DECIMAL, ENUM, VARIANT, BLOB, pushdown, ...); the real extension uses only a few of them.
+# Results that are big or nested are compared by md5() of an aggregated string whose expected value was
+# computed independently of the extension; small ones are written out.
+#
+# Not displayed anywhere on purpose: values of the PoC's own STRUCT point type and ENUM mood type. The PoC
+# also registers custom casts for them (comptime_cast_v2), and those casts fail with "row out of range in
+# duckdb_v2_vector_set_value" whenever DuckDB has to render such a value; fields are extracted instead.
+
+statement ok
+SET allow_extensions_metadata_mismatch=true
+
+require zig_ext_v2_poc
+
+# ── numeric scalars ──
+
+query I
+SELECT zig_v2_triple(4)
+----
+12
+
+query I
+SELECT zig_v2_triple(NULL)
+----
+NULL
+
+query I
+SELECT zig_v2_triple(i) FROM generate_series(1, 3) t(i)
+----
+3
+6
+9
+
+query I
+SELECT zig_v2_add(3, 4)
+----
+7
+
+query I
+SELECT zig_v2_add(NULL, 4)
+----
+NULL
+
+query I
+SELECT zig_v2_add(3, NULL)
+----
+NULL
+
+# More rows than one DuckDB vector (2048) holds, with NULLs on either side.
+
+query II
+SELECT count(*), sum(zig_v2_add(i, 1)) FROM generate_series(1, 5000) t(i)
+----
+5000
+12507500
+
+query II
+SELECT count(zig_v2_add(CASE WHEN i % 3 = 0 THEN NULL ELSE i END, CASE WHEN i % 5 = 0 THEN NULL ELSE i END)), sum(zig_v2_add(CASE WHEN i % 3 = 0 THEN NULL ELSE i END, CASE WHEN i % 5 = 0 THEN NULL ELSE i END)) FROM generate_series(1, 5000) t(i)
+----
+2667
+13336664
+
+query R
+SELECT zig_v2_narrow_sum_ct(1::TINYINT, 2::SMALLINT, 3::INTEGER, 0.5::FLOAT)
+----
+6.5
+
+query R
+SELECT zig_v2_narrow_sum_ct(-100::TINYINT, 1000::SMALLINT, 100000::INTEGER, -0.25::FLOAT)
+----
+100899.75
+
+query R
+SELECT zig_v2_narrow_sum_ct(NULL, 2::SMALLINT, 3::INTEGER, 0.5::FLOAT)
+----
+NULL
+
+# ── VARCHAR ──
+
+query T
+SELECT zig_v2_first_char_ct('hello')
+----
+h
+
+query T
+SELECT zig_v2_first_char_ct('')
+----
+(empty)
+
+query T
+SELECT zig_v2_first_char_ct(NULL)
+----
+NULL
+
+query T
+SELECT zig_v2_first_char_ct('a string that is longer than the twelve bytes DuckDB inlines')
+----
+a
+
+query T
+SELECT string_agg(coalesce(zig_v2_first_char_ct(s), '-'), '' ORDER BY ord) FROM (VALUES (0, 'alpha'), (1, ''), (2, 'beta'), (3, NULL), (4, 'gamma delta epsilon zeta eta theta')) t(ord, s)
+----
+ab-g
+
+# ── STRUCT arguments and results ──
+
+query I
+SELECT zig_v2_point_dist2_ct({'x': 3::BIGINT, 'y': 4::BIGINT})
+----
+25
+
+query I
+SELECT zig_v2_point_dist2_ct(NULL)
+----
+NULL
+
+query I
+SELECT sum(zig_v2_point_dist2_ct({'x': i::BIGINT, 'y': i::BIGINT})) FROM generate_series(1, 100) t(i)
+----
+676700
+
+query I
+SELECT zig_v2_person_greet_ct({'name': 'Bob', 'age': 30::BIGINT}, true)
+----
+34
+
+query I
+SELECT zig_v2_person_greet_ct({'name': 'Bob', 'age': 30::BIGINT}, false)
+----
+33
+
+query I
+SELECT zig_v2_person_greet_ct({'name': '', 'age': 0::BIGINT}, false)
+----
+0
+
+query I
+SELECT zig_v2_person_greet_ct(NULL, true)
+----
+NULL
+
+query II
+SELECT (zig_v2_point_make_ct(5)).x, (zig_v2_point_make_ct(5)).y
+----
+5
+10
+
+query I
+SELECT (zig_v2_point_make_ct(NULL)).x
+----
+NULL
+
+query T
+SELECT md5(string_agg((zig_v2_point_make_ct(i)).x || ':' || (zig_v2_point_make_ct(i)).y, ',' ORDER BY i)) FROM generate_series(1, 3000) t(i)
+----
+dade890ef5c1e89825bdb72380a84bcb
+
+query TI
+SELECT (zig_v2_person_birthday_ct({'name': 'Al', 'age': 41::BIGINT})).name, (zig_v2_person_birthday_ct({'name': 'Al', 'age': 41::BIGINT})).age
+----
+Al
+42
+
+query T
+SELECT (zig_v2_person_birthday_ct({'name': 'a name that is longer than twelve bytes', 'age': 1::BIGINT})).name
+----
+a name that is longer than twelve bytes
+
+query I
+SELECT (zig_v2_person_birthday_ct(NULL)).age
+----
+NULL
+
+query T
+SELECT md5(string_agg((zig_v2_person_birthday_ct({'name': 'n' || i::VARCHAR, 'age': i::BIGINT})).name || '/' || (zig_v2_person_birthday_ct({'name': 'n' || i::VARCHAR, 'age': i::BIGINT})).age, ',' ORDER BY i)) FROM generate_series(1, 2500) t(i)
+----
+1455e8e41e860e8c24626c8ff60e1f10
+
+# ── VARIANT: a NULL argument is data, not a skipped row ──
+
+query T
+SELECT CAST(zig_v2_variant_default_ct(CAST(42::BIGINT AS VARIANT), 7) AS VARCHAR)
+----
+42
+
+query T
+SELECT CAST(zig_v2_variant_default_ct(CAST(NULL AS VARIANT), 7) AS VARCHAR)
+----
+7
+
+# ── DATE/TIME-like, BLOB, DECIMAL, ENUM ──
+
+query T
+SELECT CAST(zig_v2_timestamp_add_ct(TIMESTAMP '2024-01-01 00:00:00', {'months': 0, 'days': 1, 'micros': 0::BIGINT}) AS VARCHAR)
+----
+2024-01-02 00:00:00
+
+query T
+SELECT CAST(zig_v2_timestamp_add_ct(TIMESTAMP '2024-01-01 00:00:00', {'months': 0, 'days': 0, 'micros': 5400000000::BIGINT}) AS VARCHAR)
+----
+2024-01-01 01:30:00
+
+query T
+SELECT CAST(zig_v2_timestamp_add_ct(TIMESTAMP '2024-01-01 00:00:00', {'months': 1, 'days': 0, 'micros': 0::BIGINT}) AS VARCHAR)
+----
+2024-01-31 00:00:00
+
+query T
+SELECT zig_v2_timestamp_add_ct(NULL, {'months': 0, 'days': 1, 'micros': 0::BIGINT}) IS NULL
+----
+true
+
+query T
+SELECT CAST(zig_v2_blob_prefix_ct('abcdef'::BLOB, 3) AS VARCHAR)
+----
+abc
+
+query T
+SELECT CAST(zig_v2_blob_prefix_ct('abcdef'::BLOB, 0) AS VARCHAR)
+----
+(empty)
+
+query T
+SELECT CAST(zig_v2_blob_prefix_ct('abcdef'::BLOB, 100) AS VARCHAR)
+----
+abcdef
+
+query T
+SELECT CAST(zig_v2_blob_prefix_ct('abcdefghijklmnopqrstuvwxyz'::BLOB, 15) AS VARCHAR)
+----
+abcdefghijklmno
+
+query T
+SELECT zig_v2_blob_prefix_ct(NULL, 3) IS NULL
+----
+true
+
+query T
+SELECT CAST(zig_v2_apply_tax_ct(100.00::DECIMAL(10,2), 0.25) AS VARCHAR)
+----
+125.00
+
+query T
+SELECT CAST(zig_v2_apply_tax_ct(19.99::DECIMAL(10,2), 0.1) AS VARCHAR)
+----
+21.99
+
+query T
+SELECT CAST(zig_v2_big_decimal_double_ct(1.5::DECIMAL(38,10)) AS VARCHAR)
+----
+3.0000000000
+
+query T
+SELECT CAST(zig_v2_big_decimal_double_ct(-123456789012345678.1234567890::DECIMAL(38,10)) AS VARCHAR)
+----
+-246913578024691356.2469135780
+
+query T
+SELECT CASE WHEN zig_v2_next_mood_ct(CAST('sad' AS ENUM('sad','neutral','happy'))) = CAST('neutral' AS ENUM('sad','neutral','happy')) THEN 'yes' ELSE 'no' END
+----
+yes
+
+query T
+SELECT CASE WHEN zig_v2_next_mood_ct(CAST('neutral' AS ENUM('sad','neutral','happy'))) = CAST('happy' AS ENUM('sad','neutral','happy')) THEN 'yes' ELSE 'no' END
+----
+yes
+
+query T
+SELECT CASE WHEN zig_v2_next_mood_ct(CAST('happy' AS ENUM('sad','neutral','happy'))) = CAST('happy' AS ENUM('sad','neutral','happy')) THEN 'yes' ELSE 'no' END
+----
+yes
+
+query T
+SELECT zig_v2_next_mood_ct(CAST(NULL AS ENUM('sad','neutral','happy'))) IS NULL
+----
+true
+
+# ── LIST, ARRAY, MAP ──
+
+query I
+SELECT zig_v2_list_sum_ct([1, 2, 3, 4]::BIGINT[])
+----
+10
+
+query I
+SELECT zig_v2_list_sum_ct([]::BIGINT[])
+----
+0
+
+query I
+SELECT zig_v2_list_sum_ct(NULL)
+----
+NULL
+
+query I
+SELECT zig_v2_list_sum_ct(list_transform(range(1, 101), lambda x: x))
+----
+5050
+
+query II
+SELECT sum(zig_v2_list_sum_ct(list_transform(range(i % 7), lambda x: x::BIGINT))), count(*) FROM generate_series(1, 1500) t(i)
+----
+7491
+1500
+
+query T
+SELECT CAST(zig_v2_list_range_ct(5) AS VARCHAR)
+----
+[0, 1, 2, 3, 4]
+
+query T
+SELECT CAST(zig_v2_list_range_ct(0) AS VARCHAR)
+----
+[]
+
+query I
+SELECT len(zig_v2_list_range_ct(100))
+----
+16
+
+query T
+SELECT CAST(zig_v2_list_range_ct(NULL) AS VARCHAR)
+----
+NULL
+
+query T
+SELECT md5(string_agg(CAST(zig_v2_list_range_ct(i % 20) AS VARCHAR), '|' ORDER BY i)) FROM generate_series(1, 400) t(i)
+----
+4a6ea8b0b11263ace5b487abab7d235a
+
+query T
+SELECT CAST(zig_v2_array_scale3_ct([1.0, 2.0, 3.0]::DOUBLE[3], 2.0) AS VARCHAR)
+----
+[2.0, 4.0, 6.0]
+
+query T
+SELECT CAST(zig_v2_array_scale3_ct(NULL, 2.0) AS VARCHAR)
+----
+NULL
+
+query I
+SELECT zig_v2_map_sum_values_ct(MAP {1: 10, 2: 20, 3: 30}::MAP(BIGINT, BIGINT))
+----
+60
+
+query I
+SELECT zig_v2_map_sum_values_ct(MAP {}::MAP(BIGINT, BIGINT))
+----
+0
+
+query I
+SELECT zig_v2_map_sum_values_ct(NULL)
+----
+NULL
+
+query T
+SELECT CAST(zig_v2_map_range_ct(3) AS VARCHAR)
+----
+{1=10, 2=20, 3=30}
+
+query T
+SELECT CAST(zig_v2_map_range_ct(0) AS VARCHAR)
+----
+{}
+
+query I
+SELECT len(map_keys(zig_v2_map_range_ct(100)))
+----
+4
+
+# ── UNION: arguments, and results with mixed tags across rows ──
+
+query T
+SELECT CAST(zig_v2_union_roundtrip_ct(CAST(union_value(num := 5::BIGINT) AS UNION(num BIGINT, text VARCHAR))) AS VARCHAR)
+----
+5
+
+query T
+SELECT CAST(zig_v2_union_roundtrip_ct(CAST(union_value(text := 'abc') AS UNION(num BIGINT, text VARCHAR))) AS VARCHAR)
+----
+abc
+
+query I
+SELECT zig_v2_union_tag_ct(CAST(union_value(num := 5::BIGINT) AS UNION(num BIGINT, text VARCHAR)))
+----
+5
+
+query I
+SELECT zig_v2_union_tag_ct(CAST(union_value(text := 'abcd') AS UNION(num BIGINT, text VARCHAR)))
+----
+4
+
+query T
+SELECT CAST(zig_v2_union_roundtrip_ct(NULL::UNION(num BIGINT, text VARCHAR)) AS VARCHAR)
+----
+NULL
+
+query T
+SELECT md5(string_agg(CAST(zig_v2_union_make_ct(i) AS VARCHAR), ',' ORDER BY i)) FROM generate_series(1, 100) t(i)
+----
+cffb0485ca0c6ef9aa1ed45f7f0f5c50
+
+query T
+SELECT md5(string_agg(CAST(zig_v2_union_make_numnum_ct(i) AS VARCHAR), ',' ORDER BY i)) FROM generate_series(1, 100) t(i)
+----
+59e32dd660da21f6c9bffe2ea979a5bb
+
+# ── BIGINT/DOUBLE LIST arguments: matrix multiplication, naive and SIMD kernel ──
+
+query T
+SELECT CAST(zig_v2_matmul_naive_ct([1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], 2, 2, 2) AS VARCHAR)
+----
+[19.0, 22.0, 43.0, 50.0]
+
+query T
+SELECT md5(CAST(zig_v2_matmul_naive_ct(list_transform(range(12), lambda x: (x % 7)::DOUBLE), list_transform(range(20), lambda x: ((x * 3) % 5)::DOUBLE), 3, 4, 5) AS VARCHAR))
+----
+31cd9ebc2ec4fb962cf65f6f5e5d2e87
+
+query T
+SELECT md5(CAST(zig_v2_matmul_naive_ct(list_transform(range(340), lambda x: (x % 7)::DOUBLE), list_transform(range(323), lambda x: ((x * 3) % 5)::DOUBLE), 20, 17, 19) AS VARCHAR))
+----
+0c2a6585d3ddca3013bbba30ef351eb2
+
+query T
+SELECT md5(CAST(zig_v2_matmul_naive_ct(list_transform(range(320), lambda x: (x % 7)::DOUBLE), list_transform(range(320), lambda x: ((x * 3) % 5)::DOUBLE), 64, 5, 64) AS VARCHAR))
+----
+5b0b5e88562ddef2bdfb9e1e7eb9ad3f
+
+query I
+SELECT len(zig_v2_matmul_naive_ct([1.0], [1.0], 65, 1, 65))
+----
+0
+
+query T
+SELECT CAST(zig_v2_matmul_ct([1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], 2, 2, 2) AS VARCHAR)
+----
+[19.0, 22.0, 43.0, 50.0]
+
+query T
+SELECT md5(CAST(zig_v2_matmul_ct(list_transform(range(12), lambda x: (x % 7)::DOUBLE), list_transform(range(20), lambda x: ((x * 3) % 5)::DOUBLE), 3, 4, 5) AS VARCHAR))
+----
+31cd9ebc2ec4fb962cf65f6f5e5d2e87
+
+query T
+SELECT md5(CAST(zig_v2_matmul_ct(list_transform(range(340), lambda x: (x % 7)::DOUBLE), list_transform(range(323), lambda x: ((x * 3) % 5)::DOUBLE), 20, 17, 19) AS VARCHAR))
+----
+0c2a6585d3ddca3013bbba30ef351eb2
+
+query T
+SELECT md5(CAST(zig_v2_matmul_ct(list_transform(range(320), lambda x: (x % 7)::DOUBLE), list_transform(range(320), lambda x: ((x * 3) % 5)::DOUBLE), 64, 5, 64) AS VARCHAR))
+----
+5b0b5e88562ddef2bdfb9e1e7eb9ad3f
+
+query I
+SELECT len(zig_v2_matmul_ct([1.0], [1.0], 65, 1, 65))
+----
+0
+
+# ── table functions ──
+
+query I
+SELECT value FROM zig_v2_range_ct(5)
+----
+0
+1
+2
+3
+4
+
+query I
+SELECT count(*) FROM zig_v2_range_ct(0)
+----
+0
+
+query II
+SELECT count(*), sum(value) FROM zig_v2_range_ct(5000)
+----
+5000
+12497500
+
+query I
+SELECT value FROM zig_v2_range_progress_ct(4)
+----
+0
+1
+2
+3
+
+query II
+SELECT count(*), sum(value) FROM zig_v2_range_progress_ct(5000)
+----
+5000
+12497500
+
+query T
+SELECT value FROM zig_v2_repeat_ct('ab', 3)
+----
+ab
+ab
+ab
+
+query I
+SELECT count(*) FROM zig_v2_repeat_ct('ab', 0)
+----
+0
+
+query T
+SELECT value FROM zig_v2_repeat_ct('a text longer than the twelve bytes inlined', 2)
+----
+a text longer than the twelve bytes inlined
+a text longer than the twelve bytes inlined
+
+query II
+SELECT count(*), count(DISTINCT value) FROM zig_v2_repeat_ct('x', 5000)
+----
+5000
+1
+
+query T
+SELECT md5(string_agg(value::VARCHAR, ',' ORDER BY value)) FROM (SELECT value FROM zig_v2_range_ct(3000))
+----
+d1042ee6e328f62964c6132964c4f4ac
+
+# Filter pushdown: `value = k` is accepted by the table function (the hit count says so), other filters are left to the engine.
+
+query I
+SELECT zig_v2_pushdown_hit_count_reset()
+----
+0
+
+query I
+SELECT value FROM zig_v2_range_pushdown_ct(10) WHERE value = 4
+----
+4
+
+query I
+SELECT zig_v2_pushdown_hit_count()
+----
+1
+
+query I
+SELECT value FROM zig_v2_range_pushdown_ct(10) WHERE value > 7 ORDER BY value
+----
+8
+9
+
+query I
+SELECT zig_v2_pushdown_hit_count()
+----
+1
+
+query I
+SELECT count(*) FROM zig_v2_range_pushdown_ct(10)
+----
+10
+
+# Projection pushdown: the function is told which columns the query selects, and still returns the right values.
+
+query I
+SELECT a FROM zig_v2_project_ct(3)
+----
+0
+1
+2
+
+query I
+SELECT zig_v2_project_last_mask()
+----
+1
+
+query I
+SELECT b FROM zig_v2_project_ct(3)
+----
+0
+2
+4
+
+query I
+SELECT zig_v2_project_last_mask()
+----
+2
+
+query II
+SELECT a, b FROM zig_v2_project_ct(2)
+----
+0
+0
+1
+2
+
+query I
+SELECT zig_v2_project_last_mask()
+----
+3
+
+query II
+SELECT b, a FROM zig_v2_project_ct(2)
+----
+0
+0
+2
+1

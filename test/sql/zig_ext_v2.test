@@ -12,6 +12,60 @@ Catalog Error: Scalar Function with name zig_add_numbers does not exist!
 
 require zig_ext_v2
 
+# ── ct_tokenize (comptime table function) and tokenize (hand-written) ────
+
+query IT
+SELECT token_pos, token FROM ct_tokenize('a,b,c', ',')
+----
+0
+a
+1
+b
+2
+c
+
+query IT
+SELECT token_pos, token FROM ct_tokenize('abc', ',')
+----
+0
+abc
+
+query IT
+SELECT token_pos, token FROM ct_tokenize('abc', '')
+----
+0
+abc
+
+query IT
+SELECT token_pos, token FROM ct_tokenize('a,', ',')
+----
+0
+a
+1
+(empty)
+
+query IT
+SELECT token_pos, token FROM ct_tokenize('', ',')
+----
+0
+(empty)
+
+query IT
+SELECT token_pos, token FROM ct_tokenize('one--two--three', '--')
+----
+0
+one
+1
+two
+2
+three
+
+# Many tokens, longer than DuckDB inlines, more than one output batch; hashed.
+query T
+SELECT md5(string_agg(token_pos::VARCHAR || ':' || token, '|' ORDER BY token_pos)) FROM ct_tokenize(array_to_string(list_transform(range(3000), lambda i: 'tok' || i::VARCHAR), ','), ',')
+----
+1cce96e6c6c71db85c17530d1ebb413b
+
 # ── zig_hello ────────────────────────────────────────────────────────────
 
 query T
