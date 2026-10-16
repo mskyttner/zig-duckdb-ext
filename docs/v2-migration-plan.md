@@ -1113,6 +1113,22 @@ workload:
      real 2.0 release). Treated with the same posture as the TRY_CAST
      finding above: documented precisely, left unresolved, not a
      blocker since nothing currently depends on it.
+
+  **Correction (2026-10-16): the TRY_CAST finding above and bug 2 were both
+  this framework's, not DuckDB's.** The cast exec callback never set the
+  output vector's size, so every `vector_set_null` and `vector_set_value` on
+  it failed with "row out of range" — which is what the composite-type
+  failures (any VARCHAR-boxed write: ENUM/STRUCT -> VARCHAR), the "corrupted
+  dispatch" after registering both directions, and TRY_CAST's NULL branch
+  (which writes a NULL) all were; TRY_CAST's apparent leftover-memory reads
+  came from the same failure. One `vectorSetSize(output_vec, row_count)`
+  after fetching the output fixed all of them: NULL rows in every custom
+  cast, ENUM -> VARCHAR, STRUCT -> VARCHAR, both directions of a composite
+  type in one session, and TRY_CAST (which does reach the custom cast, and
+  turns a `null` from `castFn` into NULL). Bug 1 (ENUM target recursion) is
+  real and unchanged. Found by porting the framework (it had no runtime
+  tests); pinned by the PoC suite. Still true and now documented in the
+  framework: a custom ENUM cast is not limited to its own dictionary.
 - **No SQL-execution pipeline wrapped at all — not started** (found
   2026-10-12, systematically checking this project's v2 coverage against
   every section of https://duckdb.org/docs/preview/clients/c/api, not
@@ -1836,10 +1852,10 @@ global switch exists yet.
 - **Function modules moved onto the generated bindings:** `hello_v2.zig`,
   `add_numbers_v2.zig`, `ct_add_numbers_v2.zig` and `ct_tokenize_v2.zig`, and
   with the last two the comptime frameworks they use, **`comptime_scalar_v2`
-  and `comptime_table_v2`** (every PoC function built on them moves too). The
-  other five function modules (`tp_bar`, `tokenize`, `tp_line`, `tp_treemap`,
-  `tp_snakemap`) and the aggregate, cast and appender frameworks still use the
-  hand-written `duckdb_v2.zig`. What the migrated code needs to read vectors
+  and `comptime_table_v2`**, then **`comptime_cast_v2`** (every PoC function
+  built on them moves too). The other five function modules (`tp_bar`,
+  `tokenize`, `tp_line`, `tp_treemap`, `tp_snakemap`) and the aggregate and
+  appender frameworks still use the hand-written `duckdb_v2.zig`. What the migrated code needs to read vectors
   and build parametrised types lives in `src/lib/v2_helpers.zig` (a module of
   its own, since the frameworks are modules too): `isValid`, `bytesSlice`,
   `str`, the slice forms of the calls that take a pointer and a count or a
@@ -1857,25 +1873,49 @@ global switch exists yet.
 - **How the frameworks were verified.** They had almost no runtime tests: the
   real extension used one scalar and one table function through them, and
   everything else was compile-time. `test/sql/zig_ext_v2_poc.test` (new step
-  `sqllogictest-v2-poc`, task `sqllogictest:v2:poc`, 112 blocks) pins their
+  `sqllogictest-v2-poc`, task `sqllogictest:v2:poc`, now 152 blocks) pins their
   behavior through the proof-of-concept extension — numeric, VARCHAR, STRUCT,
   VARIANT, TIMESTAMP, BLOB, DECIMAL, ENUM, LIST, ARRAY, MAP and UNION scalars,
   matmul at odd sizes, range/repeat tables across batch boundaries, filter and
-  projection pushdown — with big or nested results compared by `md5()` of an
+  projection pushdown, and the custom casts (VARCHAR/DECIMAL/ENUM/STRUCT/VARIANT,
+  NULL rows, TRY_CAST) — with big or nested results compared by `md5()` of an
   aggregated string whose expected value was computed independently in Python.
-  It passed against the old frameworks first and passes unchanged on the ported
-  ones; mutating the frameworks or helpers (type creation, byte reads, NULL
-  handling, union members, column remapping, batching, the pushdown call) makes
-  it fail, which also exposed and closed two gaps in the suite itself. Not
-  covered, before or after: the value a table `progress` hook reports, and MAP
-  types whose key and value types differ.
-- **Found, not fixed:** the PoC's custom `Point -> VARCHAR` and `Mood -> VARCHAR`
-  casts (`comptime_cast_v2`) fail with "row out of range in
-  `duckdb_v2_vector_set_value`" whenever DuckDB has to render such a value, so
-  the suite never displays them. It is a bug in the cast framework or the PoC's
-  casts, to be looked at when that framework is ported. The comptime
-  framework also registers a `db.Interval` parameter as `STRUCT(months,
-  days, micros)`, not INTERVAL, despite the PoC's doc comments.
+  Each framework's suite passed against the old code first and passes unchanged
+  on the ported one; mutating the frameworks or helpers (type creation, byte
+  reads, NULL handling, union members, column remapping, batching, the pushdown
+  call, the cast writes and decodes) makes it fail, each checked to be a test
+  failure and not a compile error, which also exposed and closed gaps in the
+  suite itself. Not covered, before or after: the value a table `progress` hook
+  reports, MAP types whose key and value types differ, and the TRY branch of the
+  cast framework's STRUCT and VARIANT paths (no PoC cast of those shapes ever
+  returns `null`). One constraint of the runner worth knowing: DuckDB ends the
+  CLI session on an INTERNAL error, so a `.test` file can hold at most one such
+  case, as its last block.
+- **`comptime_cast_v2`: ported, and a framework bug found and fixed.** The
+  baseline (22 blocks, `af20d50`) was written first and pinned what failed
+  alongside what worked: every custom cast failed over a column containing a
+  NULL ("row out of range in `duckdb_v2_vector_set_null`"), and ENUM -> VARCHAR
+  and STRUCT -> VARCHAR failed outright ("row out of range in
+  `vector_set_value`"). The framework's own doc blamed DuckDB's handling of
+  composite types, and said TRY_CAST did not reach a custom cast and returned
+  leftover memory. The cause was the framework's: it never set the output
+  vector's size, which `vector_set_null` and `vector_set_value` need and which
+  the scalar and table frameworks set first. The port (`f448252`) was faithful,
+  broken parts included; the fix (`vectorSetSize(output_vec, row_count)` right
+  after fetching the output) came after, with the pinned failures turned into
+  the correct expectations first. It fixed all of them at once: NULL rows in
+  every cast, ENUM/STRUCT -> VARCHAR, both directions of a composite type in
+  one session (the "corrupted dispatch" never existed), and TRY_CAST, which does
+  reach the custom cast and turns a `null` from `castFn` into NULL. The module
+  doc's two long cautions are rewritten to say so, and the correction is
+  recorded in the 2026-10-13 cast passage above. Still true: writing an ENUM
+  *target* through `valueCastWithContext` recurses (bug 1 of that passage), and a
+  custom ENUM cast is not limited to its own dictionary — with the PoC's casts
+  loaded, `CAST(CAST('a' AS ENUM('a','b','c')) AS BIGINT)` fails with "cast
+  failed" — so loading an extension that casts ENUM changes every ENUM in the
+  session (pinned by a test). The scalar framework also registers a
+  `db.Interval` parameter as `STRUCT(months, days, micros)`, not INTERVAL,
+  despite the PoC's doc comments.
 - **Overflow in `zig_add_numbers` (found while porting it, fixed after).**
   `a + b` on `i64` trapped in safe builds, so
   `SELECT zig_add_numbers(9223372036854775807, 1)` aborted the whole DuckDB
@@ -1891,14 +1931,13 @@ global switch exists yet.
   afterwards. **Still affected:** `ct_add_numbers` (v1 and v2), whose `+` is
   the user function the comptime framework calls, so the framework cannot
   catch it, and v1's `zig_add_numbers`; both still panic on overflow.
-- **Not done:** the five hand-written function modules and the aggregate,
-  cast and appender frameworks (the cast framework has the bug above), then
-  the PoC code itself, and finally removing `duckdb_v2.zig` and the
-  `register`/`db.*` compatibility layer; a build option that binds
-  `duckdb_v2_api` for the frameworks. `ct_add_numbers` (v1 and v2) and v1's
-  `zig_add_numbers` still trap on overflow, now for the comptime framework as
-  a design question: the framework calls a user function that returns a plain
-  `i64`, so it has no way to report an error.
+- **Not done:** the five hand-written function modules and the aggregate and
+  appender frameworks, then the PoC code itself, and finally removing
+  `duckdb_v2.zig` and the `register`/`db.*` compatibility layer; a build option
+  that binds `duckdb_v2_api` for the frameworks. `ct_add_numbers` (v1 and v2)
+  and v1's `zig_add_numbers` still trap on overflow, now for the comptime
+  framework as a design question: the framework calls a user function that
+  returns a plain `i64`, so it has no way to report an error.
 
 ### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
 
