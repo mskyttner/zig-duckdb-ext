@@ -13,7 +13,7 @@
 ///! in the framework yet — most real functions either transform existing text or produce it like
 ///! this one does, and the two need different plumbing.
 const v2 = @import("duckdb_v2_dynamic");
-const helpers = @import("../lib/v2_helpers.zig");
+const helpers = @import("v2_helpers");
 
 fn exec(
     info: v2.duckdb_v2_scalar_function_exec_info_handle,

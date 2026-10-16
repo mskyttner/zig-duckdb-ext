@@ -454,14 +454,15 @@ pub fn build(b: *std.Build) void {
     duckdb_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
 
     // Helpers over the generated types that several function modules share.
-    const v2_helpers_check = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/lib/v2_helpers.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod }},
-        }),
+    // A module of its own, not a file imported by path, because the function modules and the
+    // comptime frameworks (themselves modules) all use it.
+    const v2_helpers_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/v2_helpers.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod }},
     });
+    const v2_helpers_check = b.addTest(.{ .root_module = v2_helpers_mod });
     const run_v2_helpers_check = b.addRunArtifact(v2_helpers_check);
 
     // One hello-world scalar function written against `duckdb_v2_api`,
@@ -496,6 +497,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     comptime_scalar_v2_mod.addImport("duckdb_v2", duckdb_v2_mod);
+    comptime_scalar_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    comptime_scalar_v2_mod.addImport("v2_helpers", v2_helpers_mod);
     const comptime_scalar_v2_check = b.addTest(.{ .root_module = comptime_scalar_v2_mod });
     const run_comptime_scalar_v2_check = b.addRunArtifact(comptime_scalar_v2_check);
 
@@ -505,6 +508,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     comptime_table_v2_mod.addImport("duckdb_v2", duckdb_v2_mod);
+    comptime_table_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    comptime_table_v2_mod.addImport("v2_helpers", v2_helpers_mod);
     const comptime_table_v2_check = b.addTest(.{ .root_module = comptime_table_v2_mod });
     const run_comptime_table_v2_check = b.addRunArtifact(comptime_table_v2_check);
 
@@ -623,6 +628,7 @@ pub fn build(b: *std.Build) void {
     });
     ext_v2_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
     ext_v2_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    ext_v2_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
     ext_v2_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
     ext_v2_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
     ext_v2_lib.root_module.link_libc = true;
@@ -759,6 +765,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "duckdb_v2", .module = duckdb_v2_mod },
                 .{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod },
+                .{ .name = "v2_helpers", .module = v2_helpers_mod },
                 .{ .name = "comptime_scalar_v2", .module = comptime_scalar_v2_mod },
                 .{ .name = "comptime_table_v2", .module = comptime_table_v2_mod },
             },

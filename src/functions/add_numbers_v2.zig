@@ -9,7 +9,7 @@
 ///! trap that would take the whole process down.
 const std = @import("std");
 const v2 = @import("duckdb_v2_dynamic");
-const helpers = @import("../lib/v2_helpers.zig");
+const helpers = @import("v2_helpers");
 
 /// Reports `a + b` overflowing as the error of the query running the callback.
 fn reportOverflow(err: *v2.duckdb_v2_error_info_handle, a: i64, b: i64) void {
