@@ -530,6 +530,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     comptime_appender_v2_mod.addImport("duckdb_v2", duckdb_v2_mod);
+    comptime_appender_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    comptime_appender_v2_mod.addImport("v2_helpers", v2_helpers_mod);
     const comptime_appender_v2_check = b.addTest(.{ .root_module = comptime_appender_v2_mod });
     const run_comptime_appender_v2_check = b.addRunArtifact(comptime_appender_v2_check);
 

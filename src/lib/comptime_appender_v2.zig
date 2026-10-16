@@ -117,6 +117,30 @@
 ///! side), so there is nothing for a write path to call.
 const std = @import("std");
 const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
+const helpers = @import("v2_helpers");
+
+// Everything this framework does goes through the generated bindings (`v2`). The Appender is a type that
+// extension code uses directly, and that code (the proof-of-concept extension, `nethogs_trace`) still
+// holds the hand-written layer's handles, so `create`, `append`, `flush` and `finish` take and return
+// those, and convert them to the generated handles for the `...Generated` methods that do the work. Each
+// is the same pointer typed by a different translation of the C API. This goes away with the hand-written
+// layer.
+fn toContext(ctx: db.ContextHandle) v2.duckdb_v2_context_handle {
+    // SAFETY: the same pointer to DuckDB's context; the generated handle points to an opaque type.
+    return @ptrCast(ctx);
+}
+
+fn toError(err: *db.ErrorInfoHandle) *v2.duckdb_v2_error_info_handle {
+    // SAFETY: the same slot holding a pointer to DuckDB's error info.
+    return @ptrCast(@alignCast(err));
+}
+
+fn toCollection(collection: v2.duckdb_v2_column_data_collection_handle) db.ColumnDataCollectionHandle {
+    // SAFETY: the same pointer to DuckDB's collection; the generated handle points to an opaque type,
+    // so only the alignment needs restoring.
+    return @ptrCast(@alignCast(collection));
+}
 
 /// Rows buffered per chunk before an auto-flush — matches DuckDB's standard
 /// vector size, same hand-pinned constant `comptime_table_v2.zig` uses
@@ -129,16 +153,21 @@ const max_rows_per_batch = 2048;
 /// element or STRUCT field may be; `Row`'s own top-level fields may ALSO be
 /// LIST/STRUCT, which this does not handle — see `createColumnType`/
 /// `buildValue` for the dispatch that adds those on top of this.
+/// The logical type id of a leaf type, as the hand-written layer spells it.
 pub fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
+    return @intCast(@backingInt(logicalTypeId(T)));
+}
+
+fn logicalTypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
     return switch (T) {
-        i8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT,
-        i16 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT,
-        i32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER,
-        i64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
-        f32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT,
-        f64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE,
-        bool => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN,
-        []const u8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR,
+        i8 => .LOGICAL_TYPE_ID_TINYINT,
+        i16 => .LOGICAL_TYPE_ID_SMALLINT,
+        i32 => .LOGICAL_TYPE_ID_INTEGER,
+        i64 => .LOGICAL_TYPE_ID_BIGINT,
+        f32 => .LOGICAL_TYPE_ID_FLOAT,
+        f64 => .LOGICAL_TYPE_ID_DOUBLE,
+        bool => .LOGICAL_TYPE_ID_BOOLEAN,
+        []const u8 => .LOGICAL_TYPE_ID_VARCHAR,
         else => @compileError("unsupported leaf type for DuckDB v2 mapping: " ++ @typeName(T)),
     };
 }
@@ -246,65 +275,65 @@ fn validateFieldType(comptime T: type) void {
     if (comptime isStructType(T)) return;
     if (comptime isArrayType(T)) return;
     if (comptime isEnumType(T)) return;
-    _ = duckdbV2TypeId(T);
+    _ = logicalTypeId(T);
 }
 
 /// Build the logical type for `Row` field type `T` (leaf, LIST, or
 /// one-level STRUCT) under `ctx`. Caller destroys `out_type`.
-fn createColumnType(ctx: db.ContextHandle, comptime T: type, out_type: *db.LogicalTypeHandle, err: *db.ErrorInfoHandle) db.ErrorCode {
+fn createColumnType(ctx: v2.duckdb_v2_context_handle, comptime T: type, out_type: *v2.duckdb_v2_logical_type_handle, err: *v2.duckdb_v2_error_info_handle) v2.DUCKDB_V2_ERROR {
     if (comptime isListType(T)) {
         const E = ListElemType(T);
-        var child_type: db.LogicalTypeHandle = undefined;
-        if (db.contextCreateTypeFromId(ctx, duckdbV2TypeId(E), &child_type, err) != db.c.DUCKDB_V2_ERROR_NONE) {
-            return db.c.DUCKDB_V2_ERROR_API;
+        var child_type: v2.duckdb_v2_logical_type_handle = undefined;
+        if (helpers.createTypeFromId(ctx, logicalTypeId(E), &child_type, err) != .ERROR_NONE) {
+            return .ERROR_API;
         }
-        defer _ = db.logicalTypeDestroy(&child_type);
-        return db.contextCreateListType(ctx, child_type, out_type, err);
+        defer _ = v2.duckdb_v2_logical_type_destroy(&child_type);
+        return helpers.createListType(ctx, child_type, out_type, err);
     }
     if (comptime isStructType(T)) {
         const struct_info = @typeInfo(T).@"struct";
         const num_struct_fields = struct_info.field_names.len;
-        var names: [num_struct_fields]db.IdentifierT = undefined;
-        var field_types: [num_struct_fields]db.LogicalTypeHandle = undefined;
-        var field_type_values: [num_struct_fields]db.ValueHandle = undefined;
+        var names: [num_struct_fields]v2.duckdb_v2_identifier_t = undefined;
+        var field_types: [num_struct_fields]v2.duckdb_v2_logical_type_handle = undefined;
+        var field_type_values: [num_struct_fields]v2.duckdb_v2_value_handle = undefined;
         inline for (struct_info.field_names, struct_info.field_types, 0..) |name_, type_, i| {
-            names[i] = db.str(name_);
-            if (db.contextCreateTypeFromId(ctx, duckdbV2TypeId(type_), &field_types[i], err) != db.c.DUCKDB_V2_ERROR_NONE) {
-                return db.c.DUCKDB_V2_ERROR_API;
+            names[i] = helpers.str(name_);
+            if (helpers.createTypeFromId(ctx, logicalTypeId(type_), &field_types[i], err) != .ERROR_NONE) {
+                return .ERROR_API;
             }
         }
         defer {
-            for (&field_types) |*ty| _ = db.logicalTypeDestroy(ty);
+            for (&field_types) |*ty| _ = v2.duckdb_v2_logical_type_destroy(ty);
         }
-        return db.contextCreateStructType(ctx, &names, &field_types, &field_type_values, out_type, err);
+        return helpers.createStructType(ctx, &names, &field_types, &field_type_values, out_type, err);
     }
     if (comptime isArrayType(T)) {
         const text = comptime sqlTypeName(ArrayElemType(T)) ++ std.fmt.comptimePrint("[{d}]", .{ArrayLen(T)});
-        return db.contextCreateTypeFromText(ctx, text, out_type, err);
+        return helpers.createTypeFromText(ctx, text, out_type, err);
     }
     if (comptime isEnumType(T)) {
-        return db.contextCreateTypeFromText(ctx, comptime enumSqlText(T), out_type, err);
+        return helpers.createTypeFromText(ctx, comptime enumSqlText(T), out_type, err);
     }
-    return db.contextCreateTypeFromId(ctx, duckdbV2TypeId(T), out_type, err);
+    return helpers.createTypeFromId(ctx, logicalTypeId(T), out_type, err);
 }
 
 /// Box a single leaf value as a `Value` (VARCHAR included — unlike the
 /// numeric leaf types, VARCHAR has no raw-buffer write path, same as in
 /// the original VARCHAR-only version of this file).
-fn buildLeafValue(ctx: db.ContextHandle, comptime T: type, value: T, err: *db.ErrorInfoHandle) !db.ValueHandle {
-    var v: db.ValueHandle = undefined;
+fn buildLeafValue(ctx: v2.duckdb_v2_context_handle, comptime T: type, value: T, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_value_handle {
+    var v: v2.duckdb_v2_value_handle = undefined;
     const code = switch (T) {
-        i8 => db.valueCreateTinyintWithContext(ctx, value, &v, err),
-        i16 => db.valueCreateSmallintWithContext(ctx, value, &v, err),
-        i32 => db.valueCreateIntWithContext(ctx, value, &v, err),
-        i64 => db.valueCreateBigintWithContext(ctx, value, &v, err),
-        f32 => db.valueCreateFloatWithContext(ctx, value, &v, err),
-        f64 => db.valueCreateDoubleWithContext(ctx, value, &v, err),
-        bool => db.valueCreateBoolWithContext(ctx, value, &v, err),
-        []const u8 => db.valueCreateVarcharWithContext(ctx, value, &v, err),
+        i8 => v2.duckdb_v2_value_create_tinyint_with_context(ctx, value, &v, err),
+        i16 => v2.duckdb_v2_value_create_smallint_with_context(ctx, value, &v, err),
+        i32 => v2.duckdb_v2_value_create_int_with_context(ctx, value, &v, err),
+        i64 => v2.duckdb_v2_value_create_bigint_with_context(ctx, value, &v, err),
+        f32 => v2.duckdb_v2_value_create_float_with_context(ctx, value, &v, err),
+        f64 => v2.duckdb_v2_value_create_double_with_context(ctx, value, &v, err),
+        bool => v2.duckdb_v2_value_create_bool_with_context(ctx, value, &v, err),
+        []const u8 => helpers.createVarcharValue(ctx, value, &v, err),
         else => @compileError("unsupported leaf type for DuckDB v2 value boxing: " ++ @typeName(T)),
     };
-    if (code != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+    if (code != .ERROR_NONE) return error.DuckDbError;
     return v;
 }
 
@@ -312,84 +341,84 @@ fn buildLeafValue(ctx: db.ContextHandle, comptime T: type, value: T, err: *db.Er
 /// Children are boxed into a short-lived `std.heap.c_allocator` allocation
 /// (a Zig slice's length isn't known at comptime) and destroyed before
 /// returning — `valueCreateListWithContext` copies them in.
-fn buildListValue(ctx: db.ContextHandle, comptime E: type, items: []const E, err: *db.ErrorInfoHandle) !db.ValueHandle {
+fn buildListValue(ctx: v2.duckdb_v2_context_handle, comptime E: type, items: []const E, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_value_handle {
     const allocator = std.heap.c_allocator;
-    const children = try allocator.alloc(db.ValueHandle, items.len);
+    const children = try allocator.alloc(v2.duckdb_v2_value_handle, items.len);
     defer allocator.free(children);
 
     var created: usize = 0;
     errdefer {
-        for (children[0..created]) |*c| _ = db.valueDestroy(c);
+        for (children[0..created]) |*c| _ = v2.duckdb_v2_value_destroy(c);
     }
     for (items, 0..) |item, i| {
         children[i] = try buildLeafValue(ctx, E, item, err);
         created = i + 1;
     }
     defer {
-        for (children) |*c| _ = db.valueDestroy(c);
+        for (children) |*c| _ = v2.duckdb_v2_value_destroy(c);
     }
 
-    var child_type: db.LogicalTypeHandle = undefined;
-    if (db.contextCreateTypeFromId(ctx, duckdbV2TypeId(E), &child_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
-    defer _ = db.logicalTypeDestroy(&child_type);
+    var child_type: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createTypeFromId(ctx, logicalTypeId(E), &child_type, err) != .ERROR_NONE) return error.DuckDbError;
+    defer _ = v2.duckdb_v2_logical_type_destroy(&child_type);
 
-    var out: db.ValueHandle = undefined;
-    if (db.valueCreateListWithContext(ctx, child_type, children, &out, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+    var out: v2.duckdb_v2_value_handle = undefined;
+    if (helpers.createListValue(ctx, child_type, children, &out, err) != .ERROR_NONE) return error.DuckDbError;
     return out;
 }
 
 /// Box a `[N]E` fixed-size array as an ARRAY `Value`: box each element,
 /// then wrap. Same ownership shape as `buildListValue`; the array's size
 /// IS `items.len`, no separate size parameter.
-fn buildArrayValue(ctx: db.ContextHandle, comptime E: type, items: []const E, err: *db.ErrorInfoHandle) !db.ValueHandle {
+fn buildArrayValue(ctx: v2.duckdb_v2_context_handle, comptime E: type, items: []const E, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_value_handle {
     const allocator = std.heap.c_allocator;
-    const children = try allocator.alloc(db.ValueHandle, items.len);
+    const children = try allocator.alloc(v2.duckdb_v2_value_handle, items.len);
     defer allocator.free(children);
 
     var created: usize = 0;
     errdefer {
-        for (children[0..created]) |*c| _ = db.valueDestroy(c);
+        for (children[0..created]) |*c| _ = v2.duckdb_v2_value_destroy(c);
     }
     for (items, 0..) |item, i| {
         children[i] = try buildLeafValue(ctx, E, item, err);
         created = i + 1;
     }
     defer {
-        for (children) |*c| _ = db.valueDestroy(c);
+        for (children) |*c| _ = v2.duckdb_v2_value_destroy(c);
     }
 
-    var child_type: db.LogicalTypeHandle = undefined;
-    if (db.contextCreateTypeFromId(ctx, duckdbV2TypeId(E), &child_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
-    defer _ = db.logicalTypeDestroy(&child_type);
+    var child_type: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createTypeFromId(ctx, logicalTypeId(E), &child_type, err) != .ERROR_NONE) return error.DuckDbError;
+    defer _ = v2.duckdb_v2_logical_type_destroy(&child_type);
 
-    var out: db.ValueHandle = undefined;
-    if (db.valueCreateArrayWithContext(ctx, child_type, children, &out, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+    var out: v2.duckdb_v2_value_handle = undefined;
+    if (helpers.createArrayValue(ctx, child_type, children, &out, err) != .ERROR_NONE) return error.DuckDbError;
     return out;
 }
 
 /// Box a one-level STRUCT `Row` field as a STRUCT `Value`: box each field,
 /// then wrap, field names taken from `T`'s own Zig field names.
-fn buildStructValue(ctx: db.ContextHandle, comptime T: type, value: T, err: *db.ErrorInfoHandle) !db.ValueHandle {
+fn buildStructValue(ctx: v2.duckdb_v2_context_handle, comptime T: type, value: T, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_value_handle {
     const struct_info = @typeInfo(T).@"struct";
     const num_struct_fields = struct_info.field_names.len;
-    var names: [num_struct_fields]db.IdentifierT = undefined;
-    var children: [num_struct_fields]db.ValueHandle = undefined;
+    var names: [num_struct_fields]v2.duckdb_v2_identifier_t = undefined;
+    var children: [num_struct_fields]v2.duckdb_v2_value_handle = undefined;
 
     var created: usize = 0;
     errdefer {
-        for (children[0..created]) |*c| _ = db.valueDestroy(c);
+        for (children[0..created]) |*c| _ = v2.duckdb_v2_value_destroy(c);
     }
     inline for (struct_info.field_names, struct_info.field_types, 0..) |name_, type_, i| {
-        names[i] = db.str(name_);
+        names[i] = helpers.str(name_);
         children[i] = try buildLeafValue(ctx, type_, @field(value, name_), err);
         created = i + 1;
     }
     defer {
-        for (&children) |*c| _ = db.valueDestroy(c);
+        for (&children) |*c| _ = v2.duckdb_v2_value_destroy(c);
     }
 
-    var out: db.ValueHandle = undefined;
-    if (db.valueCreateStructWithContext(ctx, &names, &children, &out, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+    var out: v2.duckdb_v2_value_handle = undefined;
+    if (helpers.createStructValue(ctx, &names, &children, &out, err) != .ERROR_NONE) return error.DuckDbError;
     return out;
 }
 
@@ -398,7 +427,7 @@ fn buildStructValue(ctx: db.ContextHandle, comptime T: type, value: T, err: *db.
 /// NOT handled here — it needs the column's own `LogicalTypeHandle` to
 /// cast against, which this function has no way to receive; see `append`'s
 /// dedicated enum branch instead.
-fn buildValue(ctx: db.ContextHandle, comptime T: type, value: T, err: *db.ErrorInfoHandle) !db.ValueHandle {
+fn buildValue(ctx: v2.duckdb_v2_context_handle, comptime T: type, value: T, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_value_handle {
     if (comptime isListType(T)) {
         return buildListValue(ctx, ListElemType(T), value, err);
     }
@@ -424,54 +453,60 @@ pub fn Appender(comptime Row: type) type {
     return struct {
         const Self = @This();
 
-        ctx: db.ContextHandle,
-        collection: db.ColumnDataCollectionHandle,
-        append_state: db.ColumnDataCollectionAppendStateHandle,
-        chunk: db.DataChunkHandle,
+        ctx: v2.duckdb_v2_context_handle,
+        collection: v2.duckdb_v2_column_data_collection_handle,
+        append_state: v2.duckdb_v2_column_data_collection_append_state_handle,
+        chunk: v2.duckdb_v2_data_chunk_handle,
         /// Kept alive for the Appender's whole lifetime (unlike every
         /// other field shape, which only needs its column type transiently
         /// while building the collection/chunk): an ENUM field's `append`
         /// casts against `types[i]` directly — see this file's module doc
         /// comment on ENUM. Released in `destroy`.
-        types: [num_fields]db.LogicalTypeHandle,
-        capacity: db.idx_t,
+        types: [num_fields]v2.duckdb_v2_logical_type_handle,
+        capacity: u64,
         /// Rows written into `chunk` since the last flush. Every vector in
         /// `chunk` is kept sized to `capacity` (not `buffered`) between
         /// writes — see assumption 1 in the module doc comment — and
         /// shrunk to `buffered` only transiently, inside `flush`, for the
         /// `columnDataCollectionAppend` call itself.
-        buffered: db.idx_t,
+        buffered: u64,
 
+        /// Create an appender for `Row`s under `ctx`.
         pub fn create(ctx: db.ContextHandle, err: *db.ErrorInfoHandle) !Self {
-            var types: [num_fields]db.LogicalTypeHandle = undefined;
+            return createGenerated(toContext(ctx), toError(err));
+        }
+
+        /// `create` for code that has the generated bindings' handles, which need no conversion.
+        pub fn createGenerated(ctx: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) !Self {
+            var types: [num_fields]v2.duckdb_v2_logical_type_handle = undefined;
             var types_created: usize = 0;
             errdefer {
-                for (types[0..types_created]) |*ty| _ = db.logicalTypeDestroy(ty);
+                for (types[0..types_created]) |*ty| _ = v2.duckdb_v2_logical_type_destroy(ty);
             }
             inline for (field_types, 0..) |t, i| {
-                if (createColumnType(ctx, t, &types[i], err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                if (createColumnType(ctx, t, &types[i], err) != .ERROR_NONE) {
                     return error.FailedToCreateColumnType;
                 }
                 types_created = i + 1;
             }
 
-            var collection: db.ColumnDataCollectionHandle = undefined;
-            if (db.columnDataCollectionCreateWithContext(ctx, &types, &collection, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var collection: v2.duckdb_v2_column_data_collection_handle = undefined;
+            if (helpers.createColumnDataCollection(ctx, &types, &collection, err) != .ERROR_NONE) {
                 return error.FailedToCreateCollection;
             }
-            errdefer _ = db.columnDataCollectionDestroy(&collection);
+            errdefer _ = v2.duckdb_v2_column_data_collection_destroy(&collection);
 
-            var append_state: db.ColumnDataCollectionAppendStateHandle = undefined;
-            if (db.columnDataCollectionAppendStateCreate(collection, &append_state, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var append_state: v2.duckdb_v2_column_data_collection_append_state_handle = undefined;
+            if (v2.duckdb_v2_column_data_collection_append_state_create(collection, &append_state, err) != .ERROR_NONE) {
                 return error.FailedToCreateAppendState;
             }
-            errdefer _ = db.columnDataCollectionAppendStateDestroy(&append_state);
+            errdefer _ = v2.duckdb_v2_column_data_collection_append_state_destroy(&append_state);
 
-            var chunk: db.DataChunkHandle = undefined;
-            if (db.dataChunkCreateWithContext(ctx, &types, &chunk, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var chunk: v2.duckdb_v2_data_chunk_handle = undefined;
+            if (helpers.createDataChunk(ctx, &types, &chunk, err) != .ERROR_NONE) {
                 return error.FailedToCreateChunk;
             }
-            errdefer _ = db.dataChunkDestroy(&chunk);
+            errdefer _ = v2.duckdb_v2_data_chunk_destroy(&chunk);
 
             var self: Self = .{
                 .ctx = ctx,
@@ -489,26 +524,31 @@ pub fn Appender(comptime Row: type) type {
         /// Pre-grow every vector in `chunk` to `capacity` so a raw write at
         /// any row index up to `capacity` is in bounds — see assumption 1
         /// in the module doc comment.
-        fn growVectorsToCapacity(self: *Self, err: *db.ErrorInfoHandle) !void {
+        fn growVectorsToCapacity(self: *Self, err: *v2.duckdb_v2_error_info_handle) !void {
             inline for (0..num_fields) |i| {
-                var vec: db.VectorHandle = undefined;
-                if (db.dataChunkGetVector(self.chunk, i, &vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
-                if (db.vectorSetSize(vec, self.capacity, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+                var vec: v2.duckdb_v2_vector_handle = undefined;
+                if (v2.duckdb_v2_data_chunk_get_vector(self.chunk, i, &vec, err) != .ERROR_NONE) return error.DuckDbError;
+                if (v2.duckdb_v2_vector_set_size(vec, self.capacity, err) != .ERROR_NONE) return error.DuckDbError;
             }
         }
 
         /// Buffer one row, auto-flushing a full chunk first.
         pub fn append(self: *Self, row: Row, err: *db.ErrorInfoHandle) !void {
-            if (self.buffered == self.capacity) try self.flush(err);
+            return self.appendGenerated(row, toError(err));
+        }
+
+        /// `append` for code that has the generated bindings' handles.
+        pub fn appendGenerated(self: *Self, row: Row, err: *v2.duckdb_v2_error_info_handle) !void {
+            if (self.buffered == self.capacity) try self.flushGenerated(err);
 
             inline for (0..num_fields) |i| {
-                var vec: db.VectorHandle = undefined;
-                if (db.dataChunkGetVector(self.chunk, i, &vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+                var vec: v2.duckdb_v2_vector_handle = undefined;
+                if (v2.duckdb_v2_data_chunk_get_vector(self.chunk, i, &vec, err) != .ERROR_NONE) return error.DuckDbError;
                 const T = field_types[i];
                 const field_value = @field(row, field_names[i]);
                 if (comptime isLeafScalarType(T)) {
                     var out_data: ?*anyopaque = null;
-                    if (db.vectorGetDataMutable(vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+                    if (v2.duckdb_v2_vector_get_data_mutable(vec, &out_data, err) != .ERROR_NONE) return error.DuckDbError;
                     // SAFETY: vector `i` was created from `types[i]`, which maps to `T` via `duckdbV2TypeId`.
                     const ptr: [*]T = @ptrCast(@alignCast(out_data));
                     ptr[self.buffered] = field_value;
@@ -518,18 +558,18 @@ pub fn Appender(comptime Row: type) type {
                     // (`self.types[i]`), the same way `'a'::my_enum` works
                     // in SQL. See this file's module doc comment on ENUM.
                     var text_value = try buildLeafValue(self.ctx, []const u8, @tagName(field_value), err);
-                    defer _ = db.valueDestroy(&text_value);
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCastWithContext(self.ctx, text_value, self.types[i], &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(vec, self.buffered, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+                    defer _ = v2.duckdb_v2_value_destroy(&text_value);
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (v2.duckdb_v2_value_cast_with_context(self.ctx, text_value, self.types[i], &value, err) != .ERROR_NONE) return error.DuckDbError;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(vec, self.buffered, value, err) != .ERROR_NONE) return error.DuckDbError;
                 } else {
                     // VARCHAR, LIST, STRUCT, and ARRAY all go through boxed
                     // Value — none has a raw-buffer write path (see this
                     // file's doc comment on LIST/STRUCT/ARRAY).
                     var value = try buildValue(self.ctx, T, field_value, err);
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(vec, self.buffered, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(vec, self.buffered, value, err) != .ERROR_NONE) return error.DuckDbError;
                 }
             }
             self.buffered += 1;
@@ -537,14 +577,19 @@ pub fn Appender(comptime Row: type) type {
 
         /// Force any buffered rows into the collection now.
         pub fn flush(self: *Self, err: *db.ErrorInfoHandle) !void {
+            return self.flushGenerated(toError(err));
+        }
+
+        /// `flush` for code that has the generated bindings' handles.
+        pub fn flushGenerated(self: *Self, err: *v2.duckdb_v2_error_info_handle) !void {
             if (self.buffered == 0) return;
 
             inline for (0..num_fields) |i| {
-                var vec: db.VectorHandle = undefined;
-                if (db.dataChunkGetVector(self.chunk, i, &vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
-                if (db.vectorSetSize(vec, self.buffered, err) != db.c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
+                var vec: v2.duckdb_v2_vector_handle = undefined;
+                if (v2.duckdb_v2_data_chunk_get_vector(self.chunk, i, &vec, err) != .ERROR_NONE) return error.DuckDbError;
+                if (v2.duckdb_v2_vector_set_size(vec, self.buffered, err) != .ERROR_NONE) return error.DuckDbError;
             }
-            if (db.columnDataCollectionAppend(self.collection, self.append_state, self.chunk, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_column_data_collection_append(self.collection, self.append_state, self.chunk, err) != .ERROR_NONE) {
                 return error.FailedToAppendChunk;
             }
             self.buffered = 0;
@@ -556,7 +601,12 @@ pub fn Appender(comptime Row: type) type {
 
         /// Flush and hand back the collection; the caller now owns it.
         pub fn finish(self: *Self, err: *db.ErrorInfoHandle) !db.ColumnDataCollectionHandle {
-            try self.flush(err);
+            return toCollection(try self.finishGenerated(toError(err)));
+        }
+
+        /// `finish` for code that has the generated bindings' handles.
+        pub fn finishGenerated(self: *Self, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_column_data_collection_handle {
+            try self.flushGenerated(err);
             return self.collection;
         }
 
@@ -564,9 +614,9 @@ pub fn Appender(comptime Row: type) type {
         /// NOT destroy the collection (see `finish`). Safe to call whether
         /// or not `finish` was called first.
         pub fn destroy(self: *Self) void {
-            _ = db.dataChunkDestroy(&self.chunk);
-            _ = db.columnDataCollectionAppendStateDestroy(&self.append_state);
-            for (&self.types) |*ty| _ = db.logicalTypeDestroy(ty);
+            _ = v2.duckdb_v2_data_chunk_destroy(&self.chunk);
+            _ = v2.duckdb_v2_column_data_collection_append_state_destroy(&self.append_state);
+            for (&self.types) |*ty| _ = v2.duckdb_v2_logical_type_destroy(ty);
         }
     };
 }
@@ -621,4 +671,29 @@ test "Appender supports an ENUM column" {
     const Row = struct { status: Status };
     const A = Appender(Row);
     _ = &A.create;
+}
+
+test "logicalTypeId and sqlTypeName agree for every leaf type" {
+    const Pair = struct { T: type, id: v2.DUCKDB_V2_LOGICAL_TYPE_ID, name: []const u8 };
+    const pairs = [_]Pair{
+        .{ .T = i8, .id = .LOGICAL_TYPE_ID_TINYINT, .name = "TINYINT" },
+        .{ .T = i16, .id = .LOGICAL_TYPE_ID_SMALLINT, .name = "SMALLINT" },
+        .{ .T = i32, .id = .LOGICAL_TYPE_ID_INTEGER, .name = "INTEGER" },
+        .{ .T = i64, .id = .LOGICAL_TYPE_ID_BIGINT, .name = "BIGINT" },
+        .{ .T = f32, .id = .LOGICAL_TYPE_ID_FLOAT, .name = "FLOAT" },
+        .{ .T = f64, .id = .LOGICAL_TYPE_ID_DOUBLE, .name = "DOUBLE" },
+        .{ .T = bool, .id = .LOGICAL_TYPE_ID_BOOLEAN, .name = "BOOLEAN" },
+        .{ .T = []const u8, .id = .LOGICAL_TYPE_ID_VARCHAR, .name = "VARCHAR" },
+    };
+    inline for (pairs) |pair| {
+        try std.testing.expectEqual(pair.id, logicalTypeId(pair.T));
+        try std.testing.expectEqualStrings(pair.name, sqlTypeName(pair.T));
+        // The public spelling is the same id in the hand-written layer's type.
+        try std.testing.expectEqual(@as(db.LogicalTypeId, @intCast(@backingInt(pair.id))), duckdbV2TypeId(pair.T));
+    }
+}
+
+test "enumSqlText lists the variants in declaration order" {
+    const Status = enum { pending, active, done };
+    try std.testing.expectEqualStrings("ENUM('pending','active','done')", enumSqlText(Status));
 }

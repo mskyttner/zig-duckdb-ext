@@ -111,6 +111,38 @@ pub fn createMapValue(
     return v2.duckdb_v2_value_create_map_with_context(ctx, key_type, value_type, keys.ptr, values.ptr, keys.len, out_value, err);
 }
 
+/// A STRUCT value of `children`, named `names`; both are copied.
+pub fn createStructValue(
+    ctx: v2.duckdb_v2_context_handle,
+    names: []const v2.duckdb_v2_identifier_t,
+    children: []const v2.duckdb_v2_value_handle,
+    out_value: *v2.duckdb_v2_value_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    std.debug.assert(names.len == children.len);
+    return v2.duckdb_v2_value_create_struct_with_context(ctx, names.ptr, children.ptr, names.len, out_value, err);
+}
+
+/// A column data collection with one column per entry of `types`.
+pub fn createColumnDataCollection(
+    ctx: v2.duckdb_v2_context_handle,
+    types: []const v2.duckdb_v2_logical_type_handle,
+    out_collection: *v2.duckdb_v2_column_data_collection_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    return v2.duckdb_v2_column_data_collection_create_with_context(ctx, types.ptr, types.len, out_collection, err);
+}
+
+/// A data chunk with one column per entry of `types`.
+pub fn createDataChunk(
+    ctx: v2.duckdb_v2_context_handle,
+    types: []const v2.duckdb_v2_logical_type_handle,
+    out_chunk: *v2.duckdb_v2_data_chunk_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    return v2.duckdb_v2_data_chunk_create_with_context(ctx, types.ptr, types.len, out_chunk, err);
+}
+
 // --- Parametrised logical types -----------------------------------------------------------------
 //
 // LIST, ARRAY, MAP, STRUCT, UNION and DECIMAL types are created by one call, `context_create_type_from_id`,
