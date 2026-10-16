@@ -897,7 +897,7 @@ const TotalLenCt = comptime_aggregate_v2.Function("zig_v2_total_len_ct", struct 
 
 /// Proves VARCHAR as an aggregate `finalize` return type through the
 /// generic framework path: last string seen in the group, both under and
-/// over the 12-byte inline threshold (exercises both `makeBytesValue`
+/// over the 12-byte inline threshold (exercises both `v2_helpers.makeBytesValue`
 /// branches against the live runtime).
 const LastSeenCt = comptime_aggregate_v2.Function("zig_v2_last_seen_ct", struct {
     buf: [128]u8,

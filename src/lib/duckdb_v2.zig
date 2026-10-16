@@ -1835,32 +1835,6 @@ pub fn arenaAllocate(arena: ArenaHandle, byte_len: idx_t, out_ptr: *?[*]u8, err:
     return getApi().duckdb_v2_arena_allocate.?(arena, byte_len, out_ptr, err);
 }
 
-/// Hand-construct a `BytesValue` for `text`, inlining when it fits in 12
-/// bytes and otherwise copying into `arena`-owned memory. The counterpart
-/// write path to `bytesSlice`'s decode, for callbacks with no `context`
-/// handle (see `vectorGetArena`'s doc comment).
-pub fn makeBytesValue(arena: ArenaHandle, text: []const u8, err: *ErrorInfoHandle) !BytesValue {
-    var b: BytesValue = undefined;
-    if (text.len <= 12) {
-        b.value.inlined.length = @intCast(text.len);
-        @memcpy(b.value.inlined.inlined[0..text.len], text);
-    } else {
-        var out_ptr: ?[*]u8 = null;
-        if (arenaAllocate(arena, text.len, &out_ptr, err) != c.DUCKDB_V2_ERROR_NONE) return error.DuckDbError;
-        const dst = out_ptr.?[0..text.len];
-        @memcpy(dst, text);
-        b.value.pointer.length = @intCast(text.len);
-        const prefix_len = @min(text.len, 4);
-        @memcpy(b.value.pointer.prefix[0..prefix_len], text[0..prefix_len]);
-        if (prefix_len < 4) @memset(b.value.pointer.prefix[prefix_len..4], 0);
-        // SAFETY: `pointer.ptr` is `[*c]u8` in the translated header; `out_ptr`
-        // is arena-owned memory valid for the arena's lifetime (per
-        // `arenaAllocate`'s doc comment), handed to DuckDB without a copy.
-        b.value.pointer.ptr = @ptrCast(out_ptr.?);
-    }
-    return b;
-}
-
 // ─── Tests ────────────────────────────────────────────────────────────────
 //
 // Worked examples exercising these bindings (scalar/table/aggregate,

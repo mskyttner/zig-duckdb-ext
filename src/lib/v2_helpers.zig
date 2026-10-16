@@ -239,8 +239,11 @@ test "str views the bytes it is given" {
 /// A VARCHAR (or BLOB) value holding `text`, for writing straight into a result vector. Text of up to
 /// `DUCKDB_V2_BYTES_INLINE_LENGTH` bytes is stored inline; longer text is copied into `arena`, which
 /// the vector owns, so it lives as long as the result does.
+///
+/// The value starts zeroed: DuckDB compares, hashes and sorts an inline string by all of its bytes, so
+/// the ones after the text must be defined (zero, as DuckDB's own constructor leaves them).
 pub fn makeBytesValue(arena: v2.duckdb_v2_arena_handle, text: []const u8, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_bytes {
-    var b: v2.duckdb_v2_bytes = undefined;
+    var b = std.mem.zeroes(v2.duckdb_v2_bytes);
     if (text.len <= v2.DUCKDB_V2_BYTES_INLINE_LENGTH) {
         b.value.inlined.length = @intCast(text.len);
         @memcpy(b.value.inlined.inlined[0..text.len], text);
@@ -313,6 +316,14 @@ test "makeBytesValue stores short text inline and reads it back" {
     const arena: v2.duckdb_v2_arena_handle = @ptrFromInt(0x10);
     const b = try makeBytesValue(arena, "short", &err);
     try std.testing.expectEqualStrings("short", bytesSlice(&b));
+}
+
+test "makeBytesValue zeroes the bytes after short text" {
+    var err: v2.duckdb_v2_error_info_handle = undefined;
+    const arena: v2.duckdb_v2_arena_handle = @ptrFromInt(0x10);
+    const b = try makeBytesValue(arena, "ab", &err);
+    const zeros: [10]u8 = @splat(0);
+    try std.testing.expectEqualSlices(u8, &zeros, b.value.inlined.inlined[2..]);
 }
 
 test "makeBytesValue copies longer text into the arena, with its first four bytes as the prefix" {

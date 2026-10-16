@@ -1260,3 +1260,46 @@ zig_v2_gram3_ct
 x1,x2,x3
 zig_v2_weighted_avg_ct
 a0,a1
+
+# A short VARCHAR result (up to 12 bytes, stored inline) is a value like any other: it compares, hashes, groups,
+# sorts and joins as the same text does. The bytes after the text used to be uninitialised, so it did none of that.
+query TTTT
+SELECT zig_v2_last_seen_ct(s) = 'short', zig_v2_last_seen_ct(s) = 'shorX', zig_v2_last_seen_ct(s) < 'zzz', hash(zig_v2_last_seen_ct(s)) = hash('short') FROM (VALUES ('short')) t(s)
+----
+true
+false
+true
+true
+
+query TT
+SELECT zig_v2_last_seen_ct('') = '', zig_v2_last_seen_ct('x') = 'x'
+----
+true
+true
+
+# The boundary: 12 bytes are inline, 13 are behind a pointer.
+query TT
+SELECT zig_v2_last_seen_ct('123456789012') = '123456789012', zig_v2_last_seen_ct('1234567890123') = '1234567890123'
+----
+true
+true
+
+query T
+SELECT zig_v2_1brc_stats_ct(t) = '1.0/1.0/1.0' FROM (VALUES (1.0)) t(t)
+----
+true
+
+query I
+SELECT count(DISTINCT a) FROM (SELECT i % 50 AS g, zig_v2_last_seen_ct('ab') AS a FROM range(1000) t(i) GROUP BY g)
+----
+1
+
+query T
+SELECT string_agg(a, ',' ORDER BY a) FROM (SELECT i % 3 AS g, zig_v2_last_seen_ct(CASE i % 3 WHEN 0 THEN 'cc' WHEN 1 THEN 'a' ELSE 'bbb' END) AS a FROM range(30) t(i) GROUP BY g)
+----
+a,bbb,cc
+
+query I
+SELECT count(*) FROM (SELECT zig_v2_last_seen_ct(CASE i % 3 WHEN 0 THEN 'cc' WHEN 1 THEN 'a' ELSE 'bbb' END) AS a FROM range(30) t(i) GROUP BY i % 3) r JOIN (VALUES ('a'), ('bbb'), ('cc'), ('zzz')) k(v) ON r.a = k.v
+----
+3
