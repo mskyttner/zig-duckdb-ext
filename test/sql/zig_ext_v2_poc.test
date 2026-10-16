@@ -621,3 +621,149 @@ SELECT b, a FROM zig_v2_project_ct(2)
 0
 2
 1
+
+# ── custom casts (comptime_cast_v2) ──
+# The PoC registers casts that replace or extend DuckDB's: VARCHAR -> BIGINT that also reads "one".."five",
+# DECIMAL(10,2) <-> DOUBLE, ENUM('sad','neutral','happy') -> BIGINT (the Zig enum's own values 1, 5, 9) and
+# VARCHAR -> that ENUM, BIGINT -> STRUCT(x, y) with y = 2x, VARIANT -> BIGINT (1, or -1 for a NULL cell),
+# and ENUM -> VARCHAR and STRUCT -> VARCHAR. Only explicit CASTs are used: TRY_CAST does not reach a custom
+# cast reliably on this DuckDB build (see comptime_cast_v2.zig).
+
+# VARCHAR -> BIGINT: words, digits, a failed conversion, and a whole column
+
+query IIIII
+SELECT CAST('one' AS BIGINT), CAST('five' AS BIGINT), CAST('42' AS BIGINT), CAST('-7' AS BIGINT), CAST('1234567890123' AS BIGINT)
+----
+1
+5
+42
+-7
+1234567890123
+
+query I
+SELECT CAST(NULL::VARCHAR AS BIGINT)
+----
+NULL
+
+statement error
+SELECT CAST('abc' AS BIGINT)
+----
+cast failed
+
+statement error
+SELECT CAST(w AS BIGINT) FROM (VALUES ('one'), ('x9'), ('5')) t(w)
+----
+cast failed
+
+query T
+SELECT md5(string_agg(CAST(w AS BIGINT)::VARCHAR, ',' ORDER BY ord)) FROM (SELECT i AS ord, CASE WHEN i % 7 = 0 THEN 'three' WHEN i % 5 = 0 THEN 'five' ELSE i::VARCHAR END AS w FROM generate_series(1, 5000) t(i))
+----
+63452c7400feacac9f95c78bb99428e8
+
+# DECIMAL(10,2) -> DOUBLE and back
+
+query RRR
+SELECT CAST(12.34::DECIMAL(10,2) AS DOUBLE), CAST(0.01::DECIMAL(10,2) AS DOUBLE), CAST(-99999999.99::DECIMAL(10,2) AS DOUBLE)
+----
+12.34
+0.01
+-99999999.99
+
+query RRR
+SELECT CAST(12.345::DOUBLE AS DECIMAL(10,2)), CAST(0.005::DOUBLE AS DECIMAL(10,2)), CAST(-1.5::DOUBLE AS DECIMAL(10,2))
+----
+12.35
+0.01
+-1.50
+
+query T
+SELECT md5(string_agg(CAST(CAST(CAST(i AS VARCHAR) || '.' || LPAD(CAST(i % 100 AS VARCHAR), 2, '0') AS DECIMAL(10,2)) AS DOUBLE)::VARCHAR, ',' ORDER BY i)) FROM generate_series(1, 3000) t(i)
+----
+a0e6c0d463efc04938e404c0a5997954
+
+query T
+SELECT md5(string_agg(CAST(CAST(i AS DOUBLE) / 8.0 AS DECIMAL(10,2))::VARCHAR, ',' ORDER BY i)) FROM generate_series(1, 3000) t(i)
+----
+5859ebb30fd2a2749de8d8566160fdc5
+
+# ENUM and VARCHAR -> ENUM, with the enum read as the Zig enum's values
+
+query III
+SELECT CAST(CAST('sad' AS ENUM('sad','neutral','happy')) AS BIGINT), CAST(CAST('neutral' AS ENUM('sad','neutral','happy')) AS BIGINT), CAST(CAST('happy' AS ENUM('sad','neutral','happy')) AS BIGINT)
+----
+1
+5
+9
+
+statement error
+SELECT CAST('bogus' AS ENUM('sad','neutral','happy'))
+----
+cast failed
+
+query T
+SELECT string_agg(CAST(CAST(x AS ENUM('sad','neutral','happy')) AS BIGINT)::VARCHAR, ',' ORDER BY ord) FROM (VALUES (1, 'sad'), (2, 'happy'), (3, 'neutral')) t(ord, x)
+----
+1,9,5
+
+query T
+SELECT md5(string_agg(CAST(CAST(CASE i % 3 WHEN 0 THEN 'sad' WHEN 1 THEN 'neutral' ELSE 'happy' END AS ENUM('sad','neutral','happy')) AS BIGINT)::VARCHAR, ',' ORDER BY i)) FROM generate_series(1, 3000) t(i)
+----
+470736d9125d4e198736570172c6e982
+
+# BIGINT -> STRUCT(x, y)
+
+query II
+SELECT (CAST(5::BIGINT AS STRUCT(x BIGINT, y BIGINT))).x, (CAST(5::BIGINT AS STRUCT(x BIGINT, y BIGINT))).y
+----
+5
+10
+
+query T
+SELECT md5(string_agg((CAST(i::BIGINT AS STRUCT(x BIGINT, y BIGINT))).x || ':' || (CAST(i::BIGINT AS STRUCT(x BIGINT, y BIGINT))).y, ',' ORDER BY i)) FROM generate_series(1, 3000) t(i)
+----
+dade890ef5c1e89825bdb72380a84bcb
+
+# VARIANT -> BIGINT: 1 for a value, -1 for a NULL cell (the cast function decides what NULL means)
+
+query I
+SELECT CAST(CAST(42::BIGINT AS VARIANT) AS BIGINT)
+----
+1
+
+query T
+SELECT string_agg(CAST(v AS BIGINT)::VARCHAR, ',' ORDER BY ord) FROM (VALUES (1, CAST(1::BIGINT AS VARIANT)), (2, CAST(NULL AS VARIANT)), (3, CAST('a' AS VARIANT))) t(ord, v)
+----
+1,-1,1
+
+# ── KNOWN BROKEN, pinned as it is today so that a change shows up ──
+# A custom cast over a column that has a NULL row fails: the cast writes the NULL with vector_set_null, and
+# DuckDB answers "row out of range" — the output vector's size is never set by the framework. The same
+# omission explains ENUM -> VARCHAR and STRUCT -> VARCHAR, which write through vector_set_value. DuckDB reports some of these as an INTERNAL error,
+# which ends the session: at most one such case can be pinned, and it has to be the last block. It is
+# ENUM -> VARCHAR. Also failing the same way and therefore not pinned: STRUCT -> VARCHAR, ENUM -> BIGINT and
+# DECIMAL -> DOUBLE over a column with a NULL.
+
+statement error
+SELECT CAST(w AS BIGINT) FROM (VALUES ('one'), (NULL), ('3')) t(w)
+----
+row out of range in duckdb_v2_vector_set_null
+
+statement error
+SELECT CAST(d AS DECIMAL(10,2)) FROM (VALUES (1.5::DOUBLE), (NULL), (2.25::DOUBLE)) t(d)
+----
+row out of range in duckdb_v2_vector_set_null
+
+statement error
+SELECT CAST(x AS ENUM('sad','neutral','happy')) FROM (VALUES ('sad'), (NULL), ('happy')) t(x)
+----
+row out of range in duckdb_v2_vector_set_null
+
+statement error
+SELECT (CAST(n AS STRUCT(x BIGINT, y BIGINT))).y FROM (VALUES (1::BIGINT), (NULL), (3::BIGINT)) t(n)
+----
+row out of range in duckdb_v2_vector_set_null
+
+statement error
+SELECT CAST(CAST('sad' AS ENUM('sad','neutral','happy')) AS VARCHAR)
+----
+row out of range
