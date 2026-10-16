@@ -1148,14 +1148,14 @@ SELECT zig_v2_1brc_stats_ct(t) FROM (VALUES (1.0)) t(t) WHERE false
 NULL
 
 query T
-SELECT zig_v2_1brc_stats_ct(((i * 37) % 1999) / 10.0 - 100.0) FROM generate_series(1, 50000) t(i)
+SELECT zig_v2_1brc_stats_ct(((i * 37) % 1999) / 4.0 - 250.0) FROM generate_series(1, 50000) t(i)
 ----
--100.0/-0.1/99.8
+-250.0/-0.3/249.5
 
 query T
-SELECT md5(string_agg(g || ':' || s, ',' ORDER BY g)) FROM (SELECT i % 8 AS g, zig_v2_1brc_stats_ct(((i * 37) % 1999) / 10.0 - 100.0) AS s FROM generate_series(1, 50000) t(i) GROUP BY g)
+SELECT md5(string_agg(g || ':' || s, ',' ORDER BY g)) FROM (SELECT i % 8 AS g, zig_v2_1brc_stats_ct(((i * 37) % 1999) / 4.0 - 250.0) AS s FROM generate_series(1, 50000) t(i) GROUP BY g)
 ----
-2c89e9950543fd392bae3939e6a33c02
+eebc974fe9facb473ebc09c10698a0b4
 
 
 # zig_v2_gram3_ct: sample covariance of three columns as text; NULL below two rows; any NULL argument skips the row
@@ -1184,3 +1184,79 @@ query T
 SELECT md5(string_agg(g || ':' || c, ',' ORDER BY g)) FROM (SELECT i % 6 AS g, zig_v2_gram3_ct(i::DOUBLE, ((i * i) % 101)::DOUBLE, ((i * 13) % 97)::DOUBLE) AS c FROM generate_series(1, 40000) t(i) GROUP BY g)
 ----
 3f84ec89ff207928a9243f97fe41cf66
+
+# The same aggregates as window functions (the finalize callback then writes its results at an offset into the
+# output vector) and under ROLLUP.
+
+query I
+SELECT zig_v2_agg_sum_ct(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM range(1, 6) t(i) ORDER BY i
+----
+1
+3
+6
+9
+12
+
+query T
+SELECT md5(string_agg(w::VARCHAR, ',' ORDER BY i)) FROM (SELECT i, zig_v2_agg_sum_ct(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS w FROM range(1, 5001) t(i))
+----
+06117b263ada2dfe400142fc8d5c4b24
+
+query I
+SELECT zig_v2_agg_sum_ct(i) OVER (PARTITION BY i % 3) FROM range(1, 7) t(i) ORDER BY i
+----
+5
+7
+9
+5
+7
+9
+
+query T
+SELECT md5(string_agg(coalesce(a::VARCHAR, '-'), ',' ORDER BY i)) FROM (SELECT i, zig_v2_weighted_avg_ct(i::DOUBLE, (1 + i % 3)::DOUBLE) OVER (ORDER BY i ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS a FROM range(1, 3001) t(i))
+----
+c3d84027eb4249c2a2f3ad65f2836612
+
+query II
+SELECT g, s FROM (SELECT i % 3 AS g, zig_v2_agg_sum_ct(i) AS s FROM range(1, 7) t(i) GROUP BY ROLLUP(i % 3)) ORDER BY g NULLS LAST
+----
+0
+9
+1
+5
+2
+7
+NULL
+21
+
+# An aggregate with ORDER BY inside is finalized in batches into the middle of the output vector (the result offset
+# is not zero), unlike an unordered one. More than one vector of groups for each shape of result: a plain number,
+# a number or NULL, text or NULL.
+
+query T
+SELECT md5(string_agg(g || ':' || s, ',' ORDER BY g)) FROM (SELECT i % 3000 AS g, zig_v2_agg_sum_ct(i ORDER BY i) AS s FROM generate_series(1, 12000) t(i) GROUP BY g)
+----
+78ec6c67837435c8e9b28571d492ad84
+
+query T
+SELECT md5(string_agg(g || ':' || coalesce(a::VARCHAR, '-'), ',' ORDER BY g)) FROM (SELECT i % 3000 AS g, zig_v2_weighted_avg_ct(i::DOUBLE, CASE WHEN i % 3000 % 7 = 0 THEN 0.0 ELSE 1.0 END ORDER BY i) AS a FROM generate_series(1, 12000) t(i) GROUP BY g)
+----
+784bd3238881cb37aeccc288a4c064e4
+
+query T
+SELECT md5(string_agg(g || ':' || coalesce(m, '-'), ',' ORDER BY g)) FROM (SELECT i % 3000 AS g, zig_v2_1brc_stats_ct(CASE WHEN i % 3000 % 5 = 0 THEN NULL ELSE ((i * 37) % 1999) / 4.0 - 250.0 END ORDER BY i) AS m FROM generate_series(1, 12000) t(i) GROUP BY g)
+----
+0335f261f11fbfd40aae1a5facfc3735
+
+# Parameter names: the ones given to FunctionNamed (gram3), otherwise a0, a1, ... in order.
+query TT
+SELECT function_name, array_to_string(parameters, ',') FROM duckdb_functions() WHERE function_name IN ('zig_v2_gram3_ct', 'zig_v2_agg_sum_ct', 'zig_v2_weighted_avg_ct', 'zig_v2_arg_max_ct') ORDER BY function_name
+----
+zig_v2_agg_sum_ct
+a0
+zig_v2_arg_max_ct
+a0,a1
+zig_v2_gram3_ct
+x1,x2,x3
+zig_v2_weighted_avg_ct
+a0,a1
