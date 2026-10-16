@@ -7,10 +7,6 @@
 # Results that are big or nested are compared by md5() of an aggregated string whose expected value was
 # computed independently of the extension; small ones are written out.
 #
-# Not displayed anywhere on purpose: values of the PoC's own STRUCT point type and ENUM mood type. The PoC
-# also registers custom casts for them (comptime_cast_v2), and those casts fail with "row out of range in
-# duckdb_v2_vector_set_value" whenever DuckDB has to render such a value; fields are extracted instead.
-
 statement ok
 SET allow_extensions_metadata_mismatch=true
 
@@ -735,35 +731,168 @@ SELECT string_agg(CAST(v AS BIGINT)::VARCHAR, ',' ORDER BY ord) FROM (VALUES (1,
 ----
 1,-1,1
 
-# ── KNOWN BROKEN, pinned as it is today so that a change shows up ──
-# A custom cast over a column that has a NULL row fails: the cast writes the NULL with vector_set_null, and
-# DuckDB answers "row out of range" — the output vector's size is never set by the framework. The same
-# omission explains ENUM -> VARCHAR and STRUCT -> VARCHAR, which write through vector_set_value. DuckDB reports some of these as an INTERNAL error,
-# which ends the session: at most one such case can be pinned, and it has to be the last block. It is
-# ENUM -> VARCHAR. Also failing the same way and therefore not pinned: STRUCT -> VARCHAR, ENUM -> BIGINT and
-# DECIMAL -> DOUBLE over a column with a NULL.
+# ── NULL rows, and VARCHAR targets ──
+# A NULL input row gives a NULL output row, for every custom cast, anywhere in a column. A cast whose target
+# is VARCHAR (ENUM -> VARCHAR, STRUCT -> VARCHAR) writes through vector_set_value. Both need the output
+# vector's size to be set first; the framework did not, and every case below failed with "row out of range".
 
-statement error
+query I
 SELECT CAST(w AS BIGINT) FROM (VALUES ('one'), (NULL), ('3')) t(w)
 ----
-row out of range in duckdb_v2_vector_set_null
+1
+NULL
+3
 
-statement error
+query R
 SELECT CAST(d AS DECIMAL(10,2)) FROM (VALUES (1.5::DOUBLE), (NULL), (2.25::DOUBLE)) t(d)
 ----
-row out of range in duckdb_v2_vector_set_null
+1.50
+NULL
+2.25
 
-statement error
-SELECT CAST(x AS ENUM('sad','neutral','happy')) FROM (VALUES ('sad'), (NULL), ('happy')) t(x)
+query R
+SELECT CAST(d AS DOUBLE) FROM (VALUES (1.5::DECIMAL(10,2)), (NULL), (2.25::DECIMAL(10,2))) t(d)
 ----
-row out of range in duckdb_v2_vector_set_null
+1.5
+NULL
+2.25
 
-statement error
+query I
+SELECT CAST(CAST(x AS ENUM('sad','neutral','happy')) AS BIGINT) FROM (VALUES ('sad'), (NULL), ('happy')) t(x)
+----
+1
+NULL
+9
+
+query I
 SELECT (CAST(n AS STRUCT(x BIGINT, y BIGINT))).y FROM (VALUES (1::BIGINT), (NULL), (3::BIGINT)) t(n)
 ----
-row out of range in duckdb_v2_vector_set_null
+2
+NULL
+6
 
-statement error
-SELECT CAST(CAST('sad' AS ENUM('sad','neutral','happy')) AS VARCHAR)
+query T
+SELECT CAST(x AS ENUM('sad','neutral','happy')) FROM (VALUES ('sad'), (NULL), ('happy')) t(x)
 ----
-row out of range
+sad
+NULL
+happy
+
+query T
+SELECT CAST(CAST(v AS BIGINT) AS VARCHAR) FROM (VALUES (CAST(1::BIGINT AS VARIANT)), (CAST(NULL AS VARIANT))) t(v)
+----
+1
+-1
+
+
+# ENUM -> VARCHAR and STRUCT -> VARCHAR (the latter always says "point")
+
+query TTT
+SELECT CAST(CAST('sad' AS ENUM('sad','neutral','happy')) AS VARCHAR), CAST(CAST('neutral' AS ENUM('sad','neutral','happy')) AS VARCHAR), CAST(CAST('happy' AS ENUM('sad','neutral','happy')) AS VARCHAR)
+----
+sad
+neutral
+happy
+
+query T
+SELECT CAST(CAST({'x': 1::BIGINT, 'y': 2::BIGINT} AS STRUCT(x BIGINT, y BIGINT)) AS VARCHAR)
+----
+point
+
+query T
+SELECT CAST(m AS VARCHAR) FROM (SELECT CAST(x AS ENUM('sad','neutral','happy')) AS m FROM (VALUES ('sad'), (NULL), ('happy')) t(x))
+----
+sad
+NULL
+happy
+
+query T
+SELECT CAST(p AS VARCHAR) FROM (SELECT CAST(n AS STRUCT(x BIGINT, y BIGINT)) AS p FROM (VALUES (1::BIGINT), (NULL), (3::BIGINT)) t(n))
+----
+point
+NULL
+point
+
+query T
+SELECT md5(string_agg(coalesce(CAST(CAST(CASE WHEN i % 4 = 0 THEN NULL ELSE CASE i % 3 WHEN 0 THEN 'sad' WHEN 1 THEN 'neutral' ELSE 'happy' END END AS ENUM('sad','neutral','happy')) AS VARCHAR), '-'), ',' ORDER BY i)) FROM generate_series(1, 3000) t(i)
+----
+03f2d98554ce6a1fbff1c503b996cff2
+
+query T
+SELECT md5(string_agg(coalesce(CAST(w AS BIGINT)::VARCHAR, '-'), ',' ORDER BY ord)) FROM (SELECT i AS ord, CASE WHEN i % 11 = 0 THEN NULL WHEN i % 7 = 0 THEN 'three' WHEN i % 5 = 0 THEN 'five' ELSE i::VARCHAR END AS w FROM generate_series(1, 5000) t(i))
+----
+34c211ce419907018c5e2b3498ad4a10
+
+
+# Both directions of a composite type, and the casts around them, in one session. The module doc used to say
+# this corrupted DuckDB's cast dispatch; it does not.
+
+query TT
+SELECT CAST(CAST('happy' AS ENUM('sad','neutral','happy')) AS VARCHAR), CAST(CAST(CAST('neutral' AS ENUM('sad','neutral','happy')) AS VARCHAR) AS ENUM('sad','neutral','happy')) = CAST('neutral' AS ENUM('sad','neutral','happy'))
+----
+happy
+true
+
+query TI
+SELECT CAST(CAST(CAST('sad' AS ENUM('sad','neutral','happy')) AS VARCHAR) AS ENUM('sad','neutral','happy')) = CAST('sad' AS ENUM('sad','neutral','happy')), CAST(CAST('sad' AS ENUM('sad','neutral','happy')) AS BIGINT)
+----
+true
+1
+
+query ITI
+SELECT (CAST(7::BIGINT AS STRUCT(x BIGINT, y BIGINT))).y, CAST(CAST(7::BIGINT AS STRUCT(x BIGINT, y BIGINT)) AS VARCHAR), (CAST(8::BIGINT AS STRUCT(x BIGINT, y BIGINT))).x
+----
+14
+point
+8
+
+query IR
+SELECT CAST('three' AS BIGINT), CAST(12.5::DECIMAL(10,2) AS DOUBLE)
+----
+3
+12.5
+
+# ── TRY_CAST goes through the custom casts, and a failed conversion is NULL ──
+# (The module doc used to say it did not, and returned leftover memory: that was the unsized output vector.)
+# 'three' only converts through the custom cast, so it shows the custom cast was the one used.
+
+query III
+SELECT TRY_CAST('three' AS BIGINT), TRY_CAST('42' AS BIGINT), TRY_CAST('abc' AS BIGINT)
+----
+3
+42
+NULL
+
+query I
+SELECT TRY_CAST(w AS BIGINT) FROM (VALUES ('one'), ('zzz'), (NULL), ('7')) t(w)
+----
+1
+NULL
+NULL
+7
+
+query TT
+SELECT TRY_CAST('bogus' AS ENUM('sad','neutral','happy')) IS NULL, TRY_CAST('happy' AS ENUM('sad','neutral','happy')) IS NULL
+----
+true
+false
+
+query I
+SELECT CAST(TRY_CAST(x AS ENUM('sad','neutral','happy')) AS BIGINT) FROM (VALUES ('sad'), ('bogus'), (NULL), ('happy')) t(x)
+----
+1
+NULL
+NULL
+9
+
+query T
+SELECT md5(string_agg(coalesce(TRY_CAST(w AS BIGINT)::VARCHAR, '-'), ',' ORDER BY ord)) FROM (SELECT i AS ord, CASE WHEN i % 13 = 0 THEN 'zzz' WHEN i % 7 = 0 THEN 'three' WHEN i % 5 = 0 THEN 'five' ELSE i::VARCHAR END AS w FROM generate_series(1, 5000) t(i))
+----
+88a3e9dff2c73a0ca7ef40da14677e09
+
+# A custom ENUM cast is not limited to its own dictionary (see comptime_cast_v2.zig): the VARCHAR -> ENUM
+# cast, which only knows the PoC's mood names, is applied to this ENUM too.
+statement error
+SELECT CAST(CAST('a' AS ENUM('a','b','c')) AS BIGINT)
+----
+cast failed

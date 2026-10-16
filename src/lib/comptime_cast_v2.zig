@@ -25,27 +25,12 @@
 ///!     `castFn` gets a say in (mirrors every other framework's row-
 ///!     skip-on-NULL convention in this codebase).
 ///!
-///! CAUTION, confirmed live against `v2.0.0-alpha46057`: a registered
-///! custom cast's exec callback is reliably invoked for an explicit
-///! `CAST`/`::` (NORMAL mode) — proven with debug instrumentation that
-///! unconditionally errors out before even calling `castFn`, surfacing
-///! exactly where it ran. The SAME instrumentation never fires at all for
-///! `TRY_CAST`, on a literal constant OR a table column — `TRY_CAST` does
-///! not appear to route through a custom-registered cast's exec callback
-///! on this alpha build at all. An early, uninstrumented test seemed to
-///! show `TRY_CAST('three' AS BIGINT)` working (returning the word-parsed
-///! value) — that was a false positive: DuckDB vector buffers get reused
-///! across queries in the same session, and an EARLIER explicit `CAST`
-///! query in the same multi-statement run had coincidentally written that
-///! exact value into the same backing memory, which `TRY_CAST` then read
-///! back unmodified (never having written anything itself). Confirmed
-///! with fresh, isolated invocations: TRY_CAST through a custom cast
-///! consistently returns leftover/uninitialized vector memory, not NULL,
-///! not an error — the TRY-mode branch in this file's `execute` is
-///! therefore unexercised and unverified on this build, not "working." Not
-///! investigated further (whether this is a v2.0 alpha gap expected to
-///! close before release, or a real design restriction); treat NORMAL
-///! mode as the only currently-provable path for a custom v2 cast.
+///! TRY_CAST reaches a custom cast the same way an explicit CAST does, and a `null` from
+///! `castFn` becomes a NULL row there (pinned by `test/sql/zig_ext_v2_poc.test`). An earlier
+///! version of this comment said it did not, and that it returned leftover vector memory: that,
+///! and every other symptom listed under the next heading, was the output vector's size not
+///! being set. Only the plain path's TRY branch is covered by a test; no PoC cast of the STRUCT or
+///! VARIANT shape ever returns `null`, so those two branches are not exercised.
 ///!
 ///! Supports the same leaf types as `comptime_scalar_v2.zig`'s plain
 ///! numeric/VARCHAR path (i8/i16/i32/i64/f32/f64/bool/`[]const u8`), plus
@@ -73,50 +58,21 @@
 ///! into the output vector's flat buffer instead (`encodeEnumOrdinal`),
 ///! never going through `valueCastWithContext` for an ENUM target at all.
 ///!
-///! CAUTION, confirmed live and NOT something this framework can fix: this
-///! alpha build's custom-cast dispatch is broadly unreliable whenever a
-///! **composite type (STRUCT or ENUM) is involved on either side**,
-///! beyond the single ENUM-target recursion bug above. Found by testing
-///! each direction and combination independently, not assumed from one
-///! failure:
-///! - **Composite source + a `vectorSetValue`-boxed target (VARCHAR
-///!   here) fails even in complete isolation**, with nothing else
-///!   registered: both `MoodToVarcharCast` (ENUM→VARCHAR) and
-///!   `PointToVarcharCast` (STRUCT→VARCHAR) in `init_v2_poc.zig`
-///!   reproduce this — `vectorSetValue` fails with a bogus "row out of
-///!   range" on row 0 of a 3-row batch. Debug instrumentation confirmed
-///!   the decode itself is correct up to that call (right value, right
-///!   row, right row_count) — the failure is inside DuckDB's own
-///!   `vector_set_value`, not this framework's read/write code.
-///! - **Composite source + a flat-buffer target (BIGINT, ...) works
-///!   correctly when that one cast is the only composite-type cast
-///!   registered** (`MoodToIntCast`, ENUM→BIGINT; `IntToPointCast` runs
-///!   the reverse, flat→STRUCT, and is unaffected the same way).
-///! - **But registering BOTH directions for the same composite type
-///!   corrupts dispatch for calls that are individually correct**:
-///!   with `MoodToVarcharCast` AND `VarcharToMoodCast` both registered,
-///!   invoking the ENUM-source cast once (even the broken VARCHAR-target
-///!   one) leaves the independently-correct VARCHAR→ENUM cast failing
-///!   with the identical error for the rest of that session. Same
-///!   pattern confirmed for STRUCT: `IntToPointCast` (flat→STRUCT) works
-///!   correctly alone, but fails once `PointToVarcharCast` is also
-///!   registered. A plain, non-composite cast run in between
-///!   (`CAST('three' AS BIGINT)`) is unaffected — the corruption is
-///!   scoped to composite-type casts specifically, not global session
-///!   state.
+///! The output vector's size is set before anything is written (`vectorSetSize` right after the
+///! output vector is fetched, as the scalar and table frameworks do): `vector_set_null` and
+///! `vector_set_value` fail with "row out of range" on any row of an unsized vector. Until that
+///! was found, every custom cast failed over any column with a NULL row, and every cast writing
+///! through `vector_set_value` (ENUM -> VARCHAR, STRUCT -> VARCHAR) failed outright; this file
+///! blamed DuckDB's handling of composite types, and also claimed that registering both
+///! directions of a composite type corrupted DuckDB's cast dispatch. Neither is true: the
+///! casts, in both directions and mixed in one session, are covered by the PoC suite.
 ///!
-///! DECIMAL and VARIANT (source-only) are NOT affected by any of this —
-///! both are live-verified reliable, including DECIMAL exercised
-///! alongside the broken ENUM/STRUCT casts in the same session. Not
-///! investigated further into DuckDB's own internals (would need a
-///! source debug build of DuckDB itself to get symbolized backtraces — a
-///! large C++ build this project's whole architecture, ADR-0001,
-///! deliberately avoids, and not a worthwhile investment in a staged
-///! alpha that will change again before a real 2.0 release). Treat any
-///! STRUCT- or ENUM-involving custom cast as unreliable in a real session
-///! on this alpha build — a genuine DuckDB-side issue, not a bug in this
-///! framework's decode, encode, or registration logic, same posture as
-///! the TRY_CAST finding below.
+///! A custom cast on an ENUM type is not limited to the dictionary it was registered with. Observed
+///! with the PoC's casts loaded: `CAST(CAST('a' AS ENUM('a','b','c')) AS BIGINT)` fails with
+///! "cast failed", because the VARCHAR -> ENUM cast, which only knows the Zig enum's names, is
+///! applied to the other ENUM too; and registering a deliberately wrong dictionary changes no
+///! result. DuckDB appears to look the cast up by type id. Loading an extension that registers a
+///! cast on ENUM therefore changes what every ENUM in the session casts to and from.
 ///!
 ///! No bind-time `implicit_cast_cost` is set, so a registered cast is only
 ///! ever used for an *explicit* `CAST`/`::` — it never participates in
@@ -129,7 +85,7 @@
 ///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). A VARIANT source type is
 ///! still written as the hand-written `duckdb_v2.zig`'s `db.ValueHandle`, which `castFn`
 ///! receives; the handle is converted where it crosses. Port of the behavior as it was,
-///! including what is broken: see the CAUTIONs above.
+///! as it was, with the output vector's size the one thing changed afterwards.
 ///!
 ///! Usage:
 ///!   const VarcharToInt = comptime_cast_v2.Function([]const u8, i64, struct {
@@ -375,6 +331,12 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
             var output_vec: v2.duckdb_v2_vector_handle = undefined;
             if (v2.duckdb_v2_cast_function_exec_get_output(info, &output_vec, err) != .ERROR_NONE) return;
 
+            // The output vector has no elements until its size is set: `vector_set_null` and
+            // `vector_set_value` fail with "row out of range" on any row of an unsized vector, so
+            // without this a NULL row, or a VARCHAR/ENUM-boxed write, aborts the query. The scalar and
+            // table frameworks set their output sizes first for the same reason.
+            if (v2.duckdb_v2_vector_set_size(output_vec, row_count, err) != .ERROR_NONE) return;
+
             if (comptime source_is_variant) {
                 return executeFromVariant(info, context, mode, output_vec, row_count, err);
             }
@@ -432,19 +394,6 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                         var v: v2.duckdb_v2_value_handle = undefined;
                         if (helpers.createVarcharValue(context, value, &v, err) != .ERROR_NONE) return;
                         defer _ = v2.duckdb_v2_value_destroy(&v);
-                        // CAUTION, confirmed live: this `vectorSetValue` call
-                        // fails with a bogus "row out of range" specifically
-                        // when SourceT is ENUM — even for row 0 of a 3-row
-                        // batch, confirmed via debug instrumentation that
-                        // the decode itself is correct up to this point
-                        // (right source value, right row, right row_count).
-                        // ENUM source decoding to a flat-buffer target
-                        // (BIGINT, DECIMAL, ...) is unaffected and verified
-                        // working (see `MoodToIntCast` in init_v2_poc.zig);
-                        // this is specific to an ENUM source paired with
-                        // ANY target going through the boxed-`Value`/
-                        // `vectorSetValue` write path (VARCHAR here) — see
-                        // this file's module doc comment for the full note.
                         if (v2.duckdb_v2_vector_set_value(output_vec, row, v, err) != .ERROR_NONE) return;
                     } else if (comptime target_is_enum) {
                         enum_out[row] = encodeEnumOrdinal(TargetT, value);

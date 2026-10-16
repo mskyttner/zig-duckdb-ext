@@ -145,15 +145,12 @@ const DoubleToPriceCast = comptime_cast_v2.Function(f64, CastPrice, struct {
     }
 }.cast);
 
-/// Proves comptime_cast_v2's ENUM support. `MoodToIntCast` (ENUM source
-/// to a flat BIGINT target) is live-verified working correctly, including
-/// over a real multi-row table column. `MoodToVarcharCast` (ENUM source
-/// to VARCHAR, a `vectorSetValue`-boxed target) is registered to prove
-/// registration itself succeeds, but is confirmed BROKEN at exec time on
-/// this alpha build — see comptime_cast_v2.zig's module doc comment for
-/// the precise repro (not a bug in this framework's decode/registration
-/// logic, confirmed via debug instrumentation). `VarcharToMoodCast`
-/// (VARCHAR source to ENUM target) is live-verified working correctly.
+/// Proves comptime_cast_v2's ENUM support: ENUM to a flat BIGINT target
+/// (`MoodToIntCast`), ENUM to VARCHAR, a `vectorSetValue`-boxed target
+/// (`MoodToVarcharCast`), and VARCHAR to ENUM (`VarcharToMoodCast`), over
+/// constants and columns, NULL rows included. `MoodToVarcharCast` used to
+/// fail with "row out of range" and was documented as broken on this alpha;
+/// the framework simply never set its output vector's size, and does now.
 const CastMood = enum(u8) { sad = 1, neutral = 5, happy = 9 };
 const MoodToIntCast = comptime_cast_v2.Function(CastMood, i64, struct {
     fn cast(m: CastMood) ?i64 {
