@@ -13,21 +13,7 @@
 ///! in the framework yet — most real functions either transform existing text or produce it like
 ///! this one does, and the two need different plumbing.
 const v2 = @import("duckdb_v2_dynamic");
-
-/// The text of a VARCHAR, borrowed from `b`.
-fn bytesSlice(b: *const v2.duckdb_v2_bytes) []const u8 {
-    const len = b.value.inlined.length;
-    if (len <= v2.DUCKDB_V2_BYTES_INLINE_LENGTH) return b.value.inlined.inlined[0..len];
-    // Longer text lives behind a pointer that DuckDB guarantees is set.
-    const ptr = b.value.pointer.ptr orelse return "";
-    return ptr[0..len];
-}
-
-fn isValid(validity: [*]const u64, row: u64) bool {
-    const entry_idx = row / 64;
-    const bit_idx: u6 = @intCast(row % 64);
-    return (validity[entry_idx] & (@as(u64, 1) << bit_idx)) != 0;
-}
+const helpers = @import("../lib/v2_helpers.zig");
 
 fn exec(
     info: v2.duckdb_v2_scalar_function_exec_info_handle,
@@ -53,13 +39,11 @@ fn exec(
 
     var row: u64 = 0;
     while (row < row_count) : (row += 1) {
-        if (view.validity) |validity| {
-            if (!isValid(validity, row)) {
-                if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
-                continue;
-            }
+        if (!helpers.isValid(view.validity, row)) {
+            if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
+            continue;
         }
-        const name = bytesSlice(&in[row]);
+        const name = helpers.bytesSlice(&in[row]);
         var buf: [1024]u8 = undefined;
         const prefix = "Hello, ";
         const suffix = "!";

@@ -450,6 +450,17 @@ pub fn build(b: *std.Build) void {
         gen_v2_bindings_step.dependOn(&b.addFail("gen-v2-bindings needs -Dv2-api-spec=<duckdb checkout>/api_spec/v2").step);
     }
 
+    // Helpers over the generated types that several function modules share.
+    const v2_helpers_check = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib/v2_helpers.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod }},
+        }),
+    });
+    const run_v2_helpers_check = b.addRunArtifact(v2_helpers_check);
+
     // One hello-world scalar function written against `duckdb_v2_api`,
     // instantiated once per backend: the same source, two bindings.
     const gen_hello_static_mod = b.createModule(.{
@@ -546,6 +557,7 @@ pub fn build(b: *std.Build) void {
     v2_check_step.dependOn(&run_v2_check.step);
     v2_check_step.dependOn(&run_v2_static_parity.step);
     v2_check_step.dependOn(&run_v2_dynamic_parity.step);
+    v2_check_step.dependOn(&run_v2_helpers_check.step);
     v2_check_step.dependOn(&run_duckdb_v2_examples_check.step);
     v2_check_step.dependOn(&run_comptime_scalar_v2_check.step);
     v2_check_step.dependOn(&run_comptime_table_v2_check.step);
@@ -1155,6 +1167,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_sign_extension_tests.step);
     test_step.dependOn(&run_v2_static_parity.step);
     test_step.dependOn(&run_v2_dynamic_parity.step);
+    test_step.dependOn(&run_v2_helpers_check.step);
 
     // Installs the signing tool itself — see src/sign_extension_main.zig's
     // own doc comment for usage.
