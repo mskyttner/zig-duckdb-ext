@@ -173,7 +173,12 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
         pub fn register(user_input: *const db.ExtensionInput) !void {
             // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
             // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
-            const input: *const v2.duckdb_v2_extension_input = @ptrCast(user_input);
+            return registerGenerated(@ptrCast(user_input));
+        }
+
+        /// `register` for code that has the generated bindings' input (`duckdb_v2_dynamic`), which needs no
+        /// conversion. When the hand-written layer is gone this is `register`.
+        pub fn registerGenerated(input: *const v2.duckdb_v2_extension_input) !void {
             var err: v2.duckdb_v2_error_info_handle = undefined;
 
             var function: v2.duckdb_v2_table_function_handle = undefined;

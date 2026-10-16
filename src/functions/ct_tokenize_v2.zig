@@ -8,7 +8,7 @@
 ///! proved here against the same custom, stateful tokenizing logic
 ///! `tokenize_v2.zig` hand-writes, not just a toy example.
 const std = @import("std");
-const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
 const comptime_table_v2 = @import("comptime_table_v2");
 
 const State = struct {
@@ -54,6 +54,6 @@ const State = struct {
 
 const CtTokenize = comptime_table_v2.Function("ct_tokenize", State);
 
-pub fn register(input: *const db.ExtensionInput) !void {
-    return CtTokenize.register(input);
+pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
+    return CtTokenize.registerGenerated(input);
 }

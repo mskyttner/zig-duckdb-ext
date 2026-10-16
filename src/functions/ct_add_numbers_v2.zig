@@ -8,7 +8,7 @@
 ///! docs/v2-migration-plan.md's "Function parameter naming & catalog
 ///! discoverability" section).
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
-const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
 
 fn add(a: i64, b: i64) i64 {
     return a + b;
@@ -16,6 +16,6 @@ fn add(a: i64, b: i64) i64 {
 
 const CtAddNumbers = comptime_scalar_v2.FunctionNamed("ct_add_numbers", add, &.{ "a", "b" });
 
-pub fn register(input: *const db.ExtensionInput) !void {
-    return CtAddNumbers.register(input);
+pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
+    return CtAddNumbers.registerGenerated(input);
 }

@@ -1833,26 +1833,49 @@ global switch exists yet.
   with `.?`: calling a function the served table lacks is safety-checked
   illegal behavior, not an error; `init` relies on `get_api` refusing a
   version it cannot serve and does not check the table's size.
-- **Function modules moved: `hello_v2.zig`, then `add_numbers_v2.zig`**
-  (`zig_hello` and `zig_add_numbers`, both hand-written, ~105 lines each) use
-  `duckdb_v2_dynamic` instead of `duckdb_v2.zig`; the other seven still use
-  the hand-written layer. What both need to read vectors lives in
-  `src/lib/v2_helpers.zig` (`isValid`, `bytesSlice`, with unit tests). `zig_ext_v2` initialises
-  both function tables in `init_v2.zig` (each binding layer keeps its own
-  copy; the generated input struct is a `@ptrCast` of the translate-c'd
-  one, its layout covered by the static parity test). The v2 SQL test had
-  no `zig_hello` case at all, so six were added first and run against the
-  hand-written version (empty string, NULL, a name longer than the 12
-  inline bytes, one over the 1024-byte stack buffer, several rows with a
-  NULL); the same 12 blocks pass after the port, and changing the greeting
-  makes them fail. Porting it exposed two things the PoC never hit, both
-  fixed in the generator: (1) a by-value handle can be NULL too — 11
-  parameters such as the default `value` of `function_signature_add_parameter`
-  are described as optional, so they are `?handle`; (2) the validity mask and
-  selection vector of `duckdb_v2_vector_view` are arrays, not out-parameters
-  — struct fields that point to a scalar are `[*]`, not `*`. A failed
-  registration now passes the entrypoint's error slot (`input.err`) rather
-  than a throwaway local, so the load reports why.
+- **Function modules moved onto the generated bindings:** `hello_v2.zig`,
+  `add_numbers_v2.zig`, `ct_add_numbers_v2.zig` and `ct_tokenize_v2.zig`, and
+  with the last two the comptime frameworks they use, **`comptime_scalar_v2`
+  and `comptime_table_v2`** (every PoC function built on them moves too). The
+  other five function modules (`tp_bar`, `tokenize`, `tp_line`, `tp_treemap`,
+  `tp_snakemap`) and the aggregate, cast and appender frameworks still use the
+  hand-written `duckdb_v2.zig`. What the migrated code needs to read vectors
+  and build parametrised types lives in `src/lib/v2_helpers.zig` (a module of
+  its own, since the frameworks are modules too): `isValid`, `bytesSlice`,
+  `str`, the slice forms of the calls that take a pointer and a count or a
+  `str`, and the LIST/ARRAY/MAP/DECIMAL/STRUCT/UNION type creators.
+  `db.initApi` fills both function tables from its single `get_api` call
+  (`get_api` may only be called once).
+- **The frameworks' public surface is unchanged, with an explicit boundary.**
+  `register(input: *const db.ExtensionInput)` still works for the ~65 PoC call
+  sites; `registerGenerated(input: *const v2.duckdb_v2_extension_input)` is the
+  same without the cast, and what the migrated `ct_*` modules call. What a user
+  function may take or return (`db.ContextHandle`, `db.ValueHandle`,
+  `db.Interval`, a table `State`'s `pushdown` hook's handles) is still the
+  hand-written layer's types, converted where it crosses, each with a SAFETY
+  comment. Both go away when the hand-written layer does.
+- **How the frameworks were verified.** They had almost no runtime tests: the
+  real extension used one scalar and one table function through them, and
+  everything else was compile-time. `test/sql/zig_ext_v2_poc.test` (new step
+  `sqllogictest-v2-poc`, task `sqllogictest:v2:poc`, 112 blocks) pins their
+  behavior through the proof-of-concept extension — numeric, VARCHAR, STRUCT,
+  VARIANT, TIMESTAMP, BLOB, DECIMAL, ENUM, LIST, ARRAY, MAP and UNION scalars,
+  matmul at odd sizes, range/repeat tables across batch boundaries, filter and
+  projection pushdown — with big or nested results compared by `md5()` of an
+  aggregated string whose expected value was computed independently in Python.
+  It passed against the old frameworks first and passes unchanged on the ported
+  ones; mutating the frameworks or helpers (type creation, byte reads, NULL
+  handling, union members, column remapping, batching, the pushdown call) makes
+  it fail, which also exposed and closed two gaps in the suite itself. Not
+  covered, before or after: the value a table `progress` hook reports, and MAP
+  types whose key and value types differ.
+- **Found, not fixed:** the PoC's custom `Point -> VARCHAR` and `Mood -> VARCHAR`
+  casts (`comptime_cast_v2`) fail with "row out of range in
+  `duckdb_v2_vector_set_value`" whenever DuckDB has to render such a value, so
+  the suite never displays them. It is a bug in the cast framework or the PoC's
+  casts, to be looked at when that framework is ported. The comptime
+  framework also registers a `db.Interval` parameter as `STRUCT(months,
+  days, micros)`, not INTERVAL, despite the PoC's doc comments.
 - **Overflow in `zig_add_numbers` (found while porting it, fixed after).**
   `a + b` on `i64` trapped in safe builds, so
   `SELECT zig_add_numbers(9223372036854775807, 1)` aborted the whole DuckDB
@@ -1868,11 +1891,14 @@ global switch exists yet.
   afterwards. **Still affected:** `ct_add_numbers` (v1 and v2), whose `+` is
   the user function the comptime framework calls, so the framework cannot
   catch it, and v1's `zig_add_numbers`; both still panic on overflow.
-- **Not done:** the other seven function modules and the comptime
-  frameworks (`comptime_scalar_v2`, ...), which still take the hand-written
-  `duckdb_v2.zig` layer — those are where a shared bytes/validity helper
-  and a decision about the double table initialisation would come in; a
-  build option that binds `duckdb_v2_api` for them.
+- **Not done:** the five hand-written function modules and the aggregate,
+  cast and appender frameworks (the cast framework has the bug above), then
+  the PoC code itself, and finally removing `duckdb_v2.zig` and the
+  `register`/`db.*` compatibility layer; a build option that binds
+  `duckdb_v2_api` for the frameworks. `ct_add_numbers` (v1 and v2) and v1's
+  `zig_add_numbers` still trap on overflow, now for the comptime framework as
+  a design question: the framework calls a user function that returns a plain
+  `i64`, so it has no way to report an error.
 
 ### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
 

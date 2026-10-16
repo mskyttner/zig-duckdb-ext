@@ -12,6 +12,46 @@ Catalog Error: Scalar Function with name zig_add_numbers does not exist!
 
 require zig_ext_v2
 
+# ── ct_add_numbers (comptime scalar function) ───────────────────────────
+
+query I
+SELECT ct_add_numbers(1, 2)
+----
+3
+
+query I
+SELECT ct_add_numbers(100, -50)
+----
+50
+
+query I
+SELECT ct_add_numbers(NULL, 2)
+----
+NULL
+
+query I
+SELECT ct_add_numbers(1, NULL)
+----
+NULL
+
+# The parameters carry the names "a" and "b" (FunctionNamed), not a0 and a1.
+query T
+SELECT array_to_string(parameters, ',') FROM duckdb_functions() WHERE function_name = 'ct_add_numbers'
+----
+a,b
+
+# More rows than one DuckDB vector holds, with NULLs on either side; the same as the hand-written one.
+query II
+SELECT count(ct_add_numbers(CASE WHEN i % 3 = 0 THEN NULL ELSE i END, CASE WHEN i % 5 = 0 THEN NULL ELSE i END)), sum(ct_add_numbers(CASE WHEN i % 3 = 0 THEN NULL ELSE i END, CASE WHEN i % 5 = 0 THEN NULL ELSE i END)) FROM generate_series(1, 5000) t(i)
+----
+2667
+13336664
+
+query T
+SELECT CASE WHEN count(*) = 5000 THEN 'same' ELSE 'different' END FROM generate_series(1, 5000) t(i) WHERE ct_add_numbers(i, i * 10) IS NOT DISTINCT FROM zig_add_numbers(i, i * 10)
+----
+same
+
 # ── ct_tokenize (comptime table function) and tokenize (hand-written) ────
 
 query IT
