@@ -648,3 +648,48 @@ query T
 SELECT md5(string_agg(tp_snakemap(CASE i % 3 WHEN 0 THEN [1.0, 2.0, 3.0] WHEN 1 THEN [5.0, 1.0] ELSE NULL END, CASE i % 3 WHEN 0 THEN ['x', 'y', 'z'] WHEN 1 THEN ['p', 'q'] ELSE ['n'] END, CASE i % 3 WHEN 0 THEN ['g', 'g', 'h'] WHEN 1 THEN ['k', 'k'] ELSE ['n'] END, 30, 10, i % 2 = 0), '#' ORDER BY i)) FROM generate_series(1, 200) t(i)
 ----
 d5c41e17c4269d8dc066893fed3c449c
+
+# ── A NULL in just one argument, on some rows of a column ───────────────────
+
+# tp_line: NULL height on every third row.
+query I
+SELECT count(tp_line([1.0, 2.0, 3.0], CASE WHEN i % 3 = 0 THEN NULL ELSE 5.0 END)) FROM generate_series(1, 200) t(i)
+----
+134
+
+query I
+SELECT count(tp_line(CASE WHEN i % 3 = 0 THEN NULL ELSE [1.0, 2.0, 3.0] END, 5.0)) FROM generate_series(1, 200) t(i)
+----
+134
+
+# tp_treemap: NULL in one argument at a time, on rows spread over several 64-row validity words.
+query IIII
+SELECT count(tp_treemap(CASE WHEN i % 3 = 0 THEN NULL ELSE [1.0, 2.0] END, ['a', 'b'], 20, 8)), count(tp_treemap([1.0, 2.0], CASE WHEN i % 5 = 0 THEN NULL ELSE ['a', 'b'] END, 20, 8)), count(tp_treemap([1.0, 2.0], ['a', 'b'], CASE WHEN i % 7 = 0 THEN NULL ELSE 20 END, 8)), count(tp_treemap([1.0, 2.0], ['a', 'b'], 20, CASE WHEN i % 11 = 0 THEN NULL ELSE 8 END)) FROM generate_series(1, 200) t(i)
+----
+134
+160
+172
+182
+
+# tp_snakemap: the same, for each of the six arguments.
+query IIIIII
+SELECT count(tp_snakemap(CASE WHEN i % 3 = 0 THEN NULL ELSE [1.0, 2.0] END, ['a', 'b'], ['g', 'g'], 20, 8, false)), count(tp_snakemap([1.0, 2.0], CASE WHEN i % 5 = 0 THEN NULL ELSE ['a', 'b'] END, ['g', 'g'], 20, 8, false)), count(tp_snakemap([1.0, 2.0], ['a', 'b'], CASE WHEN i % 13 = 0 THEN NULL ELSE ['g', 'g'] END, 20, 8, false)), count(tp_snakemap([1.0, 2.0], ['a', 'b'], ['g', 'g'], CASE WHEN i % 7 = 0 THEN NULL ELSE 20 END, 8, false)), count(tp_snakemap([1.0, 2.0], ['a', 'b'], ['g', 'g'], 20, CASE WHEN i % 11 = 0 THEN NULL ELSE 8 END, false)), count(tp_snakemap([1.0, 2.0], ['a', 'b'], ['g', 'g'], 20, 8, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 2 = 0 END)) FROM generate_series(1, 200) t(i)
+----
+134
+160
+185
+172
+182
+189
+
+# tp_snakemap: a non-positive height gives the empty string.
+query T
+SELECT tp_snakemap([1.0], ['a'], ['g'], height := 0) = '' AND tp_snakemap([1.0], ['a'], ['g'], height := -4) = ''
+----
+true
+
+# tp_snakemap: width and height are capped (expectation: the v1 extension).
+query T
+SELECT md5(tp_snakemap([1.0, 2.0, 3.0], ['a', 'b', 'c'], ['g', 'g', 'h'], 1000, 1000, true))
+----
+eb77989267fcb71fde7ea440ad5a5894
