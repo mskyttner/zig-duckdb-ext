@@ -141,6 +141,16 @@
             .hash = "N-V-__8AABK7-Ap51O97S6GR_NBvztMr80sAma26ZeRToc7f",
             .lazy = true,
         },
+        // YAML parser, needed only by tools/gen_v2_static.zig, which
+        // regenerates src/lib/duckdb_v2_static.zig from DuckDB's API spec
+        // (`zig build gen-v2-static`). The spec uses block scalars and flow
+        // maps, which upstream zig-yaml does not parse; the sibling checkout
+        // carries those changes. `lazy = true`, so no other build ever
+        // resolves it — the generated file is committed.
+        .yaml = .{
+            .path = "../zig-yaml",
+            .lazy = true,
+        },
         // Image decode/resize, needed only by src/lib/braille_image.zig —
         // a speculative v2-poc-only demo (a scalar + table function, plus
         // a replacement scan for `FROM 'https://.../*.jpg'`), never wired
