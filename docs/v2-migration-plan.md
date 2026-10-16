@@ -1854,9 +1854,11 @@ global switch exists yet.
   with the last two the comptime frameworks they use, **`comptime_scalar_v2`
   and `comptime_table_v2`**, then **`comptime_cast_v2`** and
   **`comptime_aggregate_v2`** and **`comptime_appender_v2`** (every PoC function
-  built on them moves too). That is every framework. The five function modules
-  `tp_bar`, `tokenize`, `tp_line`, `tp_treemap` and `tp_snakemap`, and the PoC
-  code itself, still use the hand-written `duckdb_v2.zig`. What the migrated code needs to read vectors
+  built on them moves too). That is every framework. Then the five remaining
+  function modules, **`tp_bar`, `tokenize`, `tp_line`, `tp_treemap` and
+  `tp_snakemap`**: all nine functions of the real extension are on the generated
+  bindings. Only the PoC code itself (`init_v2_poc*.zig`, `duckdb_v2_examples.zig`,
+  `nethogs_trace.zig`) still uses the hand-written `duckdb_v2.zig`. What the migrated code needs to read vectors
   and build parametrised types lives in `src/lib/v2_helpers.zig` (a module of
   its own, since the frameworks are modules too): `isValid`, `bytesSlice`,
   `str`, the slice forms of the calls that take a pointer and a count or a
@@ -1983,8 +1985,30 @@ global switch exists yet.
   after three rows and then appended fewer than three; the vectors only run out
   when a later batch is *longer* than the flushed one. The generator's array
   rule also learned "Pointer to an array of" (`589842f`).
-- **Not done:** the five function modules `tp_bar`, `tokenize`, `tp_line`,
-  `tp_treemap` and `tp_snakemap`, then the PoC code itself, and finally removing
+- **The five function modules: ported (`87a5294`).** `test/sql/zig_ext_v2.test`
+  covered only `tp_bar`'s basics, so the baseline (`a7790e3`, `3a03f99`) came
+  first, now 109 blocks: named parameters and defaults, a NULL in each argument
+  on different rows of a column across several 64-row validity words,
+  `zig_tokenize` at 2047, 2048, 2049, 4096 and 5000 tokens (the output batch is
+  2048 rows), clamps and caps, lists at different offsets in the shared child
+  vector, and the NULL-argument and empty-list results. Expectations come from
+  Python where the answer is simple (`tp_bar`, the token streams, the multi-row
+  `tp_line`) and from the **v1 extension's output for the same call** where it is
+  a rendered chart (`tp_treemap`, `tp_snakemap`): an independent implementation of
+  the same function, which agreed with v2 on every probe. All of it passed on the
+  hand-written code before the port. Mutating the port then found two real gaps
+  in the baseline, both a NULL in *one* argument at a time (a constant NULL is
+  folded away by the planner and never reaches the function; only a NULL on some
+  rows of a column does): `tp_line`'s height, and every argument of
+  `tp_treemap` and `tp_snakemap` but the lists. Also added: `tp_snakemap`'s height
+  and width caps. Mutations that survive are equivalent ones (a smaller
+  `zig_tokenize` batch, which yields the same rows; skipping the empty-list
+  shortcut in `tp_line`, which renders the same empty string). A NULL
+  argument of `zig_tokenize` is rejected at bind time ("value is NULL"), which
+  is now pinned. Each `register` takes `*const v2.duckdb_v2_extension_input`
+  and fails with `MissingErrorSlot` if the entry point's error slot is absent
+  (it is optional in the generated type).
+- **Not done:** the PoC code itself, and finally removing
   `duckdb_v2.zig` and the `register`/`create`/`db.*` compatibility layer (every
   framework keeps a conversion wrapper for callers still on the hand-written
   handles, and `UserContext`/`UserValue`/`db.VectorView`-style boundary casts for
