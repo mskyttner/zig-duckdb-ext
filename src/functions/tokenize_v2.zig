@@ -27,16 +27,19 @@
 ///!     (confirmed absent from the vtable) — each output VECTOR's size must
 ///!     be set independently, proven here for the first time with a
 ///!     genuinely multi-column (BIGINT + VARCHAR) table function.
+///!
+///! Written against the generated bindings (`duckdb_v2_dynamic`), like hello_v2.zig.
 const std = @import("std");
-const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
+const helpers = @import("v2_helpers");
 
 const BindData = struct {
     input: []u8,
     delim: []u8,
 };
 
-fn destroyBindData(ptr: ?*anyopaque) callconv(.c) void {
-    const data: *BindData = @ptrCast(@alignCast(ptr.?));
+fn destroyBindData(ptr: *anyopaque) callconv(.c) void {
+    const data: *BindData = @ptrCast(@alignCast(ptr));
     std.heap.c_allocator.free(data.input);
     std.heap.c_allocator.free(data.delim);
     std.heap.c_allocator.destroy(data);
@@ -48,37 +51,42 @@ const GlobalState = struct {
     done: bool,
 };
 
-fn destroyGlobalState(ptr: ?*anyopaque) callconv(.c) void {
-    const state: *GlobalState = @ptrCast(@alignCast(ptr.?));
+fn destroyGlobalState(ptr: *anyopaque) callconv(.c) void {
+    const state: *GlobalState = @ptrCast(@alignCast(ptr));
     std.heap.c_allocator.destroy(state);
 }
 
-fn copyArgString(info: db.FunctionBindInfoHandle, index: db.idx_t, err: [*c]db.ErrorInfoHandle) ![]u8 {
-    var value: db.ValueHandle = undefined;
-    if (db.functionBindGetArgValue(info, index, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+fn copyArgString(info: v2.duckdb_v2_function_bind_info_handle, index: u64, err: *v2.duckdb_v2_error_info_handle) ![]u8 {
+    var value: v2.duckdb_v2_value_handle = undefined;
+    if (v2.duckdb_v2_function_bind_get_arg_value(info, index, &value, err) != .ERROR_NONE) {
         return error.FailedToGetArgValue;
     }
-    defer _ = db.valueDestroy(&value);
-    var out: db.Str = undefined;
-    if (db.valueGetVarchar(value, &out, err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    defer _ = v2.duckdb_v2_value_destroy(&value);
+    var out: v2.duckdb_v2_str = undefined;
+    if (v2.duckdb_v2_value_get_varchar(value, &out, err) != .ERROR_NONE) {
         return error.FailedToGetVarchar;
     }
-    const slice: []const u8 = @as([*]const u8, @ptrCast(out.ptr))[0..out.len];
-    return std.heap.c_allocator.dupe(u8, slice);
+    const ptr = out.ptr orelse return std.heap.c_allocator.dupe(u8, "");
+    return std.heap.c_allocator.dupe(u8, ptr[0..out.len]);
 }
 
-fn bind(info: db.FunctionBindInfoHandle, result: db.TableFunctionBindInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-    var bigint_type: db.LogicalTypeHandle = undefined;
-    if (db.contextCreateTypeFromId(context, db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, &bigint_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    defer _ = db.logicalTypeDestroy(&bigint_type);
-    var varchar_type: db.LogicalTypeHandle = undefined;
-    if (db.contextCreateTypeFromId(context, db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    defer _ = db.logicalTypeDestroy(&varchar_type);
+fn bind(
+    info: v2.duckdb_v2_function_bind_info_handle,
+    result: v2.duckdb_v2_table_function_bind_info_handle,
+    context: v2.duckdb_v2_context_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) callconv(.c) void {
+    var bigint_type: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createTypeFromId(context, .LOGICAL_TYPE_ID_BIGINT, &bigint_type, err) != .ERROR_NONE) return;
+    defer _ = v2.duckdb_v2_logical_type_destroy(&bigint_type);
+    var varchar_type: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createTypeFromId(context, .LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != .ERROR_NONE) return;
+    defer _ = v2.duckdb_v2_logical_type_destroy(&varchar_type);
 
-    const pos_col_name = db.str("token_pos");
-    if (db.tableFunctionBindAddResultColumn(result, &pos_col_name, bigint_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    const tok_col_name = db.str("token");
-    if (db.tableFunctionBindAddResultColumn(result, &tok_col_name, varchar_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    const pos_col_name = helpers.str("token_pos");
+    if (v2.duckdb_v2_table_function_bind_add_result_column(result, &pos_col_name, bigint_type, err) != .ERROR_NONE) return;
+    const tok_col_name = helpers.str("token");
+    if (v2.duckdb_v2_table_function_bind_add_result_column(result, &tok_col_name, varchar_type, err) != .ERROR_NONE) return;
 
     const input = copyArgString(info, 0, err) catch return;
     const delim = copyArgString(info, 1, err) catch {
@@ -88,37 +96,47 @@ fn bind(info: db.FunctionBindInfoHandle, result: db.TableFunctionBindInfoHandle,
 
     const data = std.heap.c_allocator.create(BindData) catch return;
     data.* = .{ .input = input, .delim = delim };
-    var boxed: db.Opaque = .{ .ptr = data, .destroy = destroyBindData, .equals = null };
-    _ = db.functionBindSetBindData(info, &boxed, err);
+    var boxed: v2.duckdb_v2_opaque = .{ .ptr = data, .destroy = destroyBindData, .equals = null };
+    _ = v2.duckdb_v2_function_bind_set_bind_data(info, &boxed, err);
 }
 
-fn initGlobal(info: db.TableFunctionInitGlobalInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
+fn initGlobal(
+    info: v2.duckdb_v2_table_function_init_global_info_handle,
+    context: v2.duckdb_v2_context_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) callconv(.c) void {
     _ = context;
     const state = std.heap.c_allocator.create(GlobalState) catch return;
     state.* = .{ .pos = 0, .ordinal = 0, .done = false };
-    var boxed: db.Opaque = .{ .ptr = state, .destroy = destroyGlobalState, .equals = null };
-    _ = db.tableFunctionInitGlobalSetGlobalState(info, &boxed, err);
+    var boxed: v2.duckdb_v2_opaque = .{ .ptr = state, .destroy = destroyGlobalState, .equals = null };
+    _ = v2.duckdb_v2_table_function_init_global_set_global_state(info, &boxed, err);
 }
 
-fn exec(info: db.TableFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
+fn exec(
+    info: v2.duckdb_v2_table_function_exec_info_handle,
+    context: v2.duckdb_v2_context_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) callconv(.c) void {
     var bind_data_ptr: ?*anyopaque = null;
-    if (db.tableFunctionExecGetBindData(info, &bind_data_ptr, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    if (v2.duckdb_v2_table_function_exec_get_bind_data(info, &bind_data_ptr, err) != .ERROR_NONE) return;
+    // SAFETY: `bind` stored a `BindData` as this function's bind data.
     const bind_data: *BindData = @ptrCast(@alignCast(bind_data_ptr.?));
 
     var state_ptr: ?*anyopaque = null;
-    if (db.tableFunctionExecGetGlobalState(info, &state_ptr, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    if (v2.duckdb_v2_table_function_exec_get_global_state(info, &state_ptr, err) != .ERROR_NONE) return;
+    // SAFETY: `initGlobal` stored a `GlobalState` as this function's global state.
     const state: *GlobalState = @ptrCast(@alignCast(state_ptr.?));
 
-    var chunk: db.DataChunkHandle = undefined;
-    if (db.tableFunctionExecGetOutputChunk(info, &chunk, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    var pos_vec: db.VectorHandle = undefined;
-    var tok_vec: db.VectorHandle = undefined;
-    if (db.dataChunkGetVector(chunk, 0, &pos_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    if (db.dataChunkGetVector(chunk, 1, &tok_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    var chunk: v2.duckdb_v2_data_chunk_handle = undefined;
+    if (v2.duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != .ERROR_NONE) return;
+    var pos_vec: v2.duckdb_v2_vector_handle = undefined;
+    var tok_vec: v2.duckdb_v2_vector_handle = undefined;
+    if (v2.duckdb_v2_data_chunk_get_vector(chunk, 0, &pos_vec, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_data_chunk_get_vector(chunk, 1, &tok_vec, err) != .ERROR_NONE) return;
 
     if (state.done) {
-        if (db.vectorSetSize(pos_vec, 0, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        if (db.vectorSetSize(tok_vec, 0, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_set_size(pos_vec, 0, err) != .ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_set_size(tok_vec, 0, err) != .ERROR_NONE) return;
         return;
     }
 
@@ -152,68 +170,70 @@ fn exec(info: db.TableFunctionExecInfoHandle, context: db.ContextHandle, err: [*
         }
     }
 
-    if (db.vectorSetSize(pos_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    if (db.vectorSetSize(tok_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    if (v2.duckdb_v2_vector_set_size(pos_vec, row, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_vector_set_size(tok_vec, row, err) != .ERROR_NONE) return;
 
     var out_data: ?*anyopaque = null;
-    if (db.vectorGetDataMutable(pos_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    const pos_out: [*]i64 = @ptrCast(@alignCast(out_data));
+    if (v2.duckdb_v2_vector_get_data_mutable(pos_vec, &out_data, err) != .ERROR_NONE) return;
+    // SAFETY: the first result column was declared BIGINT in `bind`.
+    const pos_out: [*]i64 = @ptrCast(@alignCast(out_data.?));
 
     var i: usize = 0;
     while (i < row) : (i += 1) {
         pos_out[i] = ordinals[i];
-        var value: db.ValueHandle = undefined;
-        if (db.valueCreateVarcharWithContext(context, tokens[i], &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        defer _ = db.valueDestroy(&value);
-        if (db.vectorSetValue(tok_vec, i, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var value: v2.duckdb_v2_value_handle = undefined;
+        if (helpers.createVarcharValue(context, tokens[i], &value, err) != .ERROR_NONE) return;
+        defer _ = v2.duckdb_v2_value_destroy(&value);
+        if (v2.duckdb_v2_vector_set_value(tok_vec, i, value, err) != .ERROR_NONE) return;
     }
 }
 
-/// Register the zig_tokenize table function against the v2 extension being loaded.
-pub fn register(input: *const db.ExtensionInput) !void {
-    var err: db.ErrorInfoHandle = undefined;
+/// Register the zig_tokenize table function against the v2 extension being loaded. A failure
+/// leaves DuckDB's error info in the entrypoint's error slot, so the load reports why.
+pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
+    const err = input.err orelse return error.MissingErrorSlot;
 
-    var function: db.TableFunctionHandle = undefined;
-    if (db.tableFunctionCreateWithExtension(input.extension, &function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    var function: v2.duckdb_v2_table_function_handle = undefined;
+    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) {
         return error.FailedToCreateFunction;
     }
-    defer _ = db.tableFunctionDestroy(&function);
+    defer _ = v2.duckdb_v2_table_function_destroy(&function);
 
-    const fn_name = db.str("zig_tokenize");
-    if (db.tableFunctionSetName(function, &fn_name, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    const fn_name = helpers.str("zig_tokenize");
+    if (v2.duckdb_v2_table_function_set_name(function, &fn_name, err) != .ERROR_NONE) {
         return error.FailedToSetName;
     }
 
-    var varchar_type: db.LogicalTypeHandle = undefined;
-    if (db.contextCreateTypeFromId(input.context, db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    var varchar_type: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createTypeFromId(input.context, .LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != .ERROR_NONE) {
         return error.FailedToCreateType;
     }
-    defer _ = db.logicalTypeDestroy(&varchar_type);
+    defer _ = v2.duckdb_v2_logical_type_destroy(&varchar_type);
 
-    var sig: db.FunctionSignatureHandle = undefined;
-    if (db.tableFunctionGetSignature(function, &sig, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    var sig: v2.duckdb_v2_function_signature_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_signature(function, &sig, err) != .ERROR_NONE) {
         return error.FailedToGetSignature;
     }
-    const input_name = db.str("input");
-    if (db.functionSignatureAddParameter(sig, &input_name, varchar_type, null, db.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    const input_name = helpers.str("input");
+    if (v2.duckdb_v2_function_signature_add_parameter(sig, &input_name, varchar_type, null, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) {
         return error.FailedToAddParameter;
     }
-    const delim_name = db.str("delim");
-    if (db.functionSignatureAddParameter(sig, &delim_name, varchar_type, null, db.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    const delim_name = helpers.str("delim");
+    if (v2.duckdb_v2_function_signature_add_parameter(sig, &delim_name, varchar_type, null, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) {
         return error.FailedToAddParameter;
     }
 
-    if (db.tableFunctionSetBindCallback(function, bind, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    if (v2.duckdb_v2_table_function_set_bind_callback(function, &bind, err) != .ERROR_NONE) {
         return error.FailedToSetBindCallback;
     }
-    if (db.tableFunctionSetInitGlobalCallback(function, initGlobal, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) {
         return error.FailedToSetInitGlobalCallback;
     }
-    if (db.tableFunctionSetExecCallback(function, exec, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    if (v2.duckdb_v2_table_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) {
         return error.FailedToSetExecCallback;
     }
 
-    if (db.tableFunctionRegister(function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    if (v2.duckdb_v2_table_function_register(function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }
 }

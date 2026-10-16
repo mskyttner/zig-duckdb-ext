@@ -14,56 +14,61 @@
 ///!
 ///! Reuses renderLine from tp_line.zig unchanged (pure Zig, no DuckDB API
 ///! dependency either version needs to duplicate).
+///!
+///! Written against the generated bindings (`duckdb_v2_dynamic`), like hello_v2.zig.
 const std = @import("std");
-const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
+const helpers = @import("v2_helpers");
 const renderLine = @import("tp_line.zig").renderLine;
 
-fn exec(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-    var row_count: db.idx_t = 0;
-    if (db.scalarFunctionExecGetRowCount(info, &row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+fn exec(
+    info: v2.duckdb_v2_scalar_function_exec_info_handle,
+    context: v2.duckdb_v2_context_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) callconv(.c) void {
+    var row_count: u64 = 0;
+    if (v2.duckdb_v2_scalar_function_exec_get_row_count(info, &row_count, err) != .ERROR_NONE) return;
 
-    var list_vec: db.VectorHandle = undefined;
-    var height_vec: db.VectorHandle = undefined;
-    if (db.scalarFunctionExecGetArg(info, 0, &list_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    if (db.scalarFunctionExecGetArg(info, 1, &height_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    if (db.vectorFlatten(list_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    if (db.vectorFlatten(height_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    var list_vec: v2.duckdb_v2_vector_handle = undefined;
+    var height_vec: v2.duckdb_v2_vector_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_exec_get_arg(info, 0, &list_vec, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_scalar_function_exec_get_arg(info, 1, &height_vec, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_vector_flatten(list_vec, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_vector_flatten(height_vec, err) != .ERROR_NONE) return;
 
-    var list_view: db.VectorView = undefined;
-    var height_view: db.VectorView = undefined;
-    if (db.vectorGetView(list_vec, &list_view, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    if (db.vectorGetView(height_vec, &height_view, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    var list_view: v2.duckdb_v2_vector_view = undefined;
+    var height_view: v2.duckdb_v2_vector_view = undefined;
+    if (v2.duckdb_v2_vector_get_view(list_vec, &list_view, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_vector_get_view(height_vec, &height_view, err) != .ERROR_NONE) return;
 
-    var child_vec: db.VectorHandle = undefined;
-    if (db.vectorGetChild(list_vec, 0, &child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    if (db.vectorFlatten(child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    var child_view: db.VectorView = undefined;
-    if (db.vectorGetView(child_vec, &child_view, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    var child_vec: v2.duckdb_v2_vector_handle = undefined;
+    if (v2.duckdb_v2_vector_get_child(list_vec, 0, &child_vec, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_vector_flatten(child_vec, err) != .ERROR_NONE) return;
+    var child_view: v2.duckdb_v2_vector_view = undefined;
+    if (v2.duckdb_v2_vector_get_view(child_vec, &child_view, err) != .ERROR_NONE) return;
 
-    var result_vec: db.VectorHandle = undefined;
-    if (db.scalarFunctionExecGetResult(info, &result_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-    if (db.vectorSetSize(result_vec, row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    var result_vec: v2.duckdb_v2_vector_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_exec_get_result(info, &result_vec, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_vector_set_size(result_vec, row_count, err) != .ERROR_NONE) return;
 
     // SAFETY: the signature registered these as (LIST(DOUBLE), DOUBLE) -> VARCHAR.
-    const entries: [*]const db.ListEntry = @ptrCast(@alignCast(list_view.data));
-    const height_data: [*]const f64 = @ptrCast(@alignCast(height_view.data));
-    const child_data: [*]const f64 = @ptrCast(@alignCast(child_view.data));
+    const entries: [*]const v2.duckdb_v2_list_entry = @ptrCast(@alignCast(list_view.data orelse return));
+    const height_data: [*]const f64 = @ptrCast(@alignCast(height_view.data orelse return));
+    const child_data: [*]const f64 = @ptrCast(@alignCast(child_view.data orelse return));
 
-    var row: db.idx_t = 0;
+    var row: u64 = 0;
     while (row < row_count) : (row += 1) {
-        if ((list_view.validity != null and !isValid(list_view.validity.?, row)) or
-            (height_view.validity != null and !isValid(height_view.validity.?, row)))
-        {
-            if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        if (!helpers.isValid(list_view.validity, row) or !helpers.isValid(height_view.validity, row)) {
+            if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
             continue;
         }
 
         const entry = entries[row];
         if (entry.length == 0) {
-            var value: db.ValueHandle = undefined;
-            if (db.valueCreateVarcharWithContext(context, "", &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            defer _ = db.valueDestroy(&value);
-            if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            var value: v2.duckdb_v2_value_handle = undefined;
+            if (helpers.createVarcharValue(context, "", &value, err) != .ERROR_NONE) return;
+            defer _ = v2.duckdb_v2_value_destroy(&value);
+            if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
             continue;
         }
 
@@ -82,7 +87,7 @@ fn exec(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, err: [
             const values = allocator.alloc(f64, len) catch break :blk @as([]const u8, "");
             for (0..len) |i| {
                 const ci = entry.offset + i;
-                values[i] = if (child_view.validity == null or isValid(child_view.validity.?, ci))
+                values[i] = if (helpers.isValid(child_view.validity, ci))
                     child_data[ci]
                 else
                     std.math.nan(f64);
@@ -90,79 +95,62 @@ fn exec(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, err: [
             break :blk renderLine(allocator, values, height_data[row]) catch @as([]const u8, "");
         };
 
-        var value: db.ValueHandle = undefined;
-        if (db.valueCreateVarcharWithContext(context, text, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        defer _ = db.valueDestroy(&value);
-        if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var value: v2.duckdb_v2_value_handle = undefined;
+        if (helpers.createVarcharValue(context, text, &value, err) != .ERROR_NONE) return;
+        defer _ = v2.duckdb_v2_value_destroy(&value);
+        if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
     }
 }
 
-inline fn isValid(validity: [*]const u64, row: db.idx_t) bool {
-    const entry_idx = row / 64;
-    const bit_idx: u6 = @intCast(row % 64);
-    return (validity[entry_idx] & (@as(u64, 1) << bit_idx)) != 0;
-}
+/// Register the tp_line scalar function against the v2 extension being loaded. A failure leaves
+/// DuckDB's error info in the entrypoint's error slot, so the load reports why.
+pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
+    const err = input.err orelse return error.MissingErrorSlot;
 
-/// Register the tp_line scalar function against the v2 extension being loaded.
-pub fn register(input: *const db.ExtensionInput) !void {
-    var err: db.ErrorInfoHandle = undefined;
-
-    var function: db.ScalarFunctionHandle = undefined;
-    if (db.scalarFunctionCreateWithExtension(input.extension, &function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    var function: v2.duckdb_v2_scalar_function_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) {
         return error.FailedToCreateFunction;
     }
-    defer _ = db.scalarFunctionDestroy(&function);
+    defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
-    const fn_name = db.str("tp_line");
-    if (db.scalarFunctionSetName(function, &fn_name, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    const fn_name = helpers.str("tp_line");
+    if (v2.duckdb_v2_scalar_function_set_name(function, &fn_name, err) != .ERROR_NONE) {
         return error.FailedToSetName;
     }
 
-    var double_type: db.LogicalTypeHandle = undefined;
-    if (db.contextCreateTypeFromId(input.context, db.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE, &double_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
-        return error.FailedToCreateType;
-    }
-    defer _ = db.logicalTypeDestroy(&double_type);
-    var list_type: db.LogicalTypeHandle = undefined;
-    if (db.contextCreateListType(input.context, double_type, &list_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
-        return error.FailedToCreateType;
-    }
-    defer _ = db.logicalTypeDestroy(&list_type);
-    var varchar_type: db.LogicalTypeHandle = undefined;
-    if (db.contextCreateTypeFromId(input.context, db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, &varchar_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
-        return error.FailedToCreateType;
-    }
-    defer _ = db.logicalTypeDestroy(&varchar_type);
+    var double_type: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createTypeFromId(input.context, .LOGICAL_TYPE_ID_DOUBLE, &double_type, err) != .ERROR_NONE) return error.FailedToCreateType;
+    defer _ = v2.duckdb_v2_logical_type_destroy(&double_type);
+    var list_type: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createListType(input.context, double_type, &list_type, err) != .ERROR_NONE) return error.FailedToCreateType;
+    defer _ = v2.duckdb_v2_logical_type_destroy(&list_type);
+    var varchar_type: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createTypeFromId(input.context, .LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != .ERROR_NONE) return error.FailedToCreateType;
+    defer _ = v2.duckdb_v2_logical_type_destroy(&varchar_type);
 
-    var sig: db.FunctionSignatureHandle = undefined;
-    if (db.scalarFunctionGetSignature(function, &sig, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    var sig: v2.duckdb_v2_function_signature_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_signature(function, &sig, err) != .ERROR_NONE) {
         return error.FailedToGetSignature;
     }
 
-    const data_name = db.str("data");
-    if (db.functionSignatureAddParameter(sig, &data_name, list_type, null, db.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
-        return error.FailedToAddParameter;
-    }
+    const data_name = helpers.str("data");
+    if (v2.duckdb_v2_function_signature_add_parameter(sig, &data_name, list_type, null, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
 
-    var height_default: db.ValueHandle = undefined;
-    if (db.valueCreateDoubleWithContext(input.context, 10.0, &height_default, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
-        return error.FailedToCreateDefault;
-    }
-    defer _ = db.valueDestroy(&height_default);
-    const height_name = db.str("height");
-    if (db.functionSignatureAddParameter(sig, &height_name, double_type, height_default, db.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
-        return error.FailedToAddParameter;
-    }
+    var height_default: v2.duckdb_v2_value_handle = undefined;
+    if (v2.duckdb_v2_value_create_double_with_context(input.context, 10.0, &height_default, err) != .ERROR_NONE) return error.FailedToCreateDefault;
+    defer _ = v2.duckdb_v2_value_destroy(&height_default);
+    const height_name = helpers.str("height");
+    if (v2.duckdb_v2_function_signature_add_parameter(sig, &height_name, double_type, height_default, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
 
-    if (db.functionSignatureSetReturnType(sig, varchar_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    if (v2.duckdb_v2_function_signature_set_return_type(sig, varchar_type, err) != .ERROR_NONE) {
         return error.FailedToSetReturnType;
     }
 
-    if (db.scalarFunctionSetExecCallback(function, exec, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) {
         return error.FailedToSetExecCallback;
     }
 
-    if (db.scalarFunctionRegister(function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }
 }

@@ -7,10 +7,9 @@
 ///! which stays a disposable scratch harness for new-API experiments, not
 ///! a growing part of the real extension.
 ///!
-///! Registers all 9 functions ported off v1 — the full set. Most are written against the
-///! hand-written `duckdb_v2.zig`; `hello` is the first on the generated bindings
-///! (`duckdb_v2_dynamic`), which keep their own copy of the function table; `db.initApi` fills
-///! both from its single `get_api` call.
+///! Registers all 9 functions ported off v1 — the full set — each written against the generated
+///! bindings (`duckdb_v2_dynamic`), which keep their own copy of the function table; `db.initApi`
+///! (the hand-written `duckdb_v2.zig`) fills both from its single `get_api` call.
 const db = @import("duckdb_v2");
 const v2 = @import("duckdb_v2_dynamic");
 const add_numbers = @import("../functions/add_numbers_v2.zig");
@@ -32,10 +31,10 @@ export fn zig_ext_v2_init_c_api_v2(input: *const db.ExtensionInput) callconv(.c)
     add_numbers.register(gen_input) catch return;
     ct_add_numbers.register(gen_input) catch return;
     hello.register(gen_input) catch return;
-    tp_bar.register(input) catch return;
-    tokenize.register(input) catch return;
+    tp_bar.register(gen_input) catch return;
+    tokenize.register(gen_input) catch return;
     ct_tokenize.register(gen_input) catch return;
-    tp_line.register(input) catch return;
-    tp_treemap.register(input) catch return;
-    tp_snakemap.register(input) catch return;
+    tp_line.register(gen_input) catch return;
+    tp_treemap.register(gen_input) catch return;
+    tp_snakemap.register(gen_input) catch return;
 }
