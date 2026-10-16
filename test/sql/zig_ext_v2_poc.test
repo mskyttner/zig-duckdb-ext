@@ -192,6 +192,22 @@ SELECT CAST(zig_v2_variant_default_ct(CAST(NULL AS VARIANT), 7) AS VARCHAR)
 ----
 7
 
+# The VARIANT argument is data, but a NULL in any other argument still skips the row.
+query T
+SELECT CAST(zig_v2_variant_default_ct(CAST(42::BIGINT AS VARIANT), NULL) AS VARCHAR)
+----
+NULL
+
+query T
+SELECT CAST(zig_v2_variant_default_ct(CAST(NULL AS VARIANT), NULL) AS VARCHAR)
+----
+NULL
+
+query T
+SELECT string_agg(coalesce(CAST(zig_v2_variant_default_ct(CAST(i AS VARIANT), CASE WHEN i % 3 = 0 THEN NULL ELSE 100 END) AS VARCHAR), '-'), ',' ORDER BY i) FROM generate_series(1, 6) t(i)
+----
+1,2,-,4,5,-
+
 # ── DATE/TIME-like, BLOB, DECIMAL, ENUM ──
 
 query T

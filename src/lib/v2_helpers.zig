@@ -30,6 +30,87 @@ pub fn setNullHandlingSpecial(function: v2.duckdb_v2_scalar_function_handle, err
     return v2.duckdb_v2_scalar_function_set_property(function, .FUNCTION_PROPERTY_NULL_HANDLING, .FUNCTION_PROPERTY_NULL_HANDLING_SPECIAL, err);
 }
 
+// --- Slice forms of calls that take a pointer and a count, or a `str` ----------------------------
+
+/// A logical type that needs no parameters, by id.
+pub fn createTypeFromId(
+    ctx: v2.duckdb_v2_context_handle,
+    type_id: v2.DUCKDB_V2_LOGICAL_TYPE_ID,
+    out_type: *v2.duckdb_v2_logical_type_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    return v2.duckdb_v2_context_create_type_from_id(ctx, type_id, null, null, 0, out_type, err);
+}
+
+/// A logical type from its SQL text, e.g. "VARIANT" or "ENUM('a', 'b')".
+pub fn createTypeFromText(
+    ctx: v2.duckdb_v2_context_handle,
+    text: []const u8,
+    out_type: *v2.duckdb_v2_logical_type_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    const view = str(text);
+    return v2.duckdb_v2_context_create_type_from_text(ctx, &view, out_type, err);
+}
+
+/// A VARCHAR value; the text is copied.
+pub fn createVarcharValue(
+    ctx: v2.duckdb_v2_context_handle,
+    text: []const u8,
+    out_value: *v2.duckdb_v2_value_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    const view = str(text);
+    return v2.duckdb_v2_value_create_varchar_with_context(ctx, &view, out_value, err);
+}
+
+/// A BLOB value; the bytes are copied.
+pub fn createBlobValue(
+    ctx: v2.duckdb_v2_context_handle,
+    bytes: []const u8,
+    out_value: *v2.duckdb_v2_value_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    const view = str(bytes);
+    return v2.duckdb_v2_value_create_blob_with_context(ctx, &view, out_value, err);
+}
+
+/// A LIST value of `children`, which are copied.
+pub fn createListValue(
+    ctx: v2.duckdb_v2_context_handle,
+    child_type: v2.duckdb_v2_logical_type_handle,
+    children: []const v2.duckdb_v2_value_handle,
+    out_value: *v2.duckdb_v2_value_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    return v2.duckdb_v2_value_create_list_with_context(ctx, child_type, children.ptr, children.len, out_value, err);
+}
+
+/// An ARRAY value of `children`, which are copied.
+pub fn createArrayValue(
+    ctx: v2.duckdb_v2_context_handle,
+    child_type: v2.duckdb_v2_logical_type_handle,
+    children: []const v2.duckdb_v2_value_handle,
+    out_value: *v2.duckdb_v2_value_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    return v2.duckdb_v2_value_create_array_with_context(ctx, child_type, children.ptr, children.len, out_value, err);
+}
+
+/// A MAP value of `keys[i]` -> `values[i]`, which are copied.
+pub fn createMapValue(
+    ctx: v2.duckdb_v2_context_handle,
+    key_type: v2.duckdb_v2_logical_type_handle,
+    value_type: v2.duckdb_v2_logical_type_handle,
+    keys: []const v2.duckdb_v2_value_handle,
+    values: []const v2.duckdb_v2_value_handle,
+    out_value: *v2.duckdb_v2_value_handle,
+    err: *v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    std.debug.assert(keys.len == values.len);
+    return v2.duckdb_v2_value_create_map_with_context(ctx, key_type, value_type, keys.ptr, values.ptr, keys.len, out_value, err);
+}
+
 // --- Parametrised logical types -----------------------------------------------------------------
 //
 // LIST, ARRAY, MAP, STRUCT, UNION and DECIMAL types are created by one call, `context_create_type_from_id`,

@@ -46,7 +46,7 @@
 ///!   (`vector_set_null`'s own doc comment: "broadcasts the NULL
 ///!   recursively to every descendant element under that row"), so no
 ///!   extra per-field NULL-ing is needed there either.
-///! - `db.ValueHandle` as a parameter or return type maps to SQL VARIANT:
+///! - `v2.duckdb_v2_value_handle` as a parameter or return type maps to SQL VARIANT:
 ///!   `implFn` receives/returns a boxed `Value` directly rather than a
 ///!   decoded Zig value, since VARIANT's dynamic, runtime-chosen content
 ///!   type has no single Zig type to decode into. Unlike every other
@@ -123,6 +123,12 @@
 ///!   STRUCT/VARIANT/LIST/ARRAY/the other of MAP or UNION in the same
 ///!   function yet (compile error).
 ///!
+///! Bindings: the framework itself calls DuckDB through the generated bindings
+///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). What a user function
+///! may take or return is still written in the hand-written `duckdb_v2.zig`'s types —
+///! `db.ContextHandle`, `db.ValueHandle`, `db.Interval`, `db.Date`/`Time`/`Timestamp`,
+///! `db.Blob`, `db.Decimal` — and the handles among them are converted where they cross.
+///!
 ///! Usage:
 ///!   const MyFn = comptime_scalar_v2.Function("my_double", struct {
 ///!       fn eval(a: i64) i64 { return a * 2; }
@@ -130,23 +136,49 @@
 ///!   try MyFn.register(input); // input: *const db2.ExtensionInput
 const std = @import("std");
 const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
+const helpers = @import("v2_helpers");
 
-fn duckdbV2TypeId(comptime T: type) db.LogicalTypeId {
+// Everything this framework does goes through the generated bindings (`v2`). What a user function can
+// take or return is still written in the hand-written layer's types, which are different Zig types
+// for the same pointers: `db.ContextHandle` (the first parameter of a VARIANT function), `db.ValueHandle`
+// (a VARIANT value) and `db.Interval` (in `db.ExtensionInput` as well). They are converted where they
+// cross. This goes away with the hand-written layer.
+const UserContext = db.ContextHandle;
+const UserValue = db.ValueHandle;
+
+fn toUserContext(ctx: v2.duckdb_v2_context_handle) UserContext {
+    // SAFETY: both are the same pointer to DuckDB's context, typed by two different translations;
+    // the generated handle points to an opaque type, so only the alignment needs restoring.
+    return @ptrCast(@alignCast(ctx));
+}
+
+fn toUserValue(v: v2.duckdb_v2_value_handle) UserValue {
+    // SAFETY: as `toUserContext`, for a value.
+    return @ptrCast(@alignCast(v));
+}
+
+fn fromUserValue(v: UserValue) v2.duckdb_v2_value_handle {
+    // SAFETY: as `toUserContext`, for a value.
+    return @ptrCast(v);
+}
+
+fn duckdbV2TypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
     return switch (T) {
-        i8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT,
-        i16 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT,
-        i32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER,
-        i64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
-        f32 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT,
-        f64 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE,
-        bool => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN,
-        []const u8 => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR,
-        db.ValueHandle => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_VARIANT,
-        db.Blob => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BLOB,
-        db.Date => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_DATE,
-        db.Time => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_TIME,
-        db.Timestamp => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP,
-        db.Interval => db.c.DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL,
+        i8 => .LOGICAL_TYPE_ID_TINYINT,
+        i16 => .LOGICAL_TYPE_ID_SMALLINT,
+        i32 => .LOGICAL_TYPE_ID_INTEGER,
+        i64 => .LOGICAL_TYPE_ID_BIGINT,
+        f32 => .LOGICAL_TYPE_ID_FLOAT,
+        f64 => .LOGICAL_TYPE_ID_DOUBLE,
+        bool => .LOGICAL_TYPE_ID_BOOLEAN,
+        []const u8 => .LOGICAL_TYPE_ID_VARCHAR,
+        UserValue => .LOGICAL_TYPE_ID_VARIANT,
+        db.Blob => .LOGICAL_TYPE_ID_BLOB,
+        db.Date => .LOGICAL_TYPE_ID_DATE,
+        db.Time => .LOGICAL_TYPE_ID_TIME,
+        db.Timestamp => .LOGICAL_TYPE_ID_TIMESTAMP,
+        db.Interval => .LOGICAL_TYPE_ID_INTERVAL,
         else => @compileError("unsupported type for DuckDB v2 mapping: " ++ @typeName(T)),
     };
 }
@@ -284,39 +316,39 @@ fn enumSqlText(comptime T: type) []const u8 {
 /// Build the logical type for a plain (non-struct) Zig type T. VARIANT
 /// goes through `contextCreateTypeFromText` instead of
 /// `contextCreateTypeFromId` — see that function's doc comment for why.
-fn createLogicalType(ctx: db.ContextHandle, comptime T: type, out_type: *db.LogicalTypeHandle, err: *db.ErrorInfoHandle) db.ErrorCode {
-    if (comptime T == db.ValueHandle) {
-        return db.contextCreateTypeFromText(ctx, "VARIANT", out_type, err);
+fn createLogicalType(ctx: v2.duckdb_v2_context_handle, comptime T: type, out_type: *v2.duckdb_v2_logical_type_handle, err: *v2.duckdb_v2_error_info_handle) v2.DUCKDB_V2_ERROR {
+    if (comptime T == UserValue) {
+        return helpers.createTypeFromText(ctx, "VARIANT", out_type, err);
     }
     if (comptime isDecimalType(T)) {
-        return db.contextCreateDecimalType(ctx, T.v2_decimal_width, T.v2_decimal_scale, out_type, err);
+        return helpers.createDecimalType(ctx, T.v2_decimal_width, T.v2_decimal_scale, out_type, err);
     }
     if (comptime isEnumType(T)) {
-        return db.contextCreateTypeFromText(ctx, comptime enumSqlText(T), out_type, err);
+        return helpers.createTypeFromText(ctx, comptime enumSqlText(T), out_type, err);
     }
     if (comptime isListType(T)) {
         const Elem = ListElem(T);
         if (!comptime isSupportedListArrayElem(Elem)) {
             @compileError("unsupported LIST element type for DuckDB v2 mapping: " ++ @typeName(Elem));
         }
-        var elem_type: db.LogicalTypeHandle = undefined;
-        if (createLogicalType(ctx, Elem, &elem_type, err) != db.c.DUCKDB_V2_ERROR_NONE) {
-            return db.c.DUCKDB_V2_ERROR_API;
+        var elem_type: v2.duckdb_v2_logical_type_handle = undefined;
+        if (createLogicalType(ctx, Elem, &elem_type, err) != .ERROR_NONE) {
+            return .ERROR_API;
         }
-        defer _ = db.logicalTypeDestroy(&elem_type);
-        return db.contextCreateListType(ctx, elem_type, out_type, err);
+        defer _ = v2.duckdb_v2_logical_type_destroy(&elem_type);
+        return helpers.createListType(ctx, elem_type, out_type, err);
     }
     if (comptime isArrayType(T)) {
         const Elem = ArrayElem(T);
         if (!comptime isSupportedListArrayElem(Elem)) {
             @compileError("unsupported ARRAY element type for DuckDB v2 mapping: " ++ @typeName(Elem));
         }
-        var elem_type: db.LogicalTypeHandle = undefined;
-        if (createLogicalType(ctx, Elem, &elem_type, err) != db.c.DUCKDB_V2_ERROR_NONE) {
-            return db.c.DUCKDB_V2_ERROR_API;
+        var elem_type: v2.duckdb_v2_logical_type_handle = undefined;
+        if (createLogicalType(ctx, Elem, &elem_type, err) != .ERROR_NONE) {
+            return .ERROR_API;
         }
-        defer _ = db.logicalTypeDestroy(&elem_type);
-        return db.contextCreateArrayType(ctx, elem_type, @intCast(ArrayLen(T)), out_type, err);
+        defer _ = v2.duckdb_v2_logical_type_destroy(&elem_type);
+        return helpers.createArrayType(ctx, elem_type, @intCast(ArrayLen(T)), out_type, err);
     }
     if (comptime isMapType(T)) {
         const K = MapKey(T);
@@ -327,17 +359,17 @@ fn createLogicalType(ctx: db.ContextHandle, comptime T: type, out_type: *db.Logi
         if (!comptime isSupportedMapKV(V)) {
             @compileError("unsupported MAP value type for DuckDB v2 mapping: " ++ @typeName(V));
         }
-        var key_type: db.LogicalTypeHandle = undefined;
-        if (createLogicalType(ctx, K, &key_type, err) != db.c.DUCKDB_V2_ERROR_NONE) {
-            return db.c.DUCKDB_V2_ERROR_API;
+        var key_type: v2.duckdb_v2_logical_type_handle = undefined;
+        if (createLogicalType(ctx, K, &key_type, err) != .ERROR_NONE) {
+            return .ERROR_API;
         }
-        defer _ = db.logicalTypeDestroy(&key_type);
-        var value_type: db.LogicalTypeHandle = undefined;
-        if (createLogicalType(ctx, V, &value_type, err) != db.c.DUCKDB_V2_ERROR_NONE) {
-            return db.c.DUCKDB_V2_ERROR_API;
+        defer _ = v2.duckdb_v2_logical_type_destroy(&key_type);
+        var value_type: v2.duckdb_v2_logical_type_handle = undefined;
+        if (createLogicalType(ctx, V, &value_type, err) != .ERROR_NONE) {
+            return .ERROR_API;
         }
-        defer _ = db.logicalTypeDestroy(&value_type);
-        return db.contextCreateMapType(ctx, key_type, value_type, out_type, err);
+        defer _ = v2.duckdb_v2_logical_type_destroy(&value_type);
+        return helpers.createMapType(ctx, key_type, value_type, out_type, err);
     }
     if (comptime isUnionType(T)) {
         const info = @typeInfo(T).@"union";
@@ -347,46 +379,46 @@ fn createLogicalType(ctx: db.ContextHandle, comptime T: type, out_type: *db.Logi
                 @compileError("unsupported UNION member type for DuckDB v2 mapping: " ++ @typeName(info.field_types[f]));
             }
         }
-        var member_logical_types: [n]db.LogicalTypeHandle = undefined;
+        var member_logical_types: [n]v2.duckdb_v2_logical_type_handle = undefined;
         inline for (0..n) |f| {
-            if (createLogicalType(ctx, info.field_types[f], &member_logical_types[f], err) != db.c.DUCKDB_V2_ERROR_NONE) {
-                return db.c.DUCKDB_V2_ERROR_API;
+            if (createLogicalType(ctx, info.field_types[f], &member_logical_types[f], err) != .ERROR_NONE) {
+                return .ERROR_API;
             }
         }
         defer inline for (0..n) |f| {
-            _ = db.logicalTypeDestroy(&member_logical_types[f]);
+            _ = v2.duckdb_v2_logical_type_destroy(&member_logical_types[f]);
         };
-        var names: [n]db.IdentifierT = undefined;
-        inline for (0..n) |f| names[f] = db.str(info.field_names[f]);
-        var member_type_values: [n]db.ValueHandle = undefined;
-        const rc = db.contextCreateUnionType(ctx, &names, &member_logical_types, &member_type_values, out_type, err);
+        var names: [n]v2.duckdb_v2_identifier_t = undefined;
+        inline for (0..n) |f| names[f] = helpers.str(info.field_names[f]);
+        var member_type_values: [n]v2.duckdb_v2_value_handle = undefined;
+        const rc = helpers.createUnionType(ctx, &names, &member_logical_types, &member_type_values, out_type, err);
         defer inline for (0..n) |f| {
-            _ = db.valueDestroy(&member_type_values[f]);
+            _ = v2.duckdb_v2_value_destroy(&member_type_values[f]);
         };
         return rc;
     }
     if (comptime isStructType(T)) {
         const fields = @typeInfo(T).@"struct";
         const n = fields.field_types.len;
-        var field_logical_types: [n]db.LogicalTypeHandle = undefined;
+        var field_logical_types: [n]v2.duckdb_v2_logical_type_handle = undefined;
         inline for (0..n) |f| {
-            if (createLogicalType(ctx, fields.field_types[f], &field_logical_types[f], err) != db.c.DUCKDB_V2_ERROR_NONE) {
-                return db.c.DUCKDB_V2_ERROR_API;
+            if (createLogicalType(ctx, fields.field_types[f], &field_logical_types[f], err) != .ERROR_NONE) {
+                return .ERROR_API;
             }
         }
         defer inline for (0..n) |f| {
-            _ = db.logicalTypeDestroy(&field_logical_types[f]);
+            _ = v2.duckdb_v2_logical_type_destroy(&field_logical_types[f]);
         };
-        var field_names: [n]db.IdentifierT = undefined;
-        inline for (0..n) |f| field_names[f] = db.str(fields.field_names[f]);
-        var field_type_values: [n]db.ValueHandle = undefined;
-        const rc = db.contextCreateStructType(ctx, &field_names, &field_logical_types, &field_type_values, out_type, err);
+        var field_names: [n]v2.duckdb_v2_identifier_t = undefined;
+        inline for (0..n) |f| field_names[f] = helpers.str(fields.field_names[f]);
+        var field_type_values: [n]v2.duckdb_v2_value_handle = undefined;
+        const rc = helpers.createStructType(ctx, &field_names, &field_logical_types, &field_type_values, out_type, err);
         defer inline for (0..n) |f| {
-            _ = db.valueDestroy(&field_type_values[f]);
+            _ = v2.duckdb_v2_value_destroy(&field_type_values[f]);
         };
         return rc;
     }
-    return db.contextCreateTypeFromId(ctx, duckdbV2TypeId(T), out_type, err);
+    return helpers.createTypeFromId(ctx, duckdbV2TypeId(T), out_type, err);
 }
 
 /// Define a v2 DuckDB scalar function from a comptime-known Zig function,
@@ -418,16 +450,16 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
     const raw_param_types = fn_info.param_types;
     const ReturnType = fn_info.return_type.?;
 
-    const return_is_variant = ReturnType == db.ValueHandle;
+    const return_is_variant = ReturnType == UserValue;
     const raw_has_variant_arg = blk: {
         inline for (raw_param_types) |t| {
-            if (t.? == db.ValueHandle) break :blk true;
+            if (t.? == UserValue) break :blk true;
         }
         break :blk false;
     };
     const needs_context = return_is_variant or raw_has_variant_arg;
-    if (needs_context and (raw_param_types.len == 0 or raw_param_types[0].? != db.ContextHandle)) {
-        @compileError("a VARIANT-involving Function's implFn must take `context: db.ContextHandle` as its first parameter");
+    if (needs_context and (raw_param_types.len == 0 or raw_param_types[0].? != UserContext)) {
+        @compileError("a VARIANT-involving Function's implFn must take `context: v2.duckdb_v2_context_handle` as its first parameter");
     }
     const param_types = if (needs_context) raw_param_types[1..] else raw_param_types;
     if (param_names) |names| {
@@ -495,71 +527,74 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// handed both an `extension` handle (to create the function) and a
         /// `context` handle (to create logical types — v2 has no
         /// handle-less type constructor, see `duckdb_v2.zig`'s own note).
-        pub fn register(input: *const db.ExtensionInput) !void {
-            var err: db.ErrorInfoHandle = undefined;
+        pub fn register(user_input: *const db.ExtensionInput) !void {
+            // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
+            // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
+            const input: *const v2.duckdb_v2_extension_input = @ptrCast(user_input);
+            var err: v2.duckdb_v2_error_info_handle = undefined;
 
-            var function: db.ScalarFunctionHandle = undefined;
-            if (db.scalarFunctionCreateWithExtension(input.extension, &function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var function: v2.duckdb_v2_scalar_function_handle = undefined;
+            if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, &err) != .ERROR_NONE) {
                 return error.FailedToCreateFunction;
             }
-            defer _ = db.scalarFunctionDestroy(&function);
+            defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
-            const fn_name = db.str(name);
-            if (db.scalarFunctionSetName(function, &fn_name, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            const fn_name = helpers.str(name);
+            if (v2.duckdb_v2_scalar_function_set_name(function, &fn_name, &err) != .ERROR_NONE) {
                 return error.FailedToSetName;
             }
 
-            var sig: db.FunctionSignatureHandle = undefined;
-            if (db.scalarFunctionGetSignature(function, &sig, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var sig: v2.duckdb_v2_function_signature_handle = undefined;
+            if (v2.duckdb_v2_scalar_function_get_signature(function, &sig, &err) != .ERROR_NONE) {
                 return error.FailedToGetSignature;
             }
 
             inline for (param_types, 0..) |t, i| {
                 const T = t.?;
-                var param_type: db.LogicalTypeHandle = undefined;
-                if (createLogicalType(input.context, T, &param_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                var param_type: v2.duckdb_v2_logical_type_handle = undefined;
+                if (createLogicalType(input.context, T, &param_type, &err) != .ERROR_NONE) {
                     return error.FailedToCreateParamType;
                 }
-                defer _ = db.logicalTypeDestroy(&param_type);
+                defer _ = v2.duckdb_v2_logical_type_destroy(&param_type);
 
                 // Real names from `FunctionNamed`, or synthesized
                 // positional ones ("a0", "a1", ...) — see `Function`'s
                 // doc comment on why Zig function parameters have no
                 // names of their own to use here.
                 const param_name_buf = if (param_names) |names| names[i] else std.fmt.comptimePrint("a{d}", .{i});
-                const param_name = db.str(param_name_buf);
-                if (db.functionSignatureAddParameter(
+                const param_name = helpers.str(param_name_buf);
+                if (v2.duckdb_v2_function_signature_add_parameter(
                     sig,
                     &param_name,
                     param_type,
                     null,
-                    db.c.DUCKDB_V2_FUNCTION_PARAMETER_KIND_STANDARD,
+                    .FUNCTION_PARAMETER_KIND_STANDARD,
                     &err,
-                ) != db.c.DUCKDB_V2_ERROR_NONE) {
+                ) != .ERROR_NONE) {
                     return error.FailedToAddParameter;
                 }
             }
 
-            var return_type: db.LogicalTypeHandle = undefined;
-            if (createLogicalType(input.context, ReturnType, &return_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            var return_type: v2.duckdb_v2_logical_type_handle = undefined;
+            if (createLogicalType(input.context, ReturnType, &return_type, &err) != .ERROR_NONE) {
                 return error.FailedToCreateReturnType;
             }
-            defer _ = db.logicalTypeDestroy(&return_type);
-            if (db.functionSignatureSetReturnType(sig, return_type, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            defer _ = v2.duckdb_v2_logical_type_destroy(&return_type);
+            if (v2.duckdb_v2_function_signature_set_return_type(sig, return_type, &err) != .ERROR_NONE) {
                 return error.FailedToSetReturnType;
             }
 
-            if (db.scalarFunctionSetExecCallback(function, execute, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_scalar_function_set_exec_callback(function, execute, &err) != .ERROR_NONE) {
                 return error.FailedToSetExecCallback;
             }
 
             if (comptime has_variant_arg) {
-                if (db.scalarFunctionSetNullHandlingSpecial(function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+                if (helpers.setNullHandlingSpecial(function, &err) != .ERROR_NONE) {
                     return error.FailedToSetNullHandling;
                 }
             }
 
-            if (db.scalarFunctionRegister(function, &err) != db.c.DUCKDB_V2_ERROR_NONE) {
+            if (v2.duckdb_v2_scalar_function_register(function, &err) != .ERROR_NONE) {
                 return error.FailedToRegisterFunction;
             }
         }
@@ -569,13 +604,13 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         const WriteType = if (return_is_decimal) ReturnType.Raw else ReturnType;
 
         /// Vectorized exec callback invoked by DuckDB for each batch of rows.
-        fn execute(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-            var row_count: db.idx_t = 0;
-            if (db.scalarFunctionExecGetRowCount(info, &row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        fn execute(info: v2.duckdb_v2_scalar_function_exec_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+            var row_count: u64 = 0;
+            if (v2.duckdb_v2_scalar_function_exec_get_row_count(info, &row_count, err) != .ERROR_NONE) return;
 
-            var result_vec: db.VectorHandle = undefined;
-            if (db.scalarFunctionExecGetResult(info, &result_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            if (db.vectorSetSize(result_vec, row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            var result_vec: v2.duckdb_v2_vector_handle = undefined;
+            if (v2.duckdb_v2_scalar_function_exec_get_result(info, &result_vec, err) != .ERROR_NONE) return;
+            if (v2.duckdb_v2_vector_set_size(result_vec, row_count, err) != .ERROR_NONE) return;
 
             if (comptime has_variant_arg or return_is_variant) {
                 return executeDynamic(info, context, result_vec, row_count, err);
@@ -596,12 +631,12 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             // Cache each argument's view (flattened first — sequence/FSST/
             // dictionary-encoded args aren't directly readable otherwise,
             // see duckdb_v2.zig's vectorFlatten doc comment).
-            var views: [param_types.len]db.VectorView = undefined;
+            var views: [param_types.len]v2.duckdb_v2_vector_view = undefined;
             inline for (0..param_types.len) |i| {
-                var arg_vec: db.VectorHandle = undefined;
-                if (db.scalarFunctionExecGetArg(info, i, &arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (db.vectorFlatten(arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (db.vectorGetView(arg_vec, &views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var arg_vec: v2.duckdb_v2_vector_handle = undefined;
+                if (v2.duckdb_v2_scalar_function_exec_get_arg(info, i, &arg_vec, err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_flatten(arg_vec, err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_get_view(arg_vec, &views[i], err) != .ERROR_NONE) return;
             }
 
             var has_nulls = false;
@@ -614,22 +649,22 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             // instead, via duckdb_v2.zig's valueCreateVarcharWithContext/
             // valueCreateBlobWithContext + vectorSetValue.
             if (comptime return_is_varchar or return_is_blob) {
-                var row: db.idx_t = 0;
+                var row: u64 = 0;
                 while (row < row_count) : (row += 1) {
                     if (has_nulls and !rowIsValid(&views, row)) {
-                        if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                         continue;
                     }
                     const produced = invoke(&views, row);
                     const bytes = if (comptime return_is_blob) produced.bytes else produced;
-                    var value: db.ValueHandle = undefined;
+                    var value: v2.duckdb_v2_value_handle = undefined;
                     const create_err = if (comptime return_is_blob)
-                        db.valueCreateBlobWithContext(context, bytes, &value, err)
+                        helpers.createBlobValue(context, bytes, &value, err)
                     else
-                        db.valueCreateVarcharWithContext(context, bytes, &value, err);
-                    if (create_err != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        helpers.createVarcharValue(context, bytes, &value, err);
+                    if (create_err != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 }
                 return;
             }
@@ -640,24 +675,24 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             // result vector's own ENUM type, the way `'a'::my_enum` works
             // in SQL.
             if (comptime return_is_enum) {
-                var result_type: db.LogicalTypeHandle = undefined;
-                if (db.vectorGetLogicalType(result_vec, &result_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                defer _ = db.logicalTypeDestroy(&result_type);
+                var result_type: v2.duckdb_v2_logical_type_handle = undefined;
+                if (v2.duckdb_v2_vector_get_logical_type(result_vec, &result_type, err) != .ERROR_NONE) return;
+                defer _ = v2.duckdb_v2_logical_type_destroy(&result_type);
 
-                var row: db.idx_t = 0;
+                var row: u64 = 0;
                 while (row < row_count) : (row += 1) {
                     if (has_nulls and !rowIsValid(&views, row)) {
-                        if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                         continue;
                     }
                     const produced = invoke(&views, row);
-                    var text_value: db.ValueHandle = undefined;
-                    if (db.valueCreateVarcharWithContext(context, @tagName(produced), &text_value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&text_value);
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCastWithContext(context, text_value, result_type, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var text_value: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createVarcharValue(context, @tagName(produced), &text_value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&text_value);
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (v2.duckdb_v2_value_cast_with_context(context, text_value, result_type, &value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 }
                 return;
             }
@@ -667,34 +702,34 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             // `db.Decimal`'s doc comment) — written through the flat
             // buffer below, same as any other non-variable-width return,
             // just unwrapping `.raw` first via `writeResult`.
-            var out_data: ?*anyopaque = null;
-            if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            var out_data: *anyopaque = undefined;
+            if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
             // SAFETY: types were validated at comptime against the registered signature.
             const result: [*]WriteType = @ptrCast(@alignCast(out_data));
 
             if (has_nulls) {
-                var row: db.idx_t = 0;
+                var row: u64 = 0;
                 while (row < row_count) : (row += 1) {
                     if (rowIsValid(&views, row)) {
                         result[row] = writeResult(&views, row);
                     } else {
-                        if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                     }
                 }
             } else {
-                var row: db.idx_t = 0;
+                var row: u64 = 0;
                 while (row < row_count) : (row += 1) {
                     result[row] = writeResult(&views, row);
                 }
             }
         }
 
-        inline fn writeResult(views: *const [param_types.len]db.VectorView, row: db.idx_t) WriteType {
+        inline fn writeResult(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) WriteType {
             const v = invoke(views, row);
             return if (comptime return_is_decimal) v.raw else v;
         }
 
-        inline fn rowIsValid(views: *const [param_types.len]db.VectorView, row: db.idx_t) bool {
+        inline fn rowIsValid(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) bool {
             inline for (0..param_types.len) |i| {
                 if (views.*[i].validity) |validity| {
                     const entry_idx = row / 64;
@@ -712,20 +747,20 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         }
         const ArgsTuple = MakeArgsTuple();
 
-        inline fn invoke(views: *const [param_types.len]db.VectorView, row: db.idx_t) ReturnType {
+        inline fn invoke(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) ReturnType {
             var args: ArgsTuple = undefined;
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
                 if (T == []const u8) {
                     // SAFETY: views[i].data points to a flattened VARCHAR vector's
                     // duckdb_v2_bytes elements (the signature registered this param as VARCHAR).
-                    const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i].data));
-                    args[i] = db.bytesSlice(&typed[row]);
+                    const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = helpers.bytesSlice(&typed[row]);
                 } else if (T == db.Blob) {
                     // SAFETY: same duckdb_v2_bytes storage shape as VARCHAR,
                     // registered as BLOB instead (see duckdbV2TypeId).
-                    const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i].data));
-                    args[i] = .{ .bytes = db.bytesSlice(&typed[row]) };
+                    const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = .{ .bytes = helpers.bytesSlice(&typed[row]) };
                 } else if (comptime isDecimalType(T)) {
                     // SAFETY: DECIMAL is a typed leaf array over T.Raw, per
                     // db.Decimal's own doc comment.
@@ -750,7 +785,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// `ENUM(...)` dictionary in — rather than assuming
         /// `@enumFromInt(ordinal)`, so a manually-numbered Zig enum still
         /// decodes correctly.
-        inline fn decodeEnumArg(comptime T: type, view: db.VectorView, row: db.idx_t) T {
+        inline fn decodeEnumArg(comptime T: type, view: v2.duckdb_v2_vector_view, row: u64) T {
             const info = @typeInfo(T).@"enum";
             const n = info.field_values.len;
             const StorageT = if (n <= 255) u8 else if (n <= 65535) u16 else u32;
@@ -771,44 +806,44 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// `Value` via `vectorGetValue`/`vectorSetValue` instead, so this
         /// path skips the shared view-caching machinery entirely rather
         /// than bolting VARIANT's row-by-row shape onto it.
-        fn executeDynamic(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, result_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
-            var arg_vecs: [param_types.len]db.VectorHandle = undefined;
-            var views: [param_types.len]db.VectorView = undefined;
+        fn executeDynamic(info: v2.duckdb_v2_scalar_function_exec_info_handle, context: v2.duckdb_v2_context_handle, result_vec: v2.duckdb_v2_vector_handle, row_count: u64, err: *v2.duckdb_v2_error_info_handle) void {
+            var arg_vecs: [param_types.len]v2.duckdb_v2_vector_handle = undefined;
+            var views: [param_types.len]v2.duckdb_v2_vector_view = undefined;
             inline for (0..param_types.len) |i| {
-                if (db.scalarFunctionExecGetArg(info, i, &arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (comptime param_types[i].? != db.ValueHandle) {
-                    if (db.vectorFlatten(arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorGetView(arg_vecs[i], &views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (v2.duckdb_v2_scalar_function_exec_get_arg(info, i, &arg_vecs[i], err) != .ERROR_NONE) return;
+                if (comptime param_types[i].? != UserValue) {
+                    if (v2.duckdb_v2_vector_flatten(arg_vecs[i], err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_get_view(arg_vecs[i], &views[i], err) != .ERROR_NONE) return;
                 }
             }
 
             var out: [*]ReturnType = undefined;
             if (comptime !return_is_variant and !return_is_varchar) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
                 var args: ArgsTuple = undefined;
-                var fetched: [param_types.len]?db.ValueHandle = undefined;
+                var fetched: [param_types.len]?v2.duckdb_v2_value_handle = undefined;
                 inline for (0..param_types.len) |i| fetched[i] = null;
                 var row_valid = true;
 
                 inline for (0..param_types.len) |i| {
                     const T = param_types[i].?;
-                    if (comptime T == db.ValueHandle) {
+                    if (comptime T == UserValue) {
                         // Deliberately does NOT participate in the automatic
                         // NULL-skip every other type gets: VARIANT's NULL is
                         // ordinary data (SQL NULL is a value VARIANT can
                         // hold), not an absent argument, so implFn decides
                         // what it means — calling `valueIsNull` itself if it
                         // cares, same as `zig_v2_variant_default_ct` does.
-                        var value: db.ValueHandle = undefined;
-                        if (db.vectorGetValue(arg_vecs[i], row, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        var value: v2.duckdb_v2_value_handle = undefined;
+                        if (v2.duckdb_v2_vector_get_value(arg_vecs[i], row, &value, err) != .ERROR_NONE) return;
                         fetched[i] = value;
-                        args[i] = value;
+                        args[i] = toUserValue(value);
                     } else {
                         if (views[i].validity) |validity| {
                             const entry_idx = row / 64;
@@ -816,8 +851,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                             if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) row_valid = false;
                         }
                         if (comptime T == []const u8) {
-                            const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views[i].data));
-                            args[i] = db.bytesSlice(&typed[row]);
+                            const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views[i].data));
+                            args[i] = helpers.bytesSlice(&typed[row]);
                         } else {
                             const typed: [*]const T = @ptrCast(@alignCast(views[i].data));
                             args[i] = typed[row];
@@ -826,31 +861,31 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 }
 
                 defer inline for (0..param_types.len) |i| {
-                    if (comptime param_types[i].? == db.ValueHandle) {
+                    if (comptime param_types[i].? == UserValue) {
                         if (fetched[i]) |v| {
                             var vv = v;
-                            _ = db.valueDestroy(&vv);
+                            _ = v2.duckdb_v2_value_destroy(&vv);
                         }
                     }
                 };
 
                 if (!row_valid) {
-                    if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                     continue;
                 }
 
                 // executeDynamic only runs when needs_context is true (see
                 // the branch in `execute`), so implFn always takes context first.
-                const result = @call(.auto, implFn, .{context} ++ args);
+                const result = @call(.auto, implFn, .{toUserContext(context)} ++ args);
                 if (comptime return_is_variant) {
-                    var rv = result;
-                    if (db.vectorSetValue(result_vec, row, rv, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    _ = db.valueDestroy(&rv);
+                    var rv = fromUserValue(result);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, rv, err) != .ERROR_NONE) return;
+                    _ = v2.duckdb_v2_value_destroy(&rv);
                 } else if (comptime return_is_varchar) {
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCreateVarcharWithContext(context, result, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createVarcharValue(context, result, &value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 } else {
                     out[row] = result;
                 }
@@ -862,7 +897,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         }
 
         fn ViewsFor(comptime T: type) type {
-            return if (comptime isStructType(T)) [StructFieldCount(T)]db.VectorView else db.VectorView;
+            return if (comptime isStructType(T)) [StructFieldCount(T)]v2.duckdb_v2_vector_view else v2.duckdb_v2_vector_view;
         }
 
         fn MakeViewsTuple() type {
@@ -877,7 +912,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// `[]const u8` (boxed through `vectorSetValue` per row instead,
         /// same as the plain return path does at the top level).
         fn StructFieldWriteHandle(comptime FT: type) type {
-            return if (FT == []const u8) db.VectorHandle else [*]FT;
+            return if (FT == []const u8) v2.duckdb_v2_vector_handle else [*]FT;
         }
         fn MakeReturnChildPtrsTuple() type {
             if (comptime !return_is_struct) return void;
@@ -896,21 +931,21 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// this file, just surfaced as a boolean since this runs inside a
         /// `comptime inline for`, not the exec callback itself.
         inline fn writeStructResult(
-            context: db.ContextHandle,
+            context: v2.duckdb_v2_context_handle,
             ptrs: *const ReturnChildPtrsTuple,
-            row: db.idx_t,
+            row: u64,
             value: ReturnType,
-            err: [*c]db.ErrorInfoHandle,
+            err: *v2.duckdb_v2_error_info_handle,
         ) bool {
             const fields = @typeInfo(ReturnType).@"struct";
             inline for (0..fields.field_types.len) |f| {
                 const FT = fields.field_types[f];
                 const field_value = @field(value, fields.field_names[f]);
                 if (comptime FT == []const u8) {
-                    var v: db.ValueHandle = undefined;
-                    if (db.valueCreateVarcharWithContext(context, field_value, &v, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
-                    defer _ = db.valueDestroy(&v);
-                    if (db.vectorSetValue(ptrs.*[f], row, v, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                    var v: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createVarcharValue(context, field_value, &v, err) != .ERROR_NONE) return false;
+                    defer _ = v2.duckdb_v2_value_destroy(&v);
+                    if (v2.duckdb_v2_vector_set_value(ptrs.*[f], row, v, err) != .ERROR_NONE) return false;
                 } else {
                     ptrs.*[f][row] = field_value;
                 }
@@ -926,23 +961,23 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// DuckDB's nested-NULL invariant (a NULL STRUCT row implies NULL
         /// field rows) means checking each field's own validity bit is
         /// sufficient — no separate STRUCT-level validity check is needed.
-        fn executeStruct(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, result_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
-            var arg_vecs: [param_types.len]db.VectorHandle = undefined;
+        fn executeStruct(info: v2.duckdb_v2_scalar_function_exec_info_handle, context: v2.duckdb_v2_context_handle, result_vec: v2.duckdb_v2_vector_handle, row_count: u64, err: *v2.duckdb_v2_error_info_handle) void {
+            var arg_vecs: [param_types.len]v2.duckdb_v2_vector_handle = undefined;
             var views: ViewsTuple = undefined;
             inline for (0..param_types.len) |i| {
-                if (db.scalarFunctionExecGetArg(info, i, &arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (v2.duckdb_v2_scalar_function_exec_get_arg(info, i, &arg_vecs[i], err) != .ERROR_NONE) return;
                 const T = param_types[i].?;
                 if (comptime isStructType(T)) {
                     const fields = @typeInfo(T).@"struct";
                     inline for (0..fields.field_types.len) |f| {
-                        var child_vec: db.VectorHandle = undefined;
-                        if (db.vectorGetChild(arg_vecs[i], f, &child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                        if (db.vectorFlatten(child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                        if (db.vectorGetView(child_vec, &views[i][f], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        var child_vec: v2.duckdb_v2_vector_handle = undefined;
+                        if (v2.duckdb_v2_vector_get_child(arg_vecs[i], f, &child_vec, err) != .ERROR_NONE) return;
+                        if (v2.duckdb_v2_vector_flatten(child_vec, err) != .ERROR_NONE) return;
+                        if (v2.duckdb_v2_vector_get_view(child_vec, &views[i][f], err) != .ERROR_NONE) return;
                     }
                 } else {
-                    if (db.vectorFlatten(arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorGetView(arg_vecs[i], &views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_flatten(arg_vecs[i], err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_get_view(arg_vecs[i], &views[i], err) != .ERROR_NONE) return;
                 }
             }
 
@@ -956,26 +991,26 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 const fields = @typeInfo(ReturnType).@"struct";
                 inline for (0..fields.field_types.len) |f| {
                     const FT = fields.field_types[f];
-                    var child_vec: db.VectorHandle = undefined;
-                    if (db.vectorGetChild(result_vec, f, &child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var child_vec: v2.duckdb_v2_vector_handle = undefined;
+                    if (v2.duckdb_v2_vector_get_child(result_vec, f, &child_vec, err) != .ERROR_NONE) return;
                     if (comptime FT == []const u8) {
                         return_child_ptrs[f] = child_vec;
                     } else {
-                        var out_data: ?*anyopaque = null;
-                        if (db.vectorGetDataMutable(child_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                        var out_data: *anyopaque = undefined;
+                        if (v2.duckdb_v2_vector_get_data_mutable(child_vec, &out_data, err) != .ERROR_NONE) return;
                         return_child_ptrs[f] = @ptrCast(@alignCast(out_data));
                     }
                 }
             } else if (comptime !return_is_varchar) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
                 if (!structRowIsValid(&views, row)) {
-                    if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                     continue;
                 }
                 const args = buildStructArgs(&views, row);
@@ -983,17 +1018,17 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 if (comptime return_is_struct) {
                     if (!writeStructResult(context, &return_child_ptrs, row, result, err)) return;
                 } else if (comptime return_is_varchar) {
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCreateVarcharWithContext(context, result, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createVarcharValue(context, result, &value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 } else {
                     out[row] = result;
                 }
             }
         }
 
-        inline fn structRowIsValid(views: *const ViewsTuple, row: db.idx_t) bool {
+        inline fn structRowIsValid(views: *const ViewsTuple, row: u64) bool {
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
                 if (comptime isStructType(T)) {
@@ -1016,7 +1051,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             return true;
         }
 
-        inline fn buildStructArgs(views: *const ViewsTuple, row: db.idx_t) ArgsTuple {
+        inline fn buildStructArgs(views: *const ViewsTuple, row: u64) ArgsTuple {
             var args: ArgsTuple = undefined;
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
@@ -1027,8 +1062,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         const FT = fields.field_types[f];
                         const fname = fields.field_names[f];
                         if (comptime FT == []const u8) {
-                            const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i][f].data));
-                            @field(val, fname) = db.bytesSlice(&typed[row]);
+                            const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views.*[i][f].data));
+                            @field(val, fname) = helpers.bytesSlice(&typed[row]);
                         } else {
                             const typed: [*]const FT = @ptrCast(@alignCast(views.*[i][f].data));
                             @field(val, fname) = typed[row];
@@ -1036,8 +1071,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                     }
                     args[i] = val;
                 } else if (comptime T == []const u8) {
-                    const typed: [*]const db.BytesValue = @ptrCast(@alignCast(views.*[i].data));
-                    args[i] = db.bytesSlice(&typed[row]);
+                    const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views.*[i].data));
+                    args[i] = helpers.bytesSlice(&typed[row]);
                 } else {
                     const typed: [*]const T = @ptrCast(@alignCast(views.*[i].data));
                     args[i] = typed[row];
@@ -1051,21 +1086,21 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// length is fixed and comptime-known (`ArrayLen(ReturnType)`).
         const list_return_max_elems = 4096;
 
-        inline fn boxLeafValue(ctx: db.ContextHandle, comptime T: type, v: T, out: *db.ValueHandle, err: [*c]db.ErrorInfoHandle) bool {
+        inline fn boxLeafValue(ctx: v2.duckdb_v2_context_handle, comptime T: type, v: T, out: *v2.duckdb_v2_value_handle, err: *v2.duckdb_v2_error_info_handle) bool {
             const rc = switch (T) {
-                i8 => db.valueCreateTinyintWithContext(ctx, v, out, err),
-                i16 => db.valueCreateSmallintWithContext(ctx, v, out, err),
-                i32 => db.valueCreateIntWithContext(ctx, v, out, err),
-                i64 => db.valueCreateBigintWithContext(ctx, v, out, err),
-                f32 => db.valueCreateFloatWithContext(ctx, v, out, err),
-                f64 => db.valueCreateDoubleWithContext(ctx, v, out, err),
-                bool => db.valueCreateBoolWithContext(ctx, v, out, err),
+                i8 => v2.duckdb_v2_value_create_tinyint_with_context(ctx, v, out, err),
+                i16 => v2.duckdb_v2_value_create_smallint_with_context(ctx, v, out, err),
+                i32 => v2.duckdb_v2_value_create_int_with_context(ctx, v, out, err),
+                i64 => v2.duckdb_v2_value_create_bigint_with_context(ctx, v, out, err),
+                f32 => v2.duckdb_v2_value_create_float_with_context(ctx, v, out, err),
+                f64 => v2.duckdb_v2_value_create_double_with_context(ctx, v, out, err),
+                bool => v2.duckdb_v2_value_create_bool_with_context(ctx, v, out, err),
                 else => @compileError("unsupported LIST/ARRAY element type for boxing: " ++ @typeName(T)),
             };
-            return rc == db.c.DUCKDB_V2_ERROR_NONE;
+            return rc == .ERROR_NONE;
         }
 
-        inline fn listRowIsValid(views: *const [param_types.len]db.VectorView, row: db.idx_t) bool {
+        inline fn listRowIsValid(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) bool {
             inline for (0..param_types.len) |i| {
                 if (views.*[i].validity) |validity| {
                     const entry_idx = row / 64;
@@ -1103,44 +1138,44 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// per-row offsets into one shared child vector across the whole
         /// batch, real added complexity this first implementation
         /// doesn't take on.
-        fn executeListArray(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, result_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
-            var arg_vecs: [param_types.len]db.VectorHandle = undefined;
-            var parent_views: [param_types.len]db.VectorView = undefined;
-            var child_views: [param_types.len]db.VectorView = undefined;
+        fn executeListArray(info: v2.duckdb_v2_scalar_function_exec_info_handle, context: v2.duckdb_v2_context_handle, result_vec: v2.duckdb_v2_vector_handle, row_count: u64, err: *v2.duckdb_v2_error_info_handle) void {
+            var arg_vecs: [param_types.len]v2.duckdb_v2_vector_handle = undefined;
+            var parent_views: [param_types.len]v2.duckdb_v2_vector_view = undefined;
+            var child_views: [param_types.len]v2.duckdb_v2_vector_view = undefined;
 
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
-                if (db.scalarFunctionExecGetArg(info, i, &arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (db.vectorFlatten(arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (db.vectorGetView(arg_vecs[i], &parent_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (v2.duckdb_v2_scalar_function_exec_get_arg(info, i, &arg_vecs[i], err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_flatten(arg_vecs[i], err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_get_view(arg_vecs[i], &parent_views[i], err) != .ERROR_NONE) return;
                 if (comptime isListType(T) or isArrayType(T)) {
-                    var child_vec: db.VectorHandle = undefined;
-                    if (db.vectorGetChild(arg_vecs[i], 0, &child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorFlatten(child_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorGetView(child_vec, &child_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var child_vec: v2.duckdb_v2_vector_handle = undefined;
+                    if (v2.duckdb_v2_vector_get_child(arg_vecs[i], 0, &child_vec, err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_flatten(child_vec, err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_get_view(child_vec, &child_views[i], err) != .ERROR_NONE) return;
                 }
             }
 
             const ReturnElem = if (comptime return_is_list) ListElem(ReturnType) else if (comptime return_is_array) ArrayElem(ReturnType) else void;
-            var return_elem_type: db.LogicalTypeHandle = undefined;
+            var return_elem_type: v2.duckdb_v2_logical_type_handle = undefined;
             if (comptime return_is_list or return_is_array) {
-                if (createLogicalType(context, ReturnElem, &return_elem_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (createLogicalType(context, ReturnElem, &return_elem_type, err) != .ERROR_NONE) return;
             }
             defer if (comptime return_is_list or return_is_array) {
-                _ = db.logicalTypeDestroy(&return_elem_type);
+                _ = v2.duckdb_v2_logical_type_destroy(&return_elem_type);
             };
 
             var out: [*]ReturnType = undefined;
             if (comptime !return_is_list and !return_is_array and !return_is_varchar) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
                 if (!listRowIsValid(&parent_views, row)) {
-                    if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                     continue;
                 }
 
@@ -1151,7 +1186,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         const Elem = ListElem(T);
                         // SAFETY: a flattened LIST vector's view data is an
                         // array of ListEntry{offset,length} records, per row.
-                        const entries: [*]const db.ListEntry = @ptrCast(@alignCast(parent_views[i].data));
+                        const entries: [*]const v2.duckdb_v2_list_entry = @ptrCast(@alignCast(parent_views[i].data));
                         const entry = entries[row];
                         // SAFETY: the flattened child vector's view data is
                         // the flat element buffer shared across all rows.
@@ -1168,8 +1203,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         inline for (0..n) |k| arr[k] = elems[start + k];
                         args[i] = arr;
                     } else if (comptime T == []const u8) {
-                        const typed: [*]const db.BytesValue = @ptrCast(@alignCast(parent_views[i].data));
-                        args[i] = db.bytesSlice(&typed[row]);
+                        const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(parent_views[i].data));
+                        args[i] = helpers.bytesSlice(&typed[row]);
                     } else {
                         const typed: [*]const T = @ptrCast(@alignCast(parent_views[i].data));
                         args[i] = typed[row];
@@ -1180,40 +1215,40 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
                 if (comptime return_is_list) {
                     if (result.len > list_return_max_elems) {
-                        const msg = db.str("LIST return exceeds the supported maximum length");
-                        _ = db.errorInfoSetCode(err.*, db.c.DUCKDB_V2_ERROR_API);
-                        _ = db.errorInfoSetText(err.*, &msg);
+                        const msg = helpers.str("LIST return exceeds the supported maximum length");
+                        _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
+                        _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
                         return;
                     }
-                    var boxed: [list_return_max_elems]db.ValueHandle = undefined;
+                    var boxed: [list_return_max_elems]v2.duckdb_v2_value_handle = undefined;
                     for (result, 0..) |item, k| {
                         if (!boxLeafValue(context, ReturnElem, item, &boxed[k], err)) return;
                     }
                     defer for (0..result.len) |k| {
-                        _ = db.valueDestroy(&boxed[k]);
+                        _ = v2.duckdb_v2_value_destroy(&boxed[k]);
                     };
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCreateListWithContext(context, return_elem_type, boxed[0..result.len], &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createListValue(context, return_elem_type, boxed[0..result.len], &value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 } else if (comptime return_is_array) {
                     const n = comptime ArrayLen(ReturnType);
-                    var boxed: [n]db.ValueHandle = undefined;
+                    var boxed: [n]v2.duckdb_v2_value_handle = undefined;
                     inline for (0..n) |k| {
                         if (!boxLeafValue(context, ReturnElem, result[k], &boxed[k], err)) return;
                     }
                     defer inline for (0..n) |k| {
-                        _ = db.valueDestroy(&boxed[k]);
+                        _ = v2.duckdb_v2_value_destroy(&boxed[k]);
                     };
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCreateArrayWithContext(context, return_elem_type, &boxed, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createArrayValue(context, return_elem_type, &boxed, &value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 } else if (comptime return_is_varchar) {
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCreateVarcharWithContext(context, result, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createVarcharValue(context, result, &value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 } else {
                     out[row] = result;
                 }
@@ -1248,55 +1283,55 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// above). Return is boxed via `valueCreateMapWithContext`
         /// (parallel key/value `Value` arrays) — same "simpler, if
         /// slower" tradeoff as LIST/ARRAY returns.
-        fn executeMap(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, result_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
-            var arg_vecs: [param_types.len]db.VectorHandle = undefined;
-            var parent_views: [param_types.len]db.VectorView = undefined;
-            var key_views: [param_types.len]db.VectorView = undefined;
-            var value_views: [param_types.len]db.VectorView = undefined;
+        fn executeMap(info: v2.duckdb_v2_scalar_function_exec_info_handle, context: v2.duckdb_v2_context_handle, result_vec: v2.duckdb_v2_vector_handle, row_count: u64, err: *v2.duckdb_v2_error_info_handle) void {
+            var arg_vecs: [param_types.len]v2.duckdb_v2_vector_handle = undefined;
+            var parent_views: [param_types.len]v2.duckdb_v2_vector_view = undefined;
+            var key_views: [param_types.len]v2.duckdb_v2_vector_view = undefined;
+            var value_views: [param_types.len]v2.duckdb_v2_vector_view = undefined;
 
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
-                if (db.scalarFunctionExecGetArg(info, i, &arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (db.vectorFlatten(arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (db.vectorGetView(arg_vecs[i], &parent_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (v2.duckdb_v2_scalar_function_exec_get_arg(info, i, &arg_vecs[i], err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_flatten(arg_vecs[i], err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_get_view(arg_vecs[i], &parent_views[i], err) != .ERROR_NONE) return;
                 if (comptime isMapType(T)) {
-                    var entries_vec: db.VectorHandle = undefined;
-                    if (db.vectorGetChild(arg_vecs[i], 0, &entries_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    var key_vec: db.VectorHandle = undefined;
-                    if (db.vectorGetChild(entries_vec, 0, &key_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorFlatten(key_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorGetView(key_vec, &key_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    var value_vec: db.VectorHandle = undefined;
-                    if (db.vectorGetChild(entries_vec, 1, &value_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorFlatten(value_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    if (db.vectorGetView(value_vec, &value_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var entries_vec: v2.duckdb_v2_vector_handle = undefined;
+                    if (v2.duckdb_v2_vector_get_child(arg_vecs[i], 0, &entries_vec, err) != .ERROR_NONE) return;
+                    var key_vec: v2.duckdb_v2_vector_handle = undefined;
+                    if (v2.duckdb_v2_vector_get_child(entries_vec, 0, &key_vec, err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_flatten(key_vec, err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_get_view(key_vec, &key_views[i], err) != .ERROR_NONE) return;
+                    var value_vec: v2.duckdb_v2_vector_handle = undefined;
+                    if (v2.duckdb_v2_vector_get_child(entries_vec, 1, &value_vec, err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_flatten(value_vec, err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_get_view(value_vec, &value_views[i], err) != .ERROR_NONE) return;
                 }
             }
 
             const MapK = if (comptime return_is_map) MapKey(ReturnType) else void;
             const MapV = if (comptime return_is_map) MapValue(ReturnType) else void;
-            var return_key_type: db.LogicalTypeHandle = undefined;
-            var return_value_type: db.LogicalTypeHandle = undefined;
+            var return_key_type: v2.duckdb_v2_logical_type_handle = undefined;
+            var return_value_type: v2.duckdb_v2_logical_type_handle = undefined;
             if (comptime return_is_map) {
-                if (createLogicalType(context, MapK, &return_key_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (createLogicalType(context, MapV, &return_value_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (createLogicalType(context, MapK, &return_key_type, err) != .ERROR_NONE) return;
+                if (createLogicalType(context, MapV, &return_value_type, err) != .ERROR_NONE) return;
             }
             defer if (comptime return_is_map) {
-                _ = db.logicalTypeDestroy(&return_key_type);
-                _ = db.logicalTypeDestroy(&return_value_type);
+                _ = v2.duckdb_v2_logical_type_destroy(&return_key_type);
+                _ = v2.duckdb_v2_logical_type_destroy(&return_value_type);
             };
 
             var out: [*]ReturnType = undefined;
             if (comptime !return_is_map and !return_is_varchar) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
                 if (!listRowIsValid(&parent_views, row)) {
-                    if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                     continue;
                 }
 
@@ -1309,7 +1344,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         const Entry = T.Entry;
                         // SAFETY: a flattened MAP vector's view data is an
                         // array of ListEntry{offset,length} records, per row.
-                        const list_entries: [*]const db.ListEntry = @ptrCast(@alignCast(parent_views[i].data));
+                        const list_entries: [*]const v2.duckdb_v2_list_entry = @ptrCast(@alignCast(parent_views[i].data));
                         const list_entry = list_entries[row];
                         const keys: [*]const K = @ptrCast(@alignCast(key_views[i].data));
                         const values: [*]const V = @ptrCast(@alignCast(value_views[i].data));
@@ -1318,8 +1353,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         for (0..n) |k| buf[k] = .{ .key = keys[list_entry.offset + k], .value = values[list_entry.offset + k] };
                         args[i] = .{ .entries = buf[0..n] };
                     } else if (comptime T == []const u8) {
-                        const typed: [*]const db.BytesValue = @ptrCast(@alignCast(parent_views[i].data));
-                        args[i] = db.bytesSlice(&typed[row]);
+                        const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(parent_views[i].data));
+                        args[i] = helpers.bytesSlice(&typed[row]);
                     } else {
                         const typed: [*]const T = @ptrCast(@alignCast(parent_views[i].data));
                         args[i] = typed[row];
@@ -1330,30 +1365,30 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
                 if (comptime return_is_map) {
                     if (result.entries.len > map_return_max_entries) {
-                        const msg = db.str("MAP return exceeds the supported maximum entry count");
-                        _ = db.errorInfoSetCode(err.*, db.c.DUCKDB_V2_ERROR_API);
-                        _ = db.errorInfoSetText(err.*, &msg);
+                        const msg = helpers.str("MAP return exceeds the supported maximum entry count");
+                        _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
+                        _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
                         return;
                     }
-                    var boxed_keys: [map_return_max_entries]db.ValueHandle = undefined;
-                    var boxed_values: [map_return_max_entries]db.ValueHandle = undefined;
+                    var boxed_keys: [map_return_max_entries]v2.duckdb_v2_value_handle = undefined;
+                    var boxed_values: [map_return_max_entries]v2.duckdb_v2_value_handle = undefined;
                     for (result.entries, 0..) |entry, k| {
                         if (!boxLeafValue(context, MapK, entry.key, &boxed_keys[k], err)) return;
                         if (!boxLeafValue(context, MapV, entry.value, &boxed_values[k], err)) return;
                     }
                     defer for (0..result.entries.len) |k| {
-                        _ = db.valueDestroy(&boxed_keys[k]);
-                        _ = db.valueDestroy(&boxed_values[k]);
+                        _ = v2.duckdb_v2_value_destroy(&boxed_keys[k]);
+                        _ = v2.duckdb_v2_value_destroy(&boxed_values[k]);
                     };
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCreateMapWithContext(context, return_key_type, return_value_type, boxed_keys[0..result.entries.len], boxed_values[0..result.entries.len], &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createMapValue(context, return_key_type, return_value_type, boxed_keys[0..result.entries.len], boxed_values[0..result.entries.len], &value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 } else if (comptime return_is_varchar) {
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCreateVarcharWithContext(context, result, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createVarcharValue(context, result, &value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 } else {
                     out[row] = result;
                 }
@@ -1375,12 +1410,12 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// into the member list, same convention `value_get_child`'s own
         /// doc comment describes at the `Value` level; confirmed live
         /// this also holds at the vector level.
-        fn executeUnion(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, result_vec: db.VectorHandle, row_count: db.idx_t, err: [*c]db.ErrorInfoHandle) void {
-            var arg_vecs: [param_types.len]db.VectorHandle = undefined;
-            var parent_views: [param_types.len]db.VectorView = undefined;
+        fn executeUnion(info: v2.duckdb_v2_scalar_function_exec_info_handle, context: v2.duckdb_v2_context_handle, result_vec: v2.duckdb_v2_vector_handle, row_count: u64, err: *v2.duckdb_v2_error_info_handle) void {
+            var arg_vecs: [param_types.len]v2.duckdb_v2_vector_handle = undefined;
+            var parent_views: [param_types.len]v2.duckdb_v2_vector_view = undefined;
 
             inline for (0..param_types.len) |i| {
-                if (db.scalarFunctionExecGetArg(info, i, &arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (v2.duckdb_v2_scalar_function_exec_get_arg(info, i, &arg_vecs[i], err) != .ERROR_NONE) return;
                 // Flattened/viewed uniformly, union args included — a
                 // union vector's own top-level `.validity` bit is still
                 // meaningful and readable this way, even though its
@@ -1388,18 +1423,18 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 // children, descended via `vectorGetChild` on the
                 // original `arg_vecs[i]` handle below, carry the actual
                 // value).
-                if (db.vectorFlatten(arg_vecs[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                if (db.vectorGetView(arg_vecs[i], &parent_views[i], err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_flatten(arg_vecs[i], err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_get_view(arg_vecs[i], &parent_views[i], err) != .ERROR_NONE) return;
             }
 
             var out: [*]ReturnType = undefined;
             if (comptime !return_is_union and !return_is_varchar) {
-                var out_data: ?*anyopaque = null;
-                if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                var out_data: *anyopaque = undefined;
+                if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: db.idx_t = 0;
+            var row: u64 = 0;
             while (row < row_count) : (row += 1) {
                 var row_valid = true;
                 inline for (0..param_types.len) |i| {
@@ -1410,7 +1445,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                     }
                 }
                 if (!row_valid) {
-                    if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                     continue;
                 }
 
@@ -1420,8 +1455,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                     if (comptime isUnionType(T)) {
                         args[i] = readUnionArg(T, arg_vecs[i], row, err) orelse return;
                     } else if (comptime T == []const u8) {
-                        const typed: [*]const db.BytesValue = @ptrCast(@alignCast(parent_views[i].data));
-                        args[i] = db.bytesSlice(&typed[row]);
+                        const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(parent_views[i].data));
+                        args[i] = helpers.bytesSlice(&typed[row]);
                     } else {
                         const typed: [*]const T = @ptrCast(@alignCast(parent_views[i].data));
                         args[i] = typed[row];
@@ -1433,10 +1468,10 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 if (comptime return_is_union) {
                     if (!writeUnionResult(context, result_vec, row, result, err)) return;
                 } else if (comptime return_is_varchar) {
-                    var value: db.ValueHandle = undefined;
-                    if (db.valueCreateVarcharWithContext(context, result, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-                    defer _ = db.valueDestroy(&value);
-                    if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                    var value: v2.duckdb_v2_value_handle = undefined;
+                    if (helpers.createVarcharValue(context, result, &value, err) != .ERROR_NONE) return;
+                    defer _ = v2.duckdb_v2_value_destroy(&value);
+                    if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 } else {
                     out[row] = result;
                 }
@@ -1447,31 +1482,31 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// `u8` ordinal, then read the corresponding member child at the
         /// same row. Returns `null` (having already set `err`) only on a
         /// genuine API failure, not on any data condition.
-        fn readUnionArg(comptime T: type, union_vec: db.VectorHandle, row: db.idx_t, err: [*c]db.ErrorInfoHandle) ?T {
+        fn readUnionArg(comptime T: type, union_vec: v2.duckdb_v2_vector_handle, row: u64, err: *v2.duckdb_v2_error_info_handle) ?T {
             const info = @typeInfo(T).@"union";
             const n = info.field_types.len;
 
-            var tag_vec: db.VectorHandle = undefined;
-            if (db.vectorGetChild(union_vec, 0, &tag_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
-            if (db.vectorFlatten(tag_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
-            var tag_view: db.VectorView = undefined;
-            if (db.vectorGetView(tag_vec, &tag_view, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
+            var tag_vec: v2.duckdb_v2_vector_handle = undefined;
+            if (v2.duckdb_v2_vector_get_child(union_vec, 0, &tag_vec, err) != .ERROR_NONE) return null;
+            if (v2.duckdb_v2_vector_flatten(tag_vec, err) != .ERROR_NONE) return null;
+            var tag_view: v2.duckdb_v2_vector_view = undefined;
+            if (v2.duckdb_v2_vector_get_view(tag_vec, &tag_view, err) != .ERROR_NONE) return null;
             // SAFETY: the tag child is a flattened UTINYINT vector.
             const tags: [*]const u8 = @ptrCast(@alignCast(tag_view.data));
             const active = tags[row];
 
             inline for (0..n) |m| {
                 if (active == m) {
-                    var member_vec: db.VectorHandle = undefined;
-                    if (db.vectorGetChild(union_vec, 1 + m, &member_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
-                    if (db.vectorFlatten(member_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
-                    var member_view: db.VectorView = undefined;
-                    if (db.vectorGetView(member_vec, &member_view, err) != db.c.DUCKDB_V2_ERROR_NONE) return null;
+                    var member_vec: v2.duckdb_v2_vector_handle = undefined;
+                    if (v2.duckdb_v2_vector_get_child(union_vec, 1 + m, &member_vec, err) != .ERROR_NONE) return null;
+                    if (v2.duckdb_v2_vector_flatten(member_vec, err) != .ERROR_NONE) return null;
+                    var member_view: v2.duckdb_v2_vector_view = undefined;
+                    if (v2.duckdb_v2_vector_get_view(member_vec, &member_view, err) != .ERROR_NONE) return null;
                     const FT = info.field_types[m];
                     const field_name = info.field_names[m];
                     if (comptime FT == []const u8) {
-                        const typed: [*]const db.BytesValue = @ptrCast(@alignCast(member_view.data));
-                        return @unionInit(T, field_name, db.bytesSlice(&typed[row]));
+                        const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(member_view.data));
+                        return @unionInit(T, field_name, helpers.bytesSlice(&typed[row]));
                     } else {
                         const typed: [*]const FT = @ptrCast(@alignCast(member_view.data));
                         return @unionInit(T, field_name, typed[row]);
@@ -1486,14 +1521,14 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// other member's child vector at this row is left untouched
         /// (unspecified, not required to be NULL or zeroed — UNION's
         /// tag is what determines which value is meaningful).
-        fn writeUnionResult(context: db.ContextHandle, result_vec: db.VectorHandle, row: db.idx_t, value: ReturnType, err: [*c]db.ErrorInfoHandle) bool {
+        fn writeUnionResult(context: v2.duckdb_v2_context_handle, result_vec: v2.duckdb_v2_vector_handle, row: u64, value: ReturnType, err: *v2.duckdb_v2_error_info_handle) bool {
             const info = @typeInfo(ReturnType).@"union";
             const n = info.field_types.len;
 
-            var tag_vec: db.VectorHandle = undefined;
-            if (db.vectorGetChild(result_vec, 0, &tag_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
-            var tag_data: ?*anyopaque = null;
-            if (db.vectorGetDataMutable(tag_vec, &tag_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+            var tag_vec: v2.duckdb_v2_vector_handle = undefined;
+            if (v2.duckdb_v2_vector_get_child(result_vec, 0, &tag_vec, err) != .ERROR_NONE) return false;
+            var tag_data: *anyopaque = undefined;
+            if (v2.duckdb_v2_vector_get_data_mutable(tag_vec, &tag_data, err) != .ERROR_NONE) return false;
             const tags: [*]u8 = @ptrCast(@alignCast(tag_data));
 
             const active = @backingInt(value);
@@ -1513,25 +1548,25 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             // Fixed by explicitly NULLing every non-active member's row,
             // not just leaving it alone.
             inline for (0..n) |m| {
-                var member_vec: db.VectorHandle = undefined;
-                if (db.vectorGetChild(result_vec, 1 + m, &member_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                var member_vec: v2.duckdb_v2_vector_handle = undefined;
+                if (v2.duckdb_v2_vector_get_child(result_vec, 1 + m, &member_vec, err) != .ERROR_NONE) return false;
                 if (active == m) {
                     const FT = info.field_types[m];
                     const field_name = info.field_names[m];
                     const field_value = @field(value, field_name);
                     if (comptime FT == []const u8) {
-                        var v: db.ValueHandle = undefined;
-                        if (db.valueCreateVarcharWithContext(context, field_value, &v, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
-                        defer _ = db.valueDestroy(&v);
-                        if (db.vectorSetValue(member_vec, row, v, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                        var v: v2.duckdb_v2_value_handle = undefined;
+                        if (helpers.createVarcharValue(context, field_value, &v, err) != .ERROR_NONE) return false;
+                        defer _ = v2.duckdb_v2_value_destroy(&v);
+                        if (v2.duckdb_v2_vector_set_value(member_vec, row, v, err) != .ERROR_NONE) return false;
                     } else {
-                        var member_data: ?*anyopaque = null;
-                        if (db.vectorGetDataMutable(member_vec, &member_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                        var member_data: *anyopaque = undefined;
+                        if (v2.duckdb_v2_vector_get_data_mutable(member_vec, &member_data, err) != .ERROR_NONE) return false;
                         const typed: [*]FT = @ptrCast(@alignCast(member_data));
                         typed[row] = field_value;
                     }
                 } else {
-                    if (db.vectorSetNull(member_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return false;
+                    if (v2.duckdb_v2_vector_set_null(member_vec, row, err) != .ERROR_NONE) return false;
                 }
             }
             return true;
@@ -1550,8 +1585,8 @@ test "Function generates a valid Zig type" {
     // calls it in this test; .execute is separately forced below by
     // matching it against the exact callback type.
     _ = &Double.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Double.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Double.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "FunctionNamed supports real parameter names" {
@@ -1561,8 +1596,8 @@ test "FunctionNamed supports real parameter names" {
         }
     }.eval, &.{ "a", "b" });
     _ = &Add.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Add.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Add.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports multiple parameters of different types" {
@@ -1572,8 +1607,8 @@ test "Function supports multiple parameters of different types" {
         }
     }.eval);
     _ = &Mix.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Mix.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Mix.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports VARCHAR parameter and return type" {
@@ -1585,8 +1620,8 @@ test "Function supports VARCHAR parameter and return type" {
         }
     }.eval);
     _ = &FirstChar.register;
-    const exec_cb: db.ScalarFunctionExecCallback = FirstChar.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = FirstChar.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports a one-level STRUCT argument" {
@@ -1597,8 +1632,8 @@ test "Function supports a one-level STRUCT argument" {
         }
     }.eval);
     _ = &Dist2.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Dist2.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Dist2.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports a STRUCT argument with a VARCHAR field, mixed with a plain argument" {
@@ -1609,8 +1644,8 @@ test "Function supports a STRUCT argument with a VARCHAR field, mixed with a pla
         }
     }.eval);
     _ = &Describe.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Describe.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Describe.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports a one-level STRUCT return type" {
@@ -1621,8 +1656,8 @@ test "Function supports a one-level STRUCT return type" {
         }
     }.eval);
     _ = &Scale.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Scale.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Scale.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports STRUCT argument and STRUCT return together, including a VARCHAR field" {
@@ -1633,8 +1668,8 @@ test "Function supports STRUCT argument and STRUCT return together, including a 
         }
     }.eval);
     _ = &Birthday.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Birthday.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Birthday.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports VARIANT as a parameter and return type" {
@@ -1644,6 +1679,7 @@ test "Function supports VARIANT as a parameter and return type" {
     const IsNull = Function("v2_test_variant_is_null", struct {
         fn eval(context: db.ContextHandle, v: db.ValueHandle) bool {
             _ = context;
+            // A user function: written against the hand-written layer's types.
             var err: db.ErrorInfoHandle = undefined;
             var is_null: bool = false;
             _ = db.valueIsNull(v, &is_null, &err);
@@ -1651,8 +1687,8 @@ test "Function supports VARIANT as a parameter and return type" {
         }
     }.eval);
     _ = &IsNull.register;
-    const exec_cb: db.ScalarFunctionExecCallback = IsNull.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = IsNull.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports the smaller integer/float types" {
@@ -1683,8 +1719,8 @@ test "Function supports BLOB as a parameter and return type" {
         }
     }.eval);
     _ = &FirstByte.register;
-    const exec_cb: db.ScalarFunctionExecCallback = FirstByte.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = FirstByte.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports DECIMAL as a parameter and return type" {
@@ -1695,8 +1731,8 @@ test "Function supports DECIMAL as a parameter and return type" {
         }
     }.eval);
     _ = &DoublePrice.register;
-    const exec_cb: db.ScalarFunctionExecCallback = DoublePrice.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = DoublePrice.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports DECIMAL at each storage-width tier" {
@@ -1722,8 +1758,8 @@ test "Function supports ENUM as a parameter and return type, including manually-
         }
     }.eval);
     _ = &NextStatus.register;
-    const exec_cb: db.ScalarFunctionExecCallback = NextStatus.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = NextStatus.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports a LIST(BIGINT) argument" {
@@ -1735,8 +1771,8 @@ test "Function supports a LIST(BIGINT) argument" {
         }
     }.eval);
     _ = &Sum.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Sum.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Sum.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports a LIST(BIGINT) return type" {
@@ -1747,8 +1783,8 @@ test "Function supports a LIST(BIGINT) return type" {
         }
     }.eval);
     _ = &Pair.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Pair.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Pair.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports an ARRAY(DOUBLE, N) argument and return type" {
@@ -1758,8 +1794,8 @@ test "Function supports an ARRAY(DOUBLE, N) argument and return type" {
         }
     }.eval);
     _ = &Scale2.register;
-    const exec_cb: db.ScalarFunctionExecCallback = Scale2.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Scale2.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports LIST mixed with a plain argument" {
@@ -1771,8 +1807,8 @@ test "Function supports LIST mixed with a plain argument" {
         }
     }.eval);
     _ = &WeightedSum.register;
-    const exec_cb: db.ScalarFunctionExecCallback = WeightedSum.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = WeightedSum.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports a MAP(BIGINT, BIGINT) argument" {
@@ -1784,8 +1820,8 @@ test "Function supports a MAP(BIGINT, BIGINT) argument" {
         }
     }.eval);
     _ = &MapSumValues.register;
-    const exec_cb: db.ScalarFunctionExecCallback = MapSumValues.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = MapSumValues.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports a MAP(BIGINT, BIGINT) return type" {
@@ -1796,8 +1832,8 @@ test "Function supports a MAP(BIGINT, BIGINT) return type" {
         }
     }.eval);
     _ = &MapMake.register;
-    const exec_cb: db.ScalarFunctionExecCallback = MapMake.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = MapMake.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "Function supports a UNION argument and return type, including a VARCHAR member" {
@@ -1808,6 +1844,6 @@ test "Function supports a UNION argument and return type, including a VARCHAR me
         }
     }.eval);
     _ = &UnionRoundtrip.register;
-    const exec_cb: db.ScalarFunctionExecCallback = UnionRoundtrip.execute;
-    try std.testing.expect(exec_cb != null);
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = UnionRoundtrip.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
