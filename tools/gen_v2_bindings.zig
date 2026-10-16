@@ -541,10 +541,24 @@ fn writeParams(g: *Gen, w: *Io.Writer, params: Value) !void {
         const ind = count(p, "indirection");
         const ty = str(get(p, "type")).?;
         const by_value_handle = ind == 0 and (g.kinds.get(ty) orelse .primitive) == .handle;
-        const optional = (ind > 0 or by_value_handle) and try isNullable(g.arena, str(get(p, "description")) orelse "");
+        const desc = str(get(p, "description")) orelse "";
+        const optional = (ind > 0 or by_value_handle) and try isNullable(g.arena, desc);
+        // `uint8_t *` is a byte buffer; other arrays are only said to be so in the prose.
+        const many = ind > 0 and (std.mem.eql(u8, ty, "u8") or try isArray(g.arena, desc));
         try w.print("{f}: ", .{std.zig.fmtId(name)});
-        try writeType(g, w, ty, ind, flag(p, "const"), optional, false);
+        try writeType(g, w, ty, ind, flag(p, "const"), optional, many);
     }
+}
+
+/// Whether a parameter is an array rather than a pointer to one value. The spec does not say so
+/// either; it only describes such a parameter as "An array of ...".
+fn isArray(arena: Allocator, description: []const u8) !bool {
+    const flat = try arena.dupe(u8, description);
+    for (flat) |*ch| if (ch.* == '\n' or ch.* == '\r') {
+        ch.* = ' ';
+    };
+    const rest = if (std.mem.startsWith(u8, flat, "Optional. ")) flat["Optional. ".len..] else flat;
+    return std.mem.startsWith(u8, rest, "An array of") or std.mem.startsWith(u8, rest, "Array of");
 }
 
 /// The spec has no machine-readable nullability: it is only said in the prose of a parameter, as a

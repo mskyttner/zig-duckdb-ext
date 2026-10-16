@@ -327,9 +327,9 @@ pub const api_version: [*:0]const u8 = "v2.0.0";
 /// The function-pointer table DuckDB hands out through `get_api`. The order of the members is the ABI.
 /// A member is null when the table DuckDB serves does not have the function.
 pub const Api = extern struct {
-    duckdb_v2_arena_allocate: ?*const fn (arena: duckdb_v2_arena_handle, byte_len: u64, out_ptr: **u8, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_bignum_decode: ?*const fn (in_data: *const u8, in_length: u64, out_data: *u8, out_capacity: u64, out_length: *u64, out_is_negative: *bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_bignum_encode: ?*const fn (in_data: *const u8, in_length: u64, is_negative: bool, out_data: *u8, out_capacity: u64, out_length: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_arena_allocate: ?*const fn (arena: duckdb_v2_arena_handle, byte_len: u64, out_ptr: *[*]u8, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_bignum_decode: ?*const fn (in_data: [*]const u8, in_length: u64, out_data: [*]u8, out_capacity: u64, out_length: *u64, out_is_negative: *bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_bignum_encode: ?*const fn (in_data: [*]const u8, in_length: u64, is_negative: bool, out_data: [*]u8, out_capacity: u64, out_length: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_column_data_collection_append: ?*const fn (collection: duckdb_v2_column_data_collection_handle, state: duckdb_v2_column_data_collection_append_state_handle, chunk: duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_column_data_collection_append_state_create: ?*const fn (collection: duckdb_v2_column_data_collection_handle, out_state: *duckdb_v2_column_data_collection_append_state_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_column_data_collection_append_state_destroy: ?*const fn (state: *duckdb_v2_column_data_collection_append_state_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -345,8 +345,8 @@ pub const Api = extern struct {
     duckdb_v2_column_data_collection_worker_scan_state_create: ?*const fn (collection: duckdb_v2_column_data_collection_handle, out_state: *duckdb_v2_column_data_collection_worker_scan_state_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_column_data_collection_worker_scan_state_destroy: ?*const fn (state: *duckdb_v2_column_data_collection_worker_scan_state_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_connection_create: ?*const fn (instance: duckdb_v2_instance_handle, out_conn: *duckdb_v2_connection_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_connection_create_type_from_id: ?*const fn (conn: duckdb_v2_connection_handle, type_id: DUCKDB_V2_LOGICAL_TYPE_ID, param_names: ?*const duckdb_v2_identifier_t, param_values: ?*const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_connection_create_type_from_name: ?*const fn (conn: duckdb_v2_connection_handle, name: duckdb_v2_qname_handle, param_names: ?*const duckdb_v2_identifier_t, param_values: ?*const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_connection_create_type_from_id: ?*const fn (conn: duckdb_v2_connection_handle, type_id: DUCKDB_V2_LOGICAL_TYPE_ID, param_names: ?[*]const duckdb_v2_identifier_t, param_values: ?[*]const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_connection_create_type_from_name: ?*const fn (conn: duckdb_v2_connection_handle, name: duckdb_v2_qname_handle, param_names: ?[*]const duckdb_v2_identifier_t, param_values: ?[*]const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_connection_create_type_from_text: ?*const fn (conn: duckdb_v2_connection_handle, text: *const duckdb_v2_str, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_connection_create_type_with_alias: ?*const fn (conn: duckdb_v2_connection_handle, base_type: duckdb_v2_logical_type_handle, alias_name: *const duckdb_v2_identifier_t, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_connection_destroy: ?*const fn (conn: *duckdb_v2_connection_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -356,8 +356,8 @@ pub const Api = extern struct {
     duckdb_v2_connection_interrupt: ?*const fn (conn: duckdb_v2_connection_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_connection_progress_get: ?*const fn (conn: duckdb_v2_connection_handle, out_percentage: *f64, out_rows_processed: *u64, out_total_rows_to_process: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_connection_set_option: ?*const fn (conn: duckdb_v2_connection_handle, name: *const duckdb_v2_identifier_t, setting: *const duckdb_v2_str, scope: DUCKDB_V2_SETTING_SCOPE, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_context_create_type_from_id: ?*const fn (ctx: duckdb_v2_context_handle, type_id: DUCKDB_V2_LOGICAL_TYPE_ID, param_names: ?*const duckdb_v2_identifier_t, param_values: ?*const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_context_create_type_from_name: ?*const fn (ctx: duckdb_v2_context_handle, name: duckdb_v2_qname_handle, param_names: ?*const duckdb_v2_identifier_t, param_values: ?*const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_context_create_type_from_id: ?*const fn (ctx: duckdb_v2_context_handle, type_id: DUCKDB_V2_LOGICAL_TYPE_ID, param_names: ?[*]const duckdb_v2_identifier_t, param_values: ?[*]const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_context_create_type_from_name: ?*const fn (ctx: duckdb_v2_context_handle, name: duckdb_v2_qname_handle, param_names: ?[*]const duckdb_v2_identifier_t, param_values: ?[*]const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_context_create_type_from_text: ?*const fn (ctx: duckdb_v2_context_handle, text: *const duckdb_v2_str, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_context_create_type_with_alias: ?*const fn (ctx: duckdb_v2_context_handle, base_type: duckdb_v2_logical_type_handle, alias_name: *const duckdb_v2_identifier_t, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_data_chunk_copy_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, chunk: duckdb_v2_data_chunk_handle, out_chunk: *duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -418,13 +418,13 @@ pub const Api = extern struct {
     duckdb_v2_schema_get_field: ?*const fn (schema: duckdb_v2_schema_handle, index: u64, out_name: *duckdb_v2_identifier_t, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_sql_statement_destroy: ?*const fn (statement: *duckdb_v2_sql_statement_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_statement_bind: ?*const fn (conn: duckdb_v2_connection_handle, statement: duckdb_v2_sql_statement_handle, out_schema: *duckdb_v2_schema_handle, out_parameters: ?*duckdb_v2_schema_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_statement_execute: ?*const fn (conn: duckdb_v2_connection_handle, statement: duckdb_v2_sql_statement_handle, parameter_names: ?*const duckdb_v2_identifier_t, parameter_values: ?*const duckdb_v2_value_handle, parameter_count: u64, out_result: *duckdb_v2_result_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_statement_execute: ?*const fn (conn: duckdb_v2_connection_handle, statement: duckdb_v2_sql_statement_handle, parameter_names: ?[*]const duckdb_v2_identifier_t, parameter_values: ?[*]const duckdb_v2_value_handle, parameter_count: u64, out_result: *duckdb_v2_result_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_statement_iterator_destroy: ?*const fn (iterator: *duckdb_v2_statement_iterator_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_statement_iterator_next: ?*const fn (iterator: duckdb_v2_statement_iterator_handle, out_statement: *duckdb_v2_sql_statement_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_cast_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, value: duckdb_v2_value_handle, target_type: duckdb_v2_logical_type_handle, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_cast_with_context: ?*const fn (ctx: duckdb_v2_context_handle, value: duckdb_v2_value_handle, target_type: duckdb_v2_logical_type_handle, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_array_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_array_with_context: ?*const fn (ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_array_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?[*]const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_array_with_context: ?*const fn (ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?[*]const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_bigint_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, in_value: i64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_bigint_with_context: ?*const fn (ctx: duckdb_v2_context_handle, in_value: i64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_bignum_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, in_value: *const duckdb_v2_str, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -449,17 +449,17 @@ pub const Api = extern struct {
     duckdb_v2_value_create_int_with_context: ?*const fn (ctx: duckdb_v2_context_handle, in_value: i32, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_interval_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, in_value: *const duckdb_v2_interval_t, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_interval_with_context: ?*const fn (ctx: duckdb_v2_context_handle, in_value: *const duckdb_v2_interval_t, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_list_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_list_with_context: ?*const fn (ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_map_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?*const duckdb_v2_value_handle, values: ?*const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_map_with_context: ?*const fn (ctx: duckdb_v2_context_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?*const duckdb_v2_value_handle, values: ?*const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_list_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?[*]const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_list_with_context: ?*const fn (ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?[*]const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_map_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?[*]const duckdb_v2_value_handle, values: ?[*]const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_map_with_context: ?*const fn (ctx: duckdb_v2_context_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?[*]const duckdb_v2_value_handle, values: ?[*]const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_null: ?*const fn (@"type": duckdb_v2_logical_type_handle, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_null_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, @"type": duckdb_v2_logical_type_handle, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_null_with_context: ?*const fn (ctx: duckdb_v2_context_handle, @"type": duckdb_v2_logical_type_handle, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_smallint_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, in_value: i16, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_smallint_with_context: ?*const fn (ctx: duckdb_v2_context_handle, in_value: i16, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_struct_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, names: ?*const duckdb_v2_identifier_t, children: ?*const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_struct_with_context: ?*const fn (ctx: duckdb_v2_context_handle, names: ?*const duckdb_v2_identifier_t, children: ?*const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_struct_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, names: ?[*]const duckdb_v2_identifier_t, children: ?[*]const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_struct_with_context: ?*const fn (ctx: duckdb_v2_context_handle, names: ?[*]const duckdb_v2_identifier_t, children: ?[*]const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_time_ns_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, in_value: i64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_time_ns_with_context: ?*const fn (ctx: duckdb_v2_context_handle, in_value: i64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_time_tz_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, in_value: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -480,8 +480,8 @@ pub const Api = extern struct {
     duckdb_v2_value_create_timestamp_with_context: ?*const fn (ctx: duckdb_v2_context_handle, in_value: i64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_tinyint_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, in_value: i8, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_tinyint_with_context: ?*const fn (ctx: duckdb_v2_context_handle, in_value: i8, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_tuple_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, children: ?*const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_create_tuple_with_context: ?*const fn (ctx: duckdb_v2_context_handle, children: ?*const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_tuple_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, children: ?[*]const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_create_tuple_with_context: ?*const fn (ctx: duckdb_v2_context_handle, children: ?[*]const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_type_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, @"type": duckdb_v2_logical_type_handle, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_type_with_context: ?*const fn (ctx: duckdb_v2_context_handle, in_type: duckdb_v2_logical_type_handle, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_create_ubigint_with_connection: ?*const fn (conn: duckdb_v2_connection_handle, in_value: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -505,7 +505,7 @@ pub const Api = extern struct {
     duckdb_v2_value_get_child: ?*const fn (value: duckdb_v2_value_handle, index: u64, out_child: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_get_child_count: ?*const fn (value: duckdb_v2_value_handle, out_count: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_get_date: ?*const fn (value: duckdb_v2_value_handle, out: *i32, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_get_decimal: ?*const fn (value: duckdb_v2_value_handle, out: *duckdb_v2_hugeint_t, out_width: *u8, out_scale: *u8, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_get_decimal: ?*const fn (value: duckdb_v2_value_handle, out: *duckdb_v2_hugeint_t, out_width: [*]u8, out_scale: [*]u8, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_get_double: ?*const fn (value: duckdb_v2_value_handle, out: *f64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_get_float: ?*const fn (value: duckdb_v2_value_handle, out: *f32, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_get_hugeint: ?*const fn (value: duckdb_v2_value_handle, out: *duckdb_v2_hugeint_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -528,7 +528,7 @@ pub const Api = extern struct {
     duckdb_v2_value_get_uhugeint: ?*const fn (value: duckdb_v2_value_handle, out: *duckdb_v2_uhugeint_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_get_uint: ?*const fn (value: duckdb_v2_value_handle, out: *u32, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_get_usmallint: ?*const fn (value: duckdb_v2_value_handle, out: *u16, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_value_get_utinyint: ?*const fn (value: duckdb_v2_value_handle, out: *u8, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_value_get_utinyint: ?*const fn (value: duckdb_v2_value_handle, out: [*]u8, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_get_uuid: ?*const fn (value: duckdb_v2_value_handle, out: *duckdb_v2_hugeint_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_get_varchar: ?*const fn (value: duckdb_v2_value_handle, out: *duckdb_v2_str, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_value_is_null: ?*const fn (value: duckdb_v2_value_handle, out_is_null: *bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -688,7 +688,7 @@ pub const Api = extern struct {
     duckdb_v2_file_tell: ?*const fn (file: duckdb_v2_file_handle, position: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_file_write: ?*const fn (file: duckdb_v2_file_handle, buffer: *const anyopaque, buffer_size: u64, bytes_written: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_file_write_at: ?*const fn (file: duckdb_v2_file_handle, buffer: *const anyopaque, buffer_size: u64, location: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_qname_create: ?*const fn (parts: *const duckdb_v2_identifier_t, part_count: u64, name: *duckdb_v2_qname_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_qname_create: ?*const fn (parts: [*]const duckdb_v2_identifier_t, part_count: u64, name: *duckdb_v2_qname_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_qname_destroy: ?*const fn (name: *duckdb_v2_qname_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_qname_equals: ?*const fn (left: duckdb_v2_qname_handle, right: duckdb_v2_qname_handle, result: *bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_qname_get_part: ?*const fn (name: duckdb_v2_qname_handle, index: u64, part: *duckdb_v2_identifier_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -707,12 +707,12 @@ pub const Api = extern struct {
     duckdb_v2_replacement_scan_register: ?*const fn (scan: duckdb_v2_replacement_scan_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_set_alias: ?*const fn (info: duckdb_v2_replacement_scan_info_handle, alias: *const duckdb_v2_identifier_t, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_set_callback: ?*const fn (scan: duckdb_v2_replacement_scan_handle, callback: ?duckdb_v2_replacement_scan_callback_fn, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_replacement_scan_set_collection: ?*const fn (info: duckdb_v2_replacement_scan_info_handle, collection: duckdb_v2_column_data_collection_handle, column_names: ?*const duckdb_v2_identifier_t, column_count: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_replacement_scan_set_collection: ?*const fn (info: duckdb_v2_replacement_scan_info_handle, collection: duckdb_v2_column_data_collection_handle, column_names: ?[*]const duckdb_v2_identifier_t, column_count: u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_set_function_name: ?*const fn (info: duckdb_v2_replacement_scan_info_handle, name: duckdb_v2_qname_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_set_subquery: ?*const fn (info: duckdb_v2_replacement_scan_info_handle, sql: *const duckdb_v2_str, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_replacement_scan_set_user_data: ?*const fn (scan: duckdb_v2_replacement_scan_handle, data: *duckdb_v2_opaque, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_arrow_exporter_append: ?*const fn (exporter: duckdb_v2_arrow_exporter_handle, chunk: *duckdb_v2_data_chunk_handle, consume: bool, flush: bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_arrow_exporter_create: ?*const fn (context: duckdb_v2_context_handle, types: ?*const duckdb_v2_logical_type_handle, names: ?*const duckdb_v2_str, count: u64, batch_size: u64, out_exporter: *duckdb_v2_arrow_exporter_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_arrow_exporter_create: ?*const fn (context: duckdb_v2_context_handle, types: ?[*]const duckdb_v2_logical_type_handle, names: ?[*]const duckdb_v2_str, count: u64, batch_size: u64, out_exporter: *duckdb_v2_arrow_exporter_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_arrow_exporter_destroy: ?*const fn (exporter: *duckdb_v2_arrow_exporter_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_arrow_exporter_get_schema: ?*const fn (exporter: duckdb_v2_arrow_exporter_handle, out_schema: *ArrowSchema, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_arrow_exporter_next_array: ?*const fn (exporter: duckdb_v2_arrow_exporter_handle, out_array: *ArrowArray, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -811,7 +811,7 @@ pub const Api = extern struct {
     duckdb_v2_identifier_render_quoted: ?*const fn (name: *const duckdb_v2_identifier_t, out_text: [*]u8, out_capacity: u64, out_length: *u64, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_prepared_statement_create: ?*const fn (conn: duckdb_v2_connection_handle, statement: duckdb_v2_sql_statement_handle, require_cacheable: bool, out_prepared: *duckdb_v2_prepared_statement_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_prepared_statement_destroy: ?*const fn (prepared: *duckdb_v2_prepared_statement_handle) callconv(.c) DUCKDB_V2_ERROR,
-    duckdb_v2_prepared_statement_execute: ?*const fn (prepared: duckdb_v2_prepared_statement_handle, parameter_names: ?*const duckdb_v2_identifier_t, parameter_values: ?*const duckdb_v2_value_handle, parameter_count: u64, out_result: *duckdb_v2_result_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
+    duckdb_v2_prepared_statement_execute: ?*const fn (prepared: duckdb_v2_prepared_statement_handle, parameter_names: ?[*]const duckdb_v2_identifier_t, parameter_values: ?[*]const duckdb_v2_value_handle, parameter_count: u64, out_result: *duckdb_v2_result_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_prepared_statement_reuses_plan: ?*const fn (prepared: duckdb_v2_prepared_statement_handle, out_reuses: *bool, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_description_destroy: ?*const fn (desc: *duckdb_v2_table_description_handle) callconv(.c) DUCKDB_V2_ERROR,
     duckdb_v2_table_description_get_column: ?*const fn (desc: duckdb_v2_table_description_handle, index: u64, column: *duckdb_v2_column_description_handle, err: ?*duckdb_v2_error_info_handle) callconv(.c) DUCKDB_V2_ERROR,
@@ -953,7 +953,7 @@ pub fn init(input: *const duckdb_v2_extension_input, minimum_api_version: [*:0]c
 /// - `byte_len`: Number of bytes to reserve. May be 0.
 /// - `out_ptr` (OUT_BORROW): Receives a writable pointer to byte_len arena-owned bytes.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_arena_allocate(arena: duckdb_v2_arena_handle, byte_len: u64, out_ptr: **u8, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_arena_allocate(arena: duckdb_v2_arena_handle, byte_len: u64, out_ptr: *[*]u8, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_arena_allocate.?(arena, byte_len, out_ptr, err);
 }
 
@@ -1093,7 +1093,7 @@ pub inline fn duckdb_v2_arrow_importer_destroy(importer: *duckdb_v2_arrow_import
 /// - `batch_size`: Maximum rows per produced array, or 0 for no maximum.
 /// - `out_exporter` (OUT): On success, receives the new exporter. Owned by the caller; destroy via `arrow_exporter_destroy`.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_arrow_exporter_create(context: duckdb_v2_context_handle, types: ?*const duckdb_v2_logical_type_handle, names: ?*const duckdb_v2_str, count: u64, batch_size: u64, out_exporter: *duckdb_v2_arrow_exporter_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_arrow_exporter_create(context: duckdb_v2_context_handle, types: ?[*]const duckdb_v2_logical_type_handle, names: ?[*]const duckdb_v2_str, count: u64, batch_size: u64, out_exporter: *duckdb_v2_arrow_exporter_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_arrow_exporter_create.?(context, types, names, count, batch_size, out_exporter, err);
 }
 
@@ -4828,7 +4828,7 @@ pub inline fn duckdb_v2_replacement_scan_add_named_argument(info: duckdb_v2_repl
 /// - `column_names` (IN): Optional. An array of `column_count` column names, in order. Pass NULL for the default names col1..colN.
 /// - `column_count`: The number of names in `column_names`. Must equal the collection's column count, or 0 for the default names.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_replacement_scan_set_collection(info: duckdb_v2_replacement_scan_info_handle, collection: duckdb_v2_column_data_collection_handle, column_names: ?*const duckdb_v2_identifier_t, column_count: u64, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_replacement_scan_set_collection(info: duckdb_v2_replacement_scan_info_handle, collection: duckdb_v2_column_data_collection_handle, column_names: ?[*]const duckdb_v2_identifier_t, column_count: u64, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_replacement_scan_set_collection.?(info, collection, column_names, column_count, err);
 }
 
@@ -6946,7 +6946,7 @@ pub inline fn duckdb_v2_custom_type_destroy(@"type": *duckdb_v2_custom_type_hand
 /// - `param_count`: The number of parameters. 0 instantiates a parameterless primitive.
 /// - `out_type` (OUT): Receives the new logical type handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_context_create_type_from_id(ctx: duckdb_v2_context_handle, type_id: DUCKDB_V2_LOGICAL_TYPE_ID, param_names: ?*const duckdb_v2_identifier_t, param_values: ?*const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_context_create_type_from_id(ctx: duckdb_v2_context_handle, type_id: DUCKDB_V2_LOGICAL_TYPE_ID, param_names: ?[*]const duckdb_v2_identifier_t, param_values: ?[*]const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_context_create_type_from_id.?(ctx, type_id, param_names, param_values, param_count, out_type, err);
 }
 
@@ -6995,7 +6995,7 @@ pub inline fn duckdb_v2_context_create_type_from_id(ctx: duckdb_v2_context_handl
 /// - `param_count`: The number of parameters.
 /// - `out_type` (OUT): Receives the new logical type handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_context_create_type_from_name(ctx: duckdb_v2_context_handle, name: duckdb_v2_qname_handle, param_names: ?*const duckdb_v2_identifier_t, param_values: ?*const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_context_create_type_from_name(ctx: duckdb_v2_context_handle, name: duckdb_v2_qname_handle, param_names: ?[*]const duckdb_v2_identifier_t, param_values: ?[*]const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_context_create_type_from_name.?(ctx, name, param_names, param_values, param_count, out_type, err);
 }
 
@@ -7070,7 +7070,7 @@ pub inline fn duckdb_v2_context_create_type_from_text(ctx: duckdb_v2_context_han
 /// - `param_count`: The number of parameters. 0 instantiates a parameterless primitive.
 /// - `out_type` (OUT): Receives the new logical type handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_connection_create_type_from_id(conn: duckdb_v2_connection_handle, type_id: DUCKDB_V2_LOGICAL_TYPE_ID, param_names: ?*const duckdb_v2_identifier_t, param_values: ?*const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_connection_create_type_from_id(conn: duckdb_v2_connection_handle, type_id: DUCKDB_V2_LOGICAL_TYPE_ID, param_names: ?[*]const duckdb_v2_identifier_t, param_values: ?[*]const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_connection_create_type_from_id.?(conn, type_id, param_names, param_values, param_count, out_type, err);
 }
 
@@ -7098,7 +7098,7 @@ pub inline fn duckdb_v2_connection_create_type_from_id(conn: duckdb_v2_connectio
 /// - `param_count`: The number of parameters.
 /// - `out_type` (OUT): Receives the new logical type handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_connection_create_type_from_name(conn: duckdb_v2_connection_handle, name: duckdb_v2_qname_handle, param_names: ?*const duckdb_v2_identifier_t, param_values: ?*const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_connection_create_type_from_name(conn: duckdb_v2_connection_handle, name: duckdb_v2_qname_handle, param_names: ?[*]const duckdb_v2_identifier_t, param_values: ?[*]const duckdb_v2_value_handle, param_count: u64, out_type: *duckdb_v2_logical_type_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_connection_create_type_from_name.?(conn, name, param_names, param_values, param_count, out_type, err);
 }
 
@@ -7373,7 +7373,7 @@ pub inline fn duckdb_v2_prepared_statement_create(conn: duckdb_v2_connection_han
 /// - `parameter_count`: The number of entries in `parameter_names` and `parameter_values`. Pass 0 for a statement without parameters.
 /// - `out_result` (OUT): On success, receives the new result. Owned by the caller; destroy via `result_destroy`.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_prepared_statement_execute(prepared: duckdb_v2_prepared_statement_handle, parameter_names: ?*const duckdb_v2_identifier_t, parameter_values: ?*const duckdb_v2_value_handle, parameter_count: u64, out_result: *duckdb_v2_result_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_prepared_statement_execute(prepared: duckdb_v2_prepared_statement_handle, parameter_names: ?[*]const duckdb_v2_identifier_t, parameter_values: ?[*]const duckdb_v2_value_handle, parameter_count: u64, out_result: *duckdb_v2_result_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_prepared_statement_execute.?(prepared, parameter_names, parameter_values, parameter_count, out_result, err);
 }
 
@@ -7441,7 +7441,7 @@ pub inline fn duckdb_v2_qname_parse(text: *const duckdb_v2_str, name: *duckdb_v2
 /// - `part_count`: The number of parts, between one and three.
 /// - `name` (OUT): On success, receives the qualified name. Owned by the caller; destroy via `qname_destroy`.
 /// - `err`: Optional. On failure, receives an opaque info handle the caller must destroy via `error_info_destroy`.
-pub inline fn duckdb_v2_qname_create(parts: *const duckdb_v2_identifier_t, part_count: u64, name: *duckdb_v2_qname_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_qname_create(parts: [*]const duckdb_v2_identifier_t, part_count: u64, name: *duckdb_v2_qname_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_qname_create.?(parts, part_count, name, err);
 }
 
@@ -7599,7 +7599,7 @@ pub inline fn duckdb_v2_qname_destroy(name: *duckdb_v2_qname_handle) DUCKDB_V2_E
 /// - `parameter_count`: The number of parameters in parameter_names and parameter_values. Pass 0 for an unparameterized statement.
 /// - `out_result` (OUT): Receives the new result handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_statement_execute(conn: duckdb_v2_connection_handle, statement: duckdb_v2_sql_statement_handle, parameter_names: ?*const duckdb_v2_identifier_t, parameter_values: ?*const duckdb_v2_value_handle, parameter_count: u64, out_result: *duckdb_v2_result_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_statement_execute(conn: duckdb_v2_connection_handle, statement: duckdb_v2_sql_statement_handle, parameter_names: ?[*]const duckdb_v2_identifier_t, parameter_values: ?[*]const duckdb_v2_value_handle, parameter_count: u64, out_result: *duckdb_v2_result_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_statement_execute.?(conn, statement, parameter_names, parameter_values, parameter_count, out_result, err);
 }
 
@@ -8145,7 +8145,7 @@ pub inline fn duckdb_v2_value_get_bool(value: duckdb_v2_value_handle, out: *bool
 /// - `value`: The value to read.
 /// - `out` (OUT): Receives the payload as a uint8_t.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_get_utinyint(value: duckdb_v2_value_handle, out: *u8, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_get_utinyint(value: duckdb_v2_value_handle, out: [*]u8, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_get_utinyint.?(value, out, err);
 }
 
@@ -8580,7 +8580,7 @@ pub inline fn duckdb_v2_value_get_uuid(value: duckdb_v2_value_handle, out: *duck
 /// - `out_width` (OUT): Receives the total digit count of the value's type.
 /// - `out_scale` (OUT): Receives the digits after the decimal point.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_get_decimal(value: duckdb_v2_value_handle, out: *duckdb_v2_hugeint_t, out_width: *u8, out_scale: *u8, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_get_decimal(value: duckdb_v2_value_handle, out: *duckdb_v2_hugeint_t, out_width: [*]u8, out_scale: [*]u8, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_get_decimal.?(value, out, out_width, out_scale, err);
 }
 
@@ -9636,7 +9636,7 @@ pub inline fn duckdb_v2_value_create_bignum_with_connection(conn: duckdb_v2_conn
 /// - `child_count`: The number of elements.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_list_with_context(ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_list_with_context(ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?[*]const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_list_with_context.?(ctx, child_type, children, child_count, out_value, err);
 }
 
@@ -9661,7 +9661,7 @@ pub inline fn duckdb_v2_value_create_list_with_context(ctx: duckdb_v2_context_ha
 /// - `child_count`: The number of elements.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_list_with_connection(conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_list_with_connection(conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?[*]const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_list_with_connection.?(conn, child_type, children, child_count, out_value, err);
 }
 
@@ -9683,7 +9683,7 @@ pub inline fn duckdb_v2_value_create_list_with_connection(conn: duckdb_v2_connec
 /// - `child_count`: The number of elements.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_array_with_context(ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_array_with_context(ctx: duckdb_v2_context_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?[*]const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_array_with_context.?(ctx, child_type, children, child_count, out_value, err);
 }
 
@@ -9705,7 +9705,7 @@ pub inline fn duckdb_v2_value_create_array_with_context(ctx: duckdb_v2_context_h
 /// - `child_count`: The number of elements.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_array_with_connection(conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?*const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_array_with_connection(conn: duckdb_v2_connection_handle, child_type: ?duckdb_v2_logical_type_handle, children: ?[*]const duckdb_v2_value_handle, child_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_array_with_connection.?(conn, child_type, children, child_count, out_value, err);
 }
 
@@ -9727,7 +9727,7 @@ pub inline fn duckdb_v2_value_create_array_with_connection(conn: duckdb_v2_conne
 /// - `field_count`: The number of fields.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_struct_with_context(ctx: duckdb_v2_context_handle, names: ?*const duckdb_v2_identifier_t, children: ?*const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_struct_with_context(ctx: duckdb_v2_context_handle, names: ?[*]const duckdb_v2_identifier_t, children: ?[*]const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_struct_with_context.?(ctx, names, children, field_count, out_value, err);
 }
 
@@ -9749,7 +9749,7 @@ pub inline fn duckdb_v2_value_create_struct_with_context(ctx: duckdb_v2_context_
 /// - `field_count`: The number of fields.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_struct_with_connection(conn: duckdb_v2_connection_handle, names: ?*const duckdb_v2_identifier_t, children: ?*const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_struct_with_connection(conn: duckdb_v2_connection_handle, names: ?[*]const duckdb_v2_identifier_t, children: ?[*]const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_struct_with_connection.?(conn, names, children, field_count, out_value, err);
 }
 
@@ -9770,7 +9770,7 @@ pub inline fn duckdb_v2_value_create_struct_with_connection(conn: duckdb_v2_conn
 /// - `field_count`: The number of fields.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_tuple_with_context(ctx: duckdb_v2_context_handle, children: ?*const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_tuple_with_context(ctx: duckdb_v2_context_handle, children: ?[*]const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_tuple_with_context.?(ctx, children, field_count, out_value, err);
 }
 
@@ -9791,7 +9791,7 @@ pub inline fn duckdb_v2_value_create_tuple_with_context(ctx: duckdb_v2_context_h
 /// - `field_count`: The number of fields.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_tuple_with_connection(conn: duckdb_v2_connection_handle, children: ?*const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_tuple_with_connection(conn: duckdb_v2_connection_handle, children: ?[*]const duckdb_v2_value_handle, field_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_tuple_with_connection.?(conn, children, field_count, out_value, err);
 }
 
@@ -9816,7 +9816,7 @@ pub inline fn duckdb_v2_value_create_tuple_with_connection(conn: duckdb_v2_conne
 /// - `entry_count`: The number of entries.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_map_with_context(ctx: duckdb_v2_context_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?*const duckdb_v2_value_handle, values: ?*const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_map_with_context(ctx: duckdb_v2_context_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?[*]const duckdb_v2_value_handle, values: ?[*]const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_map_with_context.?(ctx, key_type, value_type, keys, values, entry_count, out_value, err);
 }
 
@@ -9841,7 +9841,7 @@ pub inline fn duckdb_v2_value_create_map_with_context(ctx: duckdb_v2_context_han
 /// - `entry_count`: The number of entries.
 /// - `out_value` (OUT): Receives the new composite value.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_value_create_map_with_connection(conn: duckdb_v2_connection_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?*const duckdb_v2_value_handle, values: ?*const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_value_create_map_with_connection(conn: duckdb_v2_connection_handle, key_type: ?duckdb_v2_logical_type_handle, value_type: ?duckdb_v2_logical_type_handle, keys: ?[*]const duckdb_v2_value_handle, values: ?[*]const duckdb_v2_value_handle, entry_count: u64, out_value: *duckdb_v2_value_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_value_create_map_with_connection.?(conn, key_type, value_type, keys, values, entry_count, out_value, err);
 }
 
@@ -10381,7 +10381,7 @@ pub inline fn duckdb_v2_vector_get_child(vector: duckdb_v2_vector_handle, index:
 /// - `out_length` (OUT): Receives the magnitude size in bytes, written on success and on ERROR_INPUT_OBJECT_SIZE.
 /// - `out_is_negative` (OUT): Receives true if the value is negative, false otherwise.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_bignum_decode(in_data: *const u8, in_length: u64, out_data: *u8, out_capacity: u64, out_length: *u64, out_is_negative: *bool, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_bignum_decode(in_data: [*]const u8, in_length: u64, out_data: [*]u8, out_capacity: u64, out_length: *u64, out_is_negative: *bool, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_bignum_decode.?(in_data, in_length, out_data, out_capacity, out_length, out_is_negative, err);
 }
 
@@ -10419,7 +10419,7 @@ pub inline fn duckdb_v2_bignum_decode(in_data: *const u8, in_length: u64, out_da
 /// - `out_capacity`: Bytes available in out_data. Ignored when out_data is NULL.
 /// - `out_length` (OUT): Receives the storage size in bytes — written on success and on ERROR_INPUT_OBJECT_SIZE.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub inline fn duckdb_v2_bignum_encode(in_data: *const u8, in_length: u64, is_negative: bool, out_data: *u8, out_capacity: u64, out_length: *u64, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
+pub inline fn duckdb_v2_bignum_encode(in_data: [*]const u8, in_length: u64, is_negative: bool, out_data: [*]u8, out_capacity: u64, out_length: *u64, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR {
     return api.duckdb_v2_bignum_encode.?(in_data, in_length, is_negative, out_data, out_capacity, out_length, err);
 }
 

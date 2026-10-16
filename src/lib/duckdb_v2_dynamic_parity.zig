@@ -104,7 +104,7 @@ var arena_last_len: u64 = 0;
 fn fakeArenaAllocate(
     arena: dyn.duckdb_v2_arena_handle,
     byte_len: u64,
-    out_ptr: **u8,
+    out_ptr: *[*]u8,
     err: ?*dyn.duckdb_v2_error_info_handle,
 ) callconv(.c) dyn.DUCKDB_V2_ERROR {
     _ = arena;
@@ -158,7 +158,7 @@ test "init copies the table and the wrappers call through it" {
     // DuckDB may free the table it handed out: nothing may read it after `init`.
     fake_table = std.mem.zeroes(dyn.Api);
 
-    var out: *u8 = undefined;
+    var out: [*]u8 = undefined;
     const arena: dyn.duckdb_v2_arena_handle = @ptrFromInt(0x10);
     try std.testing.expectEqual(dyn.DUCKDB_V2_ERROR.ERROR_NONE, dyn.duckdb_v2_arena_allocate(arena, 42, &out, null));
     try std.testing.expectEqual(@as(usize, 1), arena_calls);
@@ -176,7 +176,7 @@ test "setTable installs a copy of the table it is given" {
     dyn.setTable(&table);
     table = std.mem.zeroes(dyn.Api);
 
-    var out: *u8 = undefined;
+    var out: [*]u8 = undefined;
     const arena: dyn.duckdb_v2_arena_handle = @ptrFromInt(0x10);
     try std.testing.expectEqual(dyn.DUCKDB_V2_ERROR.ERROR_NONE, dyn.duckdb_v2_arena_allocate(arena, 7, &out, null));
     try std.testing.expectEqual(@as(usize, 1), arena_calls);
