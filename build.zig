@@ -1251,6 +1251,8 @@ pub fn build(b: *std.Build) void {
         if (duckdb_cli_v2) |cli| run.addFileArg(cli) else run.addArg("duckdb");
         run.addFileArg(v2_poc_output);
         run.addFileArg(b.path("test/sql/zig_ext_v2_poc.test"));
+        // zig_v2_nethogs_trace spawns the synthetic nethogs the v2-poc step installs.
+        run.step.dependOn(&install_fake_nethogs.step);
 
         const sqllogictest_v2_poc_step = b.step("sqllogictest-v2-poc", "Run SQL logic tests against the v2 proof-of-concept extension (comptime scalar/table frameworks)");
         sqllogictest_v2_poc_step.dependOn(&run.step);

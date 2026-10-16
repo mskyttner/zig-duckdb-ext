@@ -1303,3 +1303,107 @@ query I
 SELECT count(*) FROM (SELECT zig_v2_last_seen_ct(CASE i % 3 WHEN 0 THEN 'cc' WHEN 1 THEN 'a' ELSE 'bbb' END) AS a FROM range(30) t(i) GROUP BY i % 3) r JOIN (VALUES ('a'), ('bbb'), ('cc'), ('zzz')) k(v) ON r.a = k.v
 ----
 3
+
+# ── Appender (comptime_appender_v2) ──
+# Each of the first three builds rows with the Appender, takes the collection it hands back, scans it and
+# formats what it read; the text is the whole of what is checked, and it covers: BIGINT, VARCHAR and DOUBLE
+# columns, and a second Appender filled with 2500 rows, which flushes its chunk twice (2048 + 452) through the
+# same scratch chunk; a LIST(BIGINT) and a STRUCT column; a DOUBLE[3] ARRAY and an ENUM column.
+
+query T
+SELECT zig_v2_appender_test()
+----
+1:alice:1.50|2:bob:2.75|3:carol:-4.00|stress:2500
+
+query T
+SELECT zig_v2_appender_nested_test()
+----
+[1,2,3]:(1.5,2.5)|[]:(-1.0,0.0)
+
+query T
+SELECT zig_v2_appender_array_enum_test()
+----
+[1.5,2.5,3.5]:active|[4.0,5.0,6.0]:done
+
+query II
+SELECT count(DISTINCT zig_v2_appender_test()), count(*) FROM range(1000)
+----
+1
+1000
+
+query TI
+SELECT zig_v2_appender_test() = zig_v2_appender_test(), length(zig_v2_appender_test())
+----
+true
+49
+
+
+# zig_v2_nethogs_trace pushes the rows a subprocess prints through an Appender and returns them as a table. The
+# subprocess is the synthetic nethogs the v2-poc step installs; its output is deterministic, and the expected
+# values below were parsed from it directly.
+
+query TTTTTT
+SELECT typeof(ts), typeof(program), typeof(pid), typeof(uid), typeof(sent_kbps), typeof(recv_kbps) FROM zig_v2_nethogs_trace('zig-out/bin/fake_nethogs 1', 1) LIMIT 1
+----
+BIGINT
+VARCHAR
+BIGINT
+BIGINT
+DOUBLE
+DOUBLE
+
+query I
+SELECT count(*) FROM zig_v2_nethogs_trace('zig-out/bin/fake_nethogs 1', 0)
+----
+0
+
+query I
+SELECT count(*) FROM zig_v2_nethogs_trace('zig-out/bin/fake_nethogs 1', 1)
+----
+4
+
+query T
+SELECT md5(string_agg(ts || '|' || program || '|' || pid || '|' || uid || '|' || sent_kbps || '|' || recv_kbps, ',' ORDER BY ts, pid)) FROM zig_v2_nethogs_trace('zig-out/bin/fake_nethogs 1', 1)
+----
+9d5b6519723567cbb8a481403e2e0583
+
+query I
+SELECT count(*) FROM zig_v2_nethogs_trace('zig-out/bin/fake_nethogs 3', 3)
+----
+12
+
+query T
+SELECT md5(string_agg(ts || '|' || program || '|' || pid || '|' || uid || '|' || sent_kbps || '|' || recv_kbps, ',' ORDER BY ts, pid)) FROM zig_v2_nethogs_trace('zig-out/bin/fake_nethogs 3', 3)
+----
+82dc2493e3f3edde2d4bf6f270960340
+
+query I
+SELECT count(*) FROM zig_v2_nethogs_trace('zig-out/bin/fake_nethogs 30', 30)
+----
+120
+
+query T
+SELECT md5(string_agg(ts || '|' || program || '|' || pid || '|' || uid || '|' || sent_kbps || '|' || recv_kbps, ',' ORDER BY ts, pid)) FROM zig_v2_nethogs_trace('zig-out/bin/fake_nethogs 30', 30)
+----
+2a366fce4164d657604a3c78020678ef
+
+query TII
+SELECT program, count(*), sum(pid) FROM zig_v2_nethogs_trace('zig-out/bin/fake_nethogs 5', 5) GROUP BY program ORDER BY program
+----
+/usr/bin/curl
+5
+28390
+/usr/bin/firefox
+5
+6170
+/usr/bin/zoom
+5
+11110
+/usr/sbin/sshd
+5
+4550
+
+statement error
+SELECT * FROM zig_v2_nethogs_trace('zig-out/bin/does_not_exist 1', 1)
+----
+failed to spawn/read
