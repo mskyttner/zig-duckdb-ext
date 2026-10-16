@@ -1909,15 +1909,34 @@ blocking finding from the official-prebuilt-archive test: `get_api`
 is unconditionally null for statically-registered extensions regardless
 of which toolchain compiled `libduckdb_static.a`, since that's a
 property of DuckDB's own C++ source (`capi_v2_extension.cpp`), not the
-archive's build toolchain. Didn't re-run the full
-`duckdb_register_static_extension`/`zig_ext_v2` static-embed-poc test
-against this from-source archive specifically — the source-level
-explanation already fully accounts for why the result would be
-identical, so repeating that specific test here wouldn't add
-information, just cost; noted as a trivial, available follow-up if ever
-useful rather than performed speculatively. Build artifacts (~7.7GB)
-left in the session's scratchpad directory, not committed anywhere —
-this was an investigation, not a change to this project's own build.
+archive's build toolchain.
+
+**Re-run anyway, on request — confirmed empirically, not just by
+source-level reasoning.** Added a temporary, isolated build step
+(`v2-static-embed-poc-fromsrc`, hardcoded to the scratch build's
+absolute paths, reverted via `git checkout -- build.zig` immediately
+after use — never committed) reusing `static_embed_poc_main.zig`
+unchanged, pointed at this from-source archive and its own `duckdb.h`
+instead of the official prebuilt one. Result: bit-for-bit identical to
+the official-archive test — `duckdb_register_static_extension -> 0`
+(success), open/connect/`LOAD zig_ext_v2;` all succeed, then `Catalog
+Error: Scalar Function with name zig_v2_hello does not exist!` on the
+query. This independently-built archive (`zig c++`/`zig cc` throughout,
+no GCC anywhere in its toolchain) hitting the exact same failure rules
+out any toolchain-specific explanation for the official archive's
+behavior — it's purely `capi_v2_extension.cpp`'s own
+`get_api = statically_linked ? nullptr : ...`, confirmed twice now with
+two independently-built archives of the same commit. Also notable: this
+build linked cleanly with neither `use_llvm`/`use_lld` nor the
+`libstdc++.a`/`libgcc_eh.a` workarounds (plain `link_libcpp = true`
+sufficed) — this from-source archive has no LTO-induced extended-
+section-numbering issue (no `-flto` was requested) and is
+libc++-ABI-consistent throughout, consistent with every other `zig
+c++`-built archive tested this session.
+
+Build artifacts (~7.7GB) left in the session's scratchpad directory,
+not committed anywhere — this was an investigation, not a change to
+this project's own build.
 
 ### 6a. WASM support (speculative, not started — not currently feasible as a straight port)
 
