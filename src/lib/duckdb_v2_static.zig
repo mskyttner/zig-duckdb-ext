@@ -1062,7 +1062,7 @@ pub extern fn duckdb_v2_connection_progress_get(conn: duckdb_v2_connection_handl
 /// - `types_count`: Number of elements in the types_array.
 /// - `out_collection` (OUT): Receives the new collection handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_column_data_collection_create_with_connection(conn: duckdb_v2_connection_handle, types_array: *const duckdb_v2_logical_type_handle, types_count: u64, out_collection: *duckdb_v2_column_data_collection_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_column_data_collection_create_with_connection(conn: duckdb_v2_connection_handle, types_array: [*]const duckdb_v2_logical_type_handle, types_count: u64, out_collection: *duckdb_v2_column_data_collection_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Creates an empty column data collection from a context.
 ///
@@ -1075,7 +1075,7 @@ pub extern fn duckdb_v2_column_data_collection_create_with_connection(conn: duck
 /// - `types_count`: Number of elements in the types_array.
 /// - `out_collection` (OUT): Receives the new collection handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_column_data_collection_create_with_context(context: duckdb_v2_context_handle, types_array: *const duckdb_v2_logical_type_handle, types_count: u64, out_collection: *duckdb_v2_column_data_collection_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_column_data_collection_create_with_context(context: duckdb_v2_context_handle, types_array: [*]const duckdb_v2_logical_type_handle, types_count: u64, out_collection: *duckdb_v2_column_data_collection_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Drops all buffered rows, keeping the column types.
 ///
@@ -1241,7 +1241,7 @@ pub extern fn duckdb_v2_column_data_collection_scan(collection: duckdb_v2_column
 /// - `column_count`: Number of elements in the types array.
 /// - `out_chunk` (OUT): Receives the new chunk handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_data_chunk_create(types: *const duckdb_v2_logical_type_handle, column_count: u64, out_chunk: *duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_data_chunk_create(types: [*]const duckdb_v2_logical_type_handle, column_count: u64, out_chunk: *duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Creates an empty data chunk with the given column types, drawing its allocator from the connection's context.
 ///
@@ -1259,7 +1259,7 @@ pub extern fn duckdb_v2_data_chunk_create(types: *const duckdb_v2_logical_type_h
 /// - `column_count`: Number of elements in the types array.
 /// - `out_chunk` (OUT): Receives the new chunk handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_data_chunk_create_with_connection(conn: duckdb_v2_connection_handle, types: *const duckdb_v2_logical_type_handle, column_count: u64, out_chunk: *duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_data_chunk_create_with_connection(conn: duckdb_v2_connection_handle, types: [*]const duckdb_v2_logical_type_handle, column_count: u64, out_chunk: *duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Creates an empty data chunk with the given column types, drawing its allocator from a context.
 ///
@@ -1278,7 +1278,7 @@ pub extern fn duckdb_v2_data_chunk_create_with_connection(conn: duckdb_v2_connec
 /// - `column_count`: Number of elements in the types array.
 /// - `out_chunk` (OUT): Receives the new chunk handle.
 /// - `err` (OUT): Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-pub extern fn duckdb_v2_data_chunk_create_with_context(context: duckdb_v2_context_handle, types: *const duckdb_v2_logical_type_handle, column_count: u64, out_chunk: *duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
+pub extern fn duckdb_v2_data_chunk_create_with_context(context: duckdb_v2_context_handle, types: [*]const duckdb_v2_logical_type_handle, column_count: u64, out_chunk: *duckdb_v2_data_chunk_handle, err: ?*duckdb_v2_error_info_handle) DUCKDB_V2_ERROR;
 
 /// Creates a deep copy of a data chunk, drawing its allocator from the connection's context.
 ///

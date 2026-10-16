@@ -551,14 +551,15 @@ fn writeParams(g: *Gen, w: *Io.Writer, params: Value) !void {
 }
 
 /// Whether a parameter is an array rather than a pointer to one value. The spec does not say so
-/// either; it only describes such a parameter as "An array of ...".
+/// either; it only describes such a parameter as "An array of ..." (or "Pointer to an array of ...").
 fn isArray(arena: Allocator, description: []const u8) !bool {
     const flat = try arena.dupe(u8, description);
     for (flat) |*ch| if (ch.* == '\n' or ch.* == '\r') {
         ch.* = ' ';
     };
     const rest = if (std.mem.startsWith(u8, flat, "Optional. ")) flat["Optional. ".len..] else flat;
-    return std.mem.startsWith(u8, rest, "An array of") or std.mem.startsWith(u8, rest, "Array of");
+    return std.mem.startsWith(u8, rest, "An array of") or std.mem.startsWith(u8, rest, "Array of") or
+        std.mem.startsWith(u8, rest, "Pointer to an array of");
 }
 
 /// The spec has no machine-readable nullability: it is only said in the prose of a parameter, as a
