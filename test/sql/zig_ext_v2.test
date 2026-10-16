@@ -12,6 +12,42 @@ Catalog Error: Scalar Function with name zig_add_numbers does not exist!
 
 require zig_ext_v2
 
+# ── zig_hello ────────────────────────────────────────────────────────────
+
+query T
+SELECT zig_hello('Zig')
+----
+Hello, Zig!
+
+query T
+SELECT zig_hello('')
+----
+Hello, !
+
+query T
+SELECT zig_hello(NULL)
+----
+NULL
+
+# Longer than the 12 bytes DuckDB stores inline, so the bytes live on the heap.
+query T
+SELECT zig_hello('a name that does not fit inline')
+----
+Hello, a name that does not fit inline!
+
+# Too long for the function's stack buffer: it falls back to a fixed greeting.
+query T
+SELECT zig_hello(repeat('x', 2000))
+----
+Hello, world!
+
+query T
+SELECT zig_hello(n) FROM (VALUES ('a'), (NULL), ('bc')) t(n)
+----
+Hello, a!
+NULL
+Hello, bc!
+
 query I
 SELECT zig_add_numbers(1, 2)
 ----

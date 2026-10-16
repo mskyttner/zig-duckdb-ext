@@ -7,8 +7,12 @@
 ///! which stays a disposable scratch harness for new-API experiments, not
 ///! a growing part of the real extension.
 ///!
-///! Registers all 9 functions ported off v1 — the full set.
+///! Registers all 9 functions ported off v1 — the full set. Most are written against the
+///! hand-written `duckdb_v2.zig`; `hello` is the first on the generated bindings
+///! (`duckdb_v2_dynamic`), which keep their own copy of the function table, so both are
+///! initialised below.
 const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
 const add_numbers = @import("../functions/add_numbers_v2.zig");
 const ct_add_numbers = @import("../functions/ct_add_numbers_v2.zig");
 const hello = @import("../functions/hello_v2.zig");
@@ -21,10 +25,14 @@ const tp_snakemap = @import("../functions/tp_snakemap_v2.zig");
 
 export fn zig_ext_v2_init_c_api_v2(input: *const db.ExtensionInput) callconv(.c) void {
     if (!db.initApi(input, "v2.0.0")) return;
+    // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
+    // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
+    const gen_input: *const v2.duckdb_v2_extension_input = @ptrCast(input);
+    if (!v2.init(gen_input, v2.api_version)) return;
 
     add_numbers.register(input) catch return;
     ct_add_numbers.register(input) catch return;
-    hello.register(input) catch return;
+    hello.register(gen_input) catch return;
     tp_bar.register(input) catch return;
     tokenize.register(input) catch return;
     ct_tokenize.register(input) catch return;

@@ -1833,8 +1833,28 @@ global switch exists yet.
   with `.?`: calling a function the served table lacks is safety-checked
   illegal behavior, not an error; `init` relies on `get_api` refusing a
   version it cannot serve and does not check the table's size.
-- **Not done:** moving the real extension (`zig_ext_v2`) and the comptime
-  frameworks off the hand-written `duckdb_v2.zig` onto these modules; a
+- **First function module moved: `hello_v2.zig`** (`zig_hello`, hand-written,
+  105 lines) now uses `duckdb_v2_dynamic` instead of `duckdb_v2.zig`; the
+  other eight still use the hand-written layer. `zig_ext_v2` initialises
+  both function tables in `init_v2.zig` (each binding layer keeps its own
+  copy; the generated input struct is a `@ptrCast` of the translate-c'd
+  one, its layout covered by the static parity test). The v2 SQL test had
+  no `zig_hello` case at all, so six were added first and run against the
+  hand-written version (empty string, NULL, a name longer than the 12
+  inline bytes, one over the 1024-byte stack buffer, several rows with a
+  NULL); the same 12 blocks pass after the port, and changing the greeting
+  makes them fail. Porting it exposed two things the PoC never hit, both
+  fixed in the generator: (1) a by-value handle can be NULL too — 11
+  parameters such as the default `value` of `function_signature_add_parameter`
+  are described as optional, so they are `?handle`; (2) the validity mask and
+  selection vector of `duckdb_v2_vector_view` are arrays, not out-parameters
+  — struct fields that point to a scalar are `[*]`, not `*`. A failed
+  registration now passes the entrypoint's error slot (`input.err`) rather
+  than a throwaway local, so the load reports why.
+- **Not done:** the other eight function modules and the comptime
+  frameworks (`comptime_scalar_v2`, ...), which still take the hand-written
+  `duckdb_v2.zig` layer — those are where a shared bytes/validity helper
+  and a decision about the double table initialisation would come in; a
   build option that binds `duckdb_v2_api` for them.
 
 ### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
