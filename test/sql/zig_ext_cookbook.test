@@ -340,3 +340,109 @@ query I
 SELECT max(zig_cookbook_row_number()) FROM range(10)
 ----
 10
+
+# ── An aggregate with bind, bind data, user data and properties (src/cookbook/aggregate_callbacks.zig) ──
+# DuckDB's own sum() and last() are the oracle.
+
+statement ok
+SET threads = 4
+
+# Bind: the result type follows the argument; one set of callbacks serves both functions (user data: the power).
+query TTTT
+SELECT typeof(zig_cookbook_agg_sum(x)), typeof(zig_cookbook_agg_sum(x::DOUBLE)), typeof(zig_cookbook_agg_sumsq(x)), typeof(zig_cookbook_agg_sumsq(x::DOUBLE)) FROM range(1, 5) t(x)
+----
+BIGINT
+DOUBLE
+BIGINT
+DOUBLE
+
+query TTTT
+SELECT zig_cookbook_agg_sum(x) = sum(x), zig_cookbook_agg_sumsq(x) = sum(x * x), zig_cookbook_agg_sum(x::DOUBLE) = sum(x::DOUBLE), zig_cookbook_agg_sumsq(x::DOUBLE) = sum(x::DOUBLE * x::DOUBLE) FROM range(1, 101) t(x)
+----
+true
+true
+true
+true
+
+# Several workers, many chunks, so that combine runs: 2 million rows on 4 threads. The doubles stay below 2^53,
+# where their sums are exact in any order.
+query TT
+SELECT zig_cookbook_agg_sum(x), zig_cookbook_agg_sumsq(x) FROM range(1, 2000001) t(x)
+----
+2000001000000
+2666668666667000000
+
+query TT
+SELECT zig_cookbook_agg_sum(x::DOUBLE), zig_cookbook_agg_sumsq(x::DOUBLE) FROM range(1, 100001) t(x)
+----
+5000050000.0
+333338333350000.0
+
+# Groups, with NULLs on some rows.
+query II
+SELECT count(*), bool_and(ok) FROM (SELECT zig_cookbook_agg_sum(x) IS NOT DISTINCT FROM sum(x) AS ok FROM (SELECT x % 7 AS g, CASE WHEN x % 11 = 0 THEN NULL ELSE x::BIGINT END AS x FROM range(1, 5001) t(x)) GROUP BY g)
+----
+7
+true
+
+# A sum of nothing is NULL, as SQL's SUM; so is a sum of NULLs.
+query TTT
+SELECT zig_cookbook_agg_sum(x) IS NULL, zig_cookbook_agg_sumsq(x) IS NULL, zig_cookbook_agg_sum(x::DOUBLE) IS NULL FROM (SELECT 1::BIGINT AS x WHERE false)
+----
+true
+true
+true
+
+query TT
+SELECT zig_cookbook_agg_sum(x) IS NULL, zig_cookbook_agg_sumsq(x::DOUBLE) IS NULL FROM (SELECT NULL::BIGINT AS x)
+----
+true
+true
+
+# DISTINCT is honoured (the default says the result depends on it); an ORDER BY inside the call is accepted.
+query TT
+SELECT zig_cookbook_agg_sum(DISTINCT x) = sum(DISTINCT x), zig_cookbook_agg_sum(x ORDER BY x DESC) = sum(x) FROM (VALUES (1::BIGINT), (1), (2), (5), (5), (NULL)) t(x)
+----
+true
+true
+
+# Bind: other types are refused while the query is planned, with our message.
+statement error
+SELECT zig_cookbook_agg_sum(x::INTEGER) FROM range(1, 5) t(x)
+----
+zig_cookbook_agg_sum: expected BIGINT or DOUBLE, got INTEGER
+
+statement error
+SELECT zig_cookbook_agg_sumsq('text')
+----
+zig_cookbook_agg_sum: expected BIGINT or DOUBLE, got VARCHAR
+
+statement error
+SELECT zig_cookbook_agg_sum(x) FROM (SELECT 9223372036854775807::BIGINT AS x UNION ALL SELECT 1)
+----
+Overflow in the sum of INT64
+
+statement error
+SELECT zig_cookbook_agg_sumsq(x) FROM (SELECT 4000000000::BIGINT AS x)
+----
+Overflow in the sum of INT64
+
+# An order dependent aggregate (the default): the rows are sorted first when asked. It keeps the last non-NULL
+# value (SQL's last() keeps a NULL, hence the FILTER on the oracle).
+query TTTT
+SELECT zig_cookbook_agg_last(x ORDER BY y DESC), last(x ORDER BY y DESC), zig_cookbook_agg_last(x ORDER BY y), last(x ORDER BY y) FROM (VALUES (1, 30), (2, 10), (3, 20)) t(x, y)
+----
+2
+2
+1
+1
+
+query T
+SELECT bool_and(ok) FROM (SELECT zig_cookbook_agg_last(x ORDER BY y) IS NOT DISTINCT FROM last(x ORDER BY y) FILTER (WHERE x IS NOT NULL) AS ok FROM (SELECT x % 5 AS g, CASE WHEN x % 13 = 0 THEN NULL ELSE x::BIGINT END AS x, (x * 7919) % 3001 AS y FROM range(1, 3001) t(x)) GROUP BY g)
+----
+true
+
+query T
+SELECT zig_cookbook_agg_last(x) IS NULL FROM (SELECT NULL::BIGINT AS x)
+----
+true

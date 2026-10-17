@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 56 scanned source files. Referenced by the extension: **145**; by the extension or the PoC: **174**.
+587 functions (26 unstable) in 32 spec modules, from 57 scanned source files. Referenced by the extension: **152**; by the extension or the PoC: **181**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -23,7 +23,7 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | error | 6 | 0 | 2 | 2 | 4 |
 | expression | 9 | 0 | 0 | 4 | 5 |
 | filesystem/file_system | 17 | 0 | 0 | 0 | 17 |
-| function/aggregate | 44 | 0 | 26 | 26 | 18 |
+| function/aggregate | 44 | 0 | 33 | 33 | 11 |
 | function/cast | 14 | 0 | 10 | 10 | 4 |
 | function/copy | 78 | 6 | 0 | 0 | 78 |
 | function | 7 | 0 | 3 | 3 | 4 |
@@ -67,7 +67,7 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **filesystem/file_system**: `file_system_get_from_context`, `file_system_get_from_connection`, `file_open_options_create`, `file_open_options_set_flag`, `file_open_options_set_value`, `file_open_options_destroy`, `file_system_open`, `file_read`, `file_write`, `file_read_at`, `file_write_at`, `file_tell`, `file_size`, `file_seek`, `file_sync`, `file_close`, `file_destroy`
 
-**function/aggregate**: `aggregate_function_create_with_connection`, `aggregate_function_set_user_data`, `aggregate_function_set_property`, `aggregate_function_set_bind_callback`, `aggregate_function_bind_set_return_type`, `aggregate_function_size_get_user_data`, `aggregate_function_size_get_bind_data`, `aggregate_function_init_get_user_data`, `aggregate_function_init_get_bind_data`, `aggregate_function_update_get_user_data`, `aggregate_function_update_get_bind_data`, `aggregate_function_update_get_arg_count`, `aggregate_function_combine_get_user_data`, `aggregate_function_combine_get_bind_data`, `aggregate_function_finalize_get_user_data`, `aggregate_function_finalize_get_bind_data`, `aggregate_function_destroy_get_user_data`, `aggregate_function_destroy_get_bind_data`
+**function/aggregate**: `aggregate_function_create_with_connection`, `aggregate_function_size_get_user_data`, `aggregate_function_size_get_bind_data`, `aggregate_function_init_get_user_data`, `aggregate_function_init_get_bind_data`, `aggregate_function_update_get_arg_count`, `aggregate_function_combine_get_user_data`, `aggregate_function_combine_get_bind_data`, `aggregate_function_finalize_get_user_data`, `aggregate_function_destroy_get_user_data`, `aggregate_function_destroy_get_bind_data`
 
 **function/cast**: `cast_function_create_with_connection`, `cast_function_set_implicit_cast_cost`, `cast_function_set_user_data`, `cast_function_exec_get_user_data`
 
