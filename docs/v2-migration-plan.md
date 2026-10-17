@@ -2111,6 +2111,16 @@ static one for the static embedding (below).
   `zig_tokenize`, `ct_add_numbers`, and with `httplib, loadable_extensions, core_functions,
   json, icu, parquet` linked, `LOAD` of each and the `core_functions`/`json` queries. (Wine
   runs fine in a container too; a container would only add isolation for CI.)
+  **`task verify:static-windows`** does the same with nothing installed by hand, mirroring
+  `verify:cross-arm64` but without root (Wine is an ordinary process; there is no `binfmt`
+  to register): `containers/windows-verify/Containerfile` is a pinned `ubuntu:24.04` (forced to
+  `linux/amd64`, since the arm64 one `verify:cross-arm64` caches would be picked otherwise)
+  with `g++-mingw-w64-x86-64-posix` and Wine 9.0. The Task builds the image, copies the three
+  MinGW archives (`libstdc++.a`, `libgcc.a`, `libgcc_eh.a`) out of it, builds both `.exe`s
+  with Zig on the host against them, and runs each in the image under Wine, failing unless
+  each prints the success line. `CONTAINER_RUNTIME=docker` works too. Two things that
+  bit: Ubuntu's `wine64` package has no `wine` command (install `wine` as well), and the
+  prefix initialisation in the image must not hide its own failure.
   What the toolchain has to match, found by trying three: the archives want (1) emulated
   TLS for `std::call_once` (`__emutls_v._ZSt11__once_call`, defined by the MinGW
   posix-model libstdc++, not by a GCC 16 UCRT one from MSYS2, which uses native TLS) and,

@@ -207,6 +207,36 @@ tasks:
         echo "$OUTPUT" | grep -qx "XXXXX....." || { echo "FAILED: tp_bar(...) did not return the expected bar"; exit 1; }
         echo "verify:cross-arm64 PASSED — linux_arm64 cross build loads and runs correctly under QEMU"
 
+  verify:static-windows:
+    desc: "Build the Windows static embedding (real extension + DuckDB's MinGW static libs) and run it under Wine in a container"
+    cmds:
+      - |
+        set -e
+        # podman needs no root for this (unlike verify:cross-arm64, there is no binfmt to register);
+        # CONTAINER_RUNTIME=docker works too. The image is pinned to linux/amd64: a cached arm64
+        # ubuntu from verify:cross-arm64 would otherwise be picked.
+        RT="${CONTAINER_RUNTIME:-podman}"
+        IMAGE=zig-duckdb-ext-windows-verify
+        $RT build --platform linux/amd64 -t "$IMAGE" -f containers/windows-verify/Containerfile containers/windows-verify
+
+        # The MinGW C++ runtime the Windows static libraries link against comes out of the image.
+        RUNTIME="$(pwd)/.zig-cache/mingw-runtime"
+        rm -rf "$RUNTIME" && mkdir -p "$RUNTIME"
+        $RT run --rm --platform linux/amd64 -v "$RUNTIME:/out" "$IMAGE" sh -c 'cp /mingw-runtime/*.a /out/'
+
+        zig build v2-static-embed-poc v2-static-embed-poc-extensions \
+          -Dtarget=x86_64-windows-gnu \
+          -Dlibstdcxx-path="$RUNTIME/libstdc++.a" \
+          -Dlibgcc-eh-path="$RUNTIME/libgcc_eh.a" \
+          -Dlibgcc-path="$RUNTIME/libgcc.a"
+
+        for exe in v2_static_embed_poc v2_static_embed_poc_extensions; do
+          OUTPUT="$($RT run --rm --platform linux/amd64 -v "$(pwd)/zig-out/bin:/w:ro" "$IMAGE" wine "/w/$exe.exe" 2>&1)"
+          echo "$OUTPUT" | grep -v -i "freetype\|truetype\|libEGL\|pci id"
+          echo "$OUTPUT" | grep -q "all static-extension queries returned the expected result" || { echo "FAILED: $exe.exe under Wine"; exit 1; }
+        done
+        echo "verify:static-windows PASSED — the Windows static embedding runs under Wine with six extension archives linked"
+
   clean:
     desc: "Remove build artifacts"
     cmds:
