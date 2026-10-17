@@ -446,3 +446,119 @@ query T
 SELECT zig_cookbook_agg_last(x) IS NULL FROM (SELECT NULL::BIGINT AS x)
 ----
 true
+
+# ── A parallel table function (src/cookbook/table_callbacks.zig) ───────────────────────────────────────
+# Blocks of 1000 rows (the function's user data); every row once, whichever thread produced it.
+
+statement ok
+SET threads = 8
+
+query IIIII
+SELECT count(*), min(value), max(value), max(block), bool_and(block = value // 1000) FROM zig_cookbook_parallel_range(10500)
+----
+10500
+0
+10499
+10
+true
+
+query T
+SELECT bool_and(c = 1000 OR block = 10) FROM (SELECT block, count(*) AS c FROM zig_cookbook_parallel_range(10500) GROUP BY block)
+----
+true
+
+query III
+SELECT count(*), count(DISTINCT value), sum(value) FROM zig_cookbook_parallel_range(1000000)
+----
+1000000
+1000000
+499999500000
+
+query II
+SELECT count(*), sum(value) FROM zig_cookbook_parallel_range(1)
+----
+1
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_parallel_range(0)
+----
+0
+
+query II
+SELECT value, block FROM zig_cookbook_parallel_range(3) ORDER BY value
+----
+0
+0
+1
+0
+2
+0
+
+# max_threads is an upper bound on the local states: workers are numbered from 0 as init_local runs.
+query T
+SELECT max(worker) < 1 FROM zig_cookbook_parallel_range(1000000, max_threads := 1)
+----
+true
+
+query T
+SELECT max(worker) < 2 FROM zig_cookbook_parallel_range(1000000, max_threads := 2)
+----
+true
+
+query T
+SELECT max(worker) < 4 FROM zig_cookbook_parallel_range(1000000)
+----
+true
+
+# Insertion order is kept even when threads scan in parallel, because each chunk reports its batch index.
+statement ok
+CREATE TABLE cookbook_parallel AS SELECT value FROM zig_cookbook_parallel_range(300000)
+
+query II
+SELECT count(*), bool_and(value = rowid) FROM cookbook_parallel
+----
+300000
+true
+
+statement ok
+INSERT INTO cookbook_parallel SELECT value FROM zig_cookbook_parallel_range(300000)
+
+query II
+SELECT count(*), bool_and(value = (rowid % 300000)) FROM cookbook_parallel
+----
+600000
+true
+
+# The partition data callback is what lets that INSERT run in parallel: without it the rows are still in order, but a
+# single worker produces them. 5 million rows are 5000 blocks, enough for every thread to get some; this observes the
+# scheduler, so it is the one test here that could in principle fail on a machine that cannot run threads in parallel.
+statement ok
+CREATE TABLE cookbook_workers AS SELECT value, worker FROM zig_cookbook_parallel_range(5000000, 8)
+
+query II
+SELECT count(DISTINCT worker) > 1, bool_and(value = rowid) FROM cookbook_workers
+----
+true
+true
+
+query T
+SELECT bool_and(value = rn - 1) FROM (SELECT value, row_number() OVER () AS rn FROM zig_cookbook_parallel_range(300000))
+----
+true
+
+# Bind: bad arguments are refused while the query is planned.
+statement error
+SELECT * FROM zig_cookbook_parallel_range(-1)
+----
+zig_cookbook_parallel_range: n must not be negative, got -1
+
+statement error
+SELECT * FROM zig_cookbook_parallel_range(10, max_threads := 0)
+----
+zig_cookbook_parallel_range: max_threads must be between 1 and 64, got 0
+
+statement error
+SELECT * FROM zig_cookbook_parallel_range(10, max_threads := 65)
+----
+zig_cookbook_parallel_range: max_threads must be between 1 and 64, got 65

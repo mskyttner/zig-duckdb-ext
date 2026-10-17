@@ -30,6 +30,7 @@ if it is stale, so the gaps below are measured, not remembered.
 | Reading DuckDB's configuration | — | `cookbook/config_options.zig`: `zig_cookbook_option`, `zig_cookbook_options` (with aliases) | Options through the context (scalar `exec`) and a bind-time snapshot (table function). Read-only: see below. |
 | Scalar callbacks: resolve types, bind, init, user data, properties | — | `cookbook/scalar_callbacks.zig`: `zig_cookbook_negate` (result type follows the argument), `_round_to` (a constant argument read at bind), `_times2/3/10` (user data), `_row_number` (per-thread init data, `VOLATILE`) | The four callbacks in the order they run, and what each hands to the next. |
 | Aggregate callbacks: bind (result type), bind data, user data, properties | — | `cookbook/aggregate_callbacks.zig`: `zig_cookbook_agg_sum` / `_sumsq` (one set of callbacks, user data = the power), `zig_cookbook_agg_last` (order dependent) | `AGG_ORDER_DEPENDENT` and `AGG_DISTINCT_DEPENDENT`: what the planner does with `ORDER BY` and `DISTINCT` inside the call. |
+| Parallel table function: global and local state, threads, output order | — | `cookbook/table_callbacks.zig`: `zig_cookbook_parallel_range` | `init_global` (max threads), `init_local` (a worker's state), `partition_data` (batch index), user data = block size. Without the partition data callback the rows stay in order but one worker produces them. |
 | Appender, building a result set | — | `lib/comptime_appender_v2.zig`, `zig_v2_appender_*_test`, `zig_v2_nethogs_trace` (PoC) | |
 | Replacement scan | — | `zig_v2_range_<N>`, the braille demo (PoC) | `SELECT * FROM zig_v2_range_5`. |
 
@@ -49,9 +50,10 @@ Taken from the generated coverage report. In the order I would write the recipes
 1. ~~Extension settings~~ — done as *reading* configuration (`cookbook/config_options.zig`). The `configuration` module is
    read-only, and **the v2 C API has no call to register an option of your own** (extension options exist only for C++
    extensions), so a setting for an extension written against the C API is not possible yet.
-2. ~~Bind-time and resolve-types callbacks, `user_data`, properties for scalar functions~~ — done
-   (`cookbook/scalar_callbacks.zig`). Still open: the same for **aggregate functions** (`function/aggregate`: bind
-   callback, properties) and **table-function local state and partition data** (`function/table`).
+2. ~~Bind-time and resolve-types callbacks, `user_data`, properties~~ — done for scalar functions
+   (`cookbook/scalar_callbacks.zig`), aggregate functions (`cookbook/aggregate_callbacks.zig`) and parallel table
+   functions (`cookbook/table_callbacks.zig`). Still open in `function/table`: projection and partitioning-column
+   callbacks, `table_function_partitioning`, and the unstable batch-claiming and multi-file functions.
 3. **A `COPY` format** (`function/copy`, 78 functions).
 4. **Running SQL from an extension**: connection, prepared statements, result chunks (`connection`,
    `prepared_statement`, `query_result`).
