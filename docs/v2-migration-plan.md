@@ -2061,8 +2061,7 @@ static one for the static embedding (below).
   backend is.
 - **Not done:** a CI step for `v2-static-embed-poc` (it needs `libduckdb_static.a`
   and a GNU libstdc++ on the host); porting the PoC extensions to the static
-  graph (not needed). v1's hand-written `zig_add_numbers` still traps on i64 overflow.
-- **`ct_add_numbers` overflow (`e9c10e3`, v1 in the next commit).** The framework
+  graph (not needed). - **`ct_add_numbers` overflow (`e9c10e3` v2, `3ef116c` v1), and v1's hand-written `zig_add_numbers`** (same message as the v2 one, "Overflow in addition of INT64 (a + b)!", through `scalarFunctionSetError`; mutations of both loops, the operand order and the error call are killed). The framework
   now accepts an `implFn` returning `E!T` on the leaf, VARCHAR, BLOB, DECIMAL and
   ENUM paths (a nested type or VARIANT with an error union is a compile error):
   an error fails the query with `<function>: <error name>`, as out-of-range input
