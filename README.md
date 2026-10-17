@@ -178,7 +178,7 @@ A table function takes constants, not a column, so the `tokenize` benchmark spli
 Writing your own extension: [docs/creating-an-extension.md](docs/creating-an-extension.md) has the steps (build, entry
 point, a function with real parameter names, tests, publishing) and what `duckdb_functions()` can and cannot show.
 
-The SQL tests run a DuckDB CLI that the build fetches and pins; the one on your `PATH` is not used.
+The v2 SQL tests run a DuckDB CLI that the build fetches and pins; the v1 suite (`task sqllogictest`) runs the `duckdb` on your `PATH`, so it needs a v1 release (CI installs v1.5.6).
 
 ## Build
 
@@ -321,7 +321,7 @@ docs/rationale/       Architecture decision records
   and the DuckDB C headers, which `build.zig.zon` pins and the build fetches
   (they are not committed). The cookbook adds one vendored library, the
   pure-Zig `gld-arrow-zig` in `third_party/` (MIT, with a patch note). The
-  tests fetch a pinned DuckDB CLI, and the embedding recipe fetches DuckDB's
+  v2 tests fetch a pinned DuckDB CLI, and the embedding recipe fetches DuckDB's
   static libraries.
 - **Explicit memory management**: Allocators are passed explicitly; `defer`
   and `errdefer` ensure cleanup on all paths.

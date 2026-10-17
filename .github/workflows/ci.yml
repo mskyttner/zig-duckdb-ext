@@ -22,6 +22,9 @@ concurrency:
 env:
   # The same version as release.yml; build.zig.zon's minimum is lower, but the code needs 0.17.
   ZIG_VERSION: "0.17.0"
+  # The v1 extension's SQL tests run the `duckdb` on the PATH (the v2 suites use a CLI that the build fetches), and
+  # it is the version release.yml publishes for.
+  DUCKDB_V1_VERSION: "v1.5.6"
 
 jobs:
   test:
@@ -33,7 +36,15 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      # The SQL suites run the pinned DuckDB CLI, which the build fetches (build.zig.zon), so they need the network.
+      # The v1 suite needs a v1 CLI on the PATH: a tagged release, so the download never changes.
+      - name: Install the DuckDB v1 CLI
+        run: |
+          curl -fsSL -o duckdb_cli.zip "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_V1_VERSION}/duckdb_cli-linux-amd64.zip"
+          unzip -q duckdb_cli.zip -d "$RUNNER_TEMP/duckdb-v1"
+          echo "$RUNNER_TEMP/duckdb-v1" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/duckdb-v1/duckdb" --version
+
+      # The v2 suites run the pinned alpha CLI, which the build fetches (build.zig.zon), so they need the network.
       - name: Format
         run: zig fmt --check src/
 
