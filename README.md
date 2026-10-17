@@ -1,6 +1,7 @@
 # zig-duckdb-ext
 
-A DuckDB extension written in Zig, targeting the DuckDB v1.2.0 C extension API.
+A DuckDB extension written in Zig, targeting the DuckDB v1.2.0 C extension API (the stable one), with a v2 C API
+port and a cookbook alongside it: see [Two C APIs, and a cookbook](#two-c-apis-and-a-cookbook).
 
 Demonstrates how to build scalar and table functions for DuckDB using Zig's
 `@cImport` for zero-cost C interop, `defer`/`errdefer` for safe resource
@@ -106,7 +107,7 @@ SELECT * FROM zig_cookbook_read_arrow('/tmp/x.arrows');
 
 The extension includes a `comptime` registration framework that generates
 vectorized callbacks and DuckDB registration boilerplate from simple per-row
-Zig functions. This eliminates ~40 lines of boilerplate per scalar function
+Zig functions. This eliminates about 50 lines of boilerplate per scalar function
 with zero runtime overhead.
 
 ### Scalar functions
@@ -128,7 +129,7 @@ pub fn register(conn: db.Connection) !void {
 }
 ```
 
-**20 lines** vs. 60 for the hand-written equivalent. The generated code
+**23 lines** vs. 74 for the hand-written equivalent (`ct_add_numbers.zig` and `add_numbers.zig`, both reporting overflow as a query error). The generated code
 benchmarks identically — see [ADR-0002](docs/rationale/0002_comptime-registration-vs-handwritten.md).
 
 Supported types: `i8`, `i16`, `i32`, `i64`, `f32`, `f64`, `bool`.
@@ -152,16 +153,22 @@ const MyTable = comptime_table.Function(struct {
 
 ### Benchmark Results
 
-`task bench` over 10M rows (ReleaseSafe, macOS arm64):
+`task bench` (Linux x86-64, DuckDB v1.5.6, Zig 0.17.0, ReleaseSafe; the median of 3 runs):
 
-| Function | Hand-written | Comptime | Delta |
-|---|---|---|---|
-| `add_numbers` (10M rows) | 0.024s | 0.025s | ~0% |
-| `tokenize` (500K rows) | 0.001s | 0.001s | 0% |
-| Binary size | 278K | 278K | 0% |
+| Function | Hand-written | Comptime |
+|---|---|---|
+| `add_numbers`, `sum` over 10M rows | 0.015s | 0.014s |
+| `tokenize`, one input of 200K tokens | 0.023s | 0.023s |
 
-The comptime layer compiles away completely — identical machine code, zero
-binary bloat. Details in [ADR-0002](docs/rationale/0002_comptime-registration-vs-handwritten.md).
+The comptime layer costs nothing measurable: the differences are within run-to-run variance. (The timings are not
+comparable across machines; an earlier table from macOS arm64 had 0.024s and 0.025s for `add_numbers`.) The binary
+sizes of the two versions are no longer compared, because the extension holds every v1 function in one 4 MB file.
+Details in [ADR-0002](docs/rationale/0002_comptime-registration-vs-handwritten.md), including a correction to its
+table function and size results.
+
+A table function takes constants, not a column, so the `tokenize` benchmark splits one long input. Much longer inputs
+get slow, because `zig_tokenize` and `ct_tokenize` measure the whole input again on every chunk (quadratic in the
+input).
 
 ## Prerequisites
 
@@ -299,8 +306,9 @@ docs/rationale/       Architecture decision records
 
 ## Design Decisions
 
-- **Zig over C++**: Direct C header consumption via `@cImport`, no ABI
-  coupling to DuckDB's C++ internals. See
+- **Zig over C++**: no ABI coupling to DuckDB's C++ internals. The v1
+  extension consumes the C headers via `@cImport`; the v2 one uses Zig
+  declarations generated from DuckDB's API specification. See
   [ADR-0001](docs/rationale/0001_zig-over-cpp-for-duckdb-ext.md).
 - **Comptime registration**: Zero-cost `comptime` generics generate
   vectorized callbacks from per-row functions — same performance as
@@ -308,7 +316,11 @@ docs/rationale/       Architecture decision records
   [ADR-0002](docs/rationale/0002_comptime-registration-vs-handwritten.md).
 - **Vectorized execution**: All functions process entire DataChunks rather
   than row-at-a-time, matching DuckDB's execution model.
-- **No external dependencies**: Only the Zig standard library and vendored
-  DuckDB C headers.
+- **Few dependencies**: the v1 extension needs only the Zig standard library
+  and the DuckDB C headers, which `build.zig.zon` pins and the build fetches
+  (they are not committed). The cookbook adds one vendored library, the
+  pure-Zig `gld-arrow-zig` in `third_party/` (MIT, with a patch note). The
+  tests fetch a pinned DuckDB CLI, and the embedding recipe fetches DuckDB's
+  static libraries.
 - **Explicit memory management**: Allocators are passed explicitly; `defer`
   and `errdefer` ensure cleanup on all paths.
