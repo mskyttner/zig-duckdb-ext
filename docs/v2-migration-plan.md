@@ -2059,6 +2059,47 @@ static one for the static embedding (below).
   `ct_add_numbers` through it and checks the results. The earlier text claiming
   this needed "a second, non-vtable v2 binding layer" is what the generated static
   backend is.
+- **Several static extension archives, and what PR duckdb-go-bindings#114 taught
+  about the static libraries.** `v2-static-embed-poc` takes
+  `-Dstatic-extensions=json,core_functions` (comma-separated, in registration order;
+  `httplib` and `loadable_extensions` are the *capabilities* the PR's loader registers
+  first, archives of their own), and `v2-static-embed-poc-extensions` is the same
+  program with `httplib, loadable_extensions, core_functions, json, icu, parquet`.
+  `addStaticEmbedExe` in `build.zig` links `lib<name>_extension.a` for each, then
+  `libduckdb_static.a` last, and generates a Zig module whose `registerAll()` calls
+  `duckdb_register_static_extension` with each `duckdb_extension_<name>_describe`
+  (the plural `duckdb_register_static_extensions` in the PR is that loader, in C);
+  the program registers them before its own extension, then `LOAD`s each and checks
+  `duckdb_extensions().loaded`, plus `to_minutes` (core_functions) and `->>` (json).
+  Without registration `LOAD core_functions` fails with "this build does not link the
+  loadable_extensions library", which is how the mutation was killed. **Link order does not
+  matter to Zig's linker (lld resolves archive members across the whole command line);
+  putting `libduckdb_static.a` last is kept for GNU ld and for the PR's reason.**
+- **Embed binary size** (`v2_static_embed_poc`, linux-amd64, no extensions): 64.0 MB
+  in Debug; `link_gc_sections = true` 58.8 MB; stripped 44.6 MB; ReleaseFast 58.6 MB
+  (gc is on by default in release modes, off in Debug: forced off 63.8 MB), and
+  ReleaseSmall stripped 44.0 MB. About 14 MB is debug info and the floor is ~44 MB
+  of DuckDB itself (`.text` 41 MB); gc cannot drop more because the registries
+  reference nearly everything. Section-merging the archive, as the PR does to fit
+  GitHub's 100 MiB limit, would not change the binary: the PR measures the same for
+  Go. With the six archives above it is 82 MB (Debug). The size of `libduckdb_static.a`
+  (127.4 MB here, the PR's 121.5 MiB) only matters to something that stores it; we fetch it.
+- **Windows / MinGW** (the PR's hint). The Windows static libraries are the separate
+  `duckdb-static-libs-windows-mingw.tar.gz` (35 MB; the plain `windows-amd64` one is an
+  MSVC build with `.lib` files, 206 MB), GCC 10.4. Measured: `libduckdb_static.a` is 125.0
+  MB, 246 objects, **192,904 sections** (the PR's 193k), at most 13,488 in one object. The
+  PE limit of about 65k sections is per object, so it bites only when something merges
+  the archive into one object (the PR's packaging attempt); linking the archive as it is
+  does not. `zig cc -target x86_64-windows-gnu` links a `duckdb_open` program against it
+  in 1.3 s with lld-link, and the only undefined symbols (158) are libstdc++ and libgcc
+  (`std::__cxx11`, `__once_proxy`, `__emutls_get_address`, ...): Zig's bundled libc++ is
+  ABI-incompatible with them, the same situation as Linux, where `build.zig` passes the
+  system `libstdc++.a`. So a Windows static embed needs a MinGW GCC's `libstdc++.a` and
+  `libgcc` (`-Dlibstdcxx-path`-style); none is installed here, so it was not linked to the
+  end. The PR's finding that a `GROUP` linker script is rejected by lld/`zig cc` does not
+  touch us unless we split an archive ourselves; its `--start-group` workaround would be
+  needed then. The cross step (`cross_targets` has `x86_64-windows-gnu`) builds the
+  loadable extension DLL, which links no DuckDB code, so none of this applies to it.
 - **Not done:** a CI step for `v2-static-embed-poc` (it needs `libduckdb_static.a`
   and a GNU libstdc++ on the host); porting the PoC extensions to the static
   graph (not needed). - **`ct_add_numbers` overflow (`e9c10e3` v2, `3ef116c` v1), and v1's hand-written `zig_add_numbers`** (same message as the v2 one, "Overflow in addition of INT64 (a + b)!", through `scalarFunctionSetError`; mutations of both loops, the operand order and the error call are killed). The framework

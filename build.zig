@@ -276,6 +276,128 @@ fn v2Graph(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     return .{ .helpers = helpers, .values = values, .examples = examples, .scalar = scalar, .table = table, .aggregate = aggregate, .appender = appender, .cast = cast };
 }
 
+/// What `addStaticEmbedExe` needs from `build`: the real extension linked into a process that has
+/// DuckDB's static libraries, with the extensions it is asked for registered next to it.
+const StaticEmbed = struct {
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    static_libs_dep: *std.Build.Dependency,
+    duckdb_full_c_mod: *std.Build.Module,
+    duckdb_static_mod: *std.Build.Module,
+    duckdb_v2_types_mod: *std.Build.Module,
+    duckdb_v2_static_mod: *std.Build.Module,
+    libstdcxx_path: []const u8,
+    libgcc_eh_path: []const u8,
+};
+
+/// A program with the real zig_ext_v2 (built against the static bindings) and `extensions` (names of
+/// DuckDB's static extension archives, e.g. "json", plus the capabilities "httplib" and
+/// "loadable_extensions") registered with DuckDB before the database opens.
+fn addStaticEmbedExe(b: *std.Build, ctx: StaticEmbed, exe_name: []const u8, extensions: []const []const u8) *std.Build.Step.Compile {
+    const target = ctx.target;
+    const optimize = ctx.optimize;
+    const static_libs_dep = ctx.static_libs_dep;
+    const duckdb_full_c_mod = ctx.duckdb_full_c_mod;
+    const duckdb_static_mod = ctx.duckdb_static_mod;
+    const duckdb_v2_types_mod = ctx.duckdb_v2_types_mod;
+    const duckdb_v2_static_mod = ctx.duckdb_v2_static_mod;
+    const libstdcxx_path = ctx.libstdcxx_path;
+    const libgcc_eh_path = ctx.libgcc_eh_path;
+
+    const exe = b.addExecutable(.{
+        .name = exe_name,
+        .use_llvm = true,
+        .use_lld = true,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/static_embed_poc_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    // The real extension against the static backend: `get_api` is always null under static
+    // loading, and the direct-link bindings do not need it.
+    const static_graph = v2Graph(b, target, optimize, duckdb_v2_static_mod);
+    exe.root_module.addImport("duckdb_v2_types", duckdb_v2_types_mod);
+    exe.root_module.addImport("duckdb_static", duckdb_static_mod);
+    exe.root_module.addImport("duckdb_full_c", duckdb_full_c_mod);
+    exe.root_module.addImport("root_v2", b.createModule(.{
+        .root_source_file = b.path("src/root_v2.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "duckdb_v2_api", .module = duckdb_v2_static_mod },
+            .{ .name = "v2_helpers", .module = static_graph.helpers },
+            .{ .name = "comptime_scalar_v2", .module = static_graph.scalar },
+            .{ .name = "comptime_table_v2", .module = static_graph.table },
+        },
+    }));
+    exe.root_module.link_libc = true;
+    // NOT `link_libcpp = true` or `linkSystemLibrary("stdc++", .{})`:
+    // confirmed live this static libduckdb was built against GNU
+    // libstdc++ (its unresolved symbols are all classic libstdc++-ABI
+    // names: `std::__cxx11::basic_string`, `__once_proxy`, etc.), but
+    // `linkSystemLibrary("stdc++", ...)` doesn't link the system's
+    // actual libstdc++ — `std.Build.Module.linkSystemLibrary`'s own
+    // source (confirmed by reading it) special-cases any libc++-like
+    // name (`isLibCxxLibName`) and silently redirects it to
+    // `link_libcpp = true`, i.e. Zig's own bundled LLVM libc++ —
+    // identical, ABI-incompatible result either way. The only way to
+    // get the REAL system libstdc++ is to link its file directly,
+    // bypassing that name-based redirect.
+    //
+    // The exact path (`/usr/lib/gcc/<triple>/<version>/`) differs by
+    // distro and GCC version, so it's resolved via `g++
+    // -print-file-name=...` (the same query GCC's own driver uses
+    // internally) rather than hardcoded — `-Dlibstdcxx-path=`/
+    // `-Dlibgcc-eh-path=` override it explicitly for a host without
+    // `g++` on `PATH`, or a nonstandard toolchain layout.
+    exe.root_module.addObjectFile(.{ .cwd_relative = libstdcxx_path });
+    // libstdc++ itself needs GCC's own unwinder (`_Unwind_*`, C++
+    // exception-handling primitives) — a separate archive, not part
+    // of libstdc++.a and not supplied by Zig's own LLVM-based
+    // unwinder either (confirmed live: without this, the `_Unwind_*`
+    // symbols libstdc++.a's eh_throw.o/eh_personality.o reference are
+    // undefined).
+    exe.root_module.addObjectFile(.{ .cwd_relative = libgcc_eh_path });
+    // `addLibraryPath` + `linkSystemLibrary` (not `addObjectFile`): a
+    // plain static archive added via `addObjectFile` ended up ordered
+    // BEFORE the object files that reference its symbols on the
+    // actual link command line (confirmed live via the failing
+    // command's own argv) — classic single-pass-linker archive
+    // ordering problem (a library must come AFTER what needs its
+    // symbols). `linkSystemLibrary` puts it where system libraries
+    // normally go, resolving this.
+    // The extension archives come first, `libduckdb_static.a` last: an archive can only satisfy
+    // the undefined symbols of what precedes it, and the extensions use DuckDB's own symbols.
+    // Capabilities (`httplib`, `loadable_extensions`) are archives of their own, not extensions.
+    exe.root_module.addLibraryPath(static_libs_dep.path("."));
+    for (extensions) |ext| {
+        if (std.mem.eql(u8, ext, "httplib") or std.mem.eql(u8, ext, "loadable_extensions")) {
+            exe.root_module.linkSystemLibrary(b.fmt("duckdb_{s}", .{ext}), .{});
+        } else {
+            exe.root_module.linkSystemLibrary(b.fmt("{s}_extension", .{ext}), .{});
+        }
+    }
+    exe.root_module.linkSystemLibrary("duckdb_static", .{});
+
+    // The registration of each extension, generated: one `extern fn` per describe function.
+    var loader: std.Io.Writer.Allocating = .init(b.allocator);
+    loader.writer.writeAll("const duckdb_static = @import(\"duckdb_static\");\nconst D = duckdb_static.ExtensionDescriptor;\n") catch @panic("OOM");
+    for (extensions) |ext| loader.writer.print("extern fn duckdb_extension_{s}_describe(*D) callconv(.c) i32;\n", .{ext}) catch @panic("OOM");
+    loader.writer.writeAll("\n/// Registers every extension linked into the program, in the order given to the build; a failing\n/// registration does not stop the rest. Returns 0 if all succeeded.\npub fn registerAll() i32 {\n    var result: i32 = 0;\n    _ = &result;\n") catch @panic("OOM");
+    for (extensions) |ext| loader.writer.print("    if (duckdb_static.registerStaticExtension(@ptrCast(&duckdb_extension_{s}_describe)) != 0) result = 1;\n", .{ext}) catch @panic("OOM");
+    loader.writer.writeAll("    return result;\n}\n") catch @panic("OOM");
+    const generated = b.addWriteFiles();
+    const loader_path = generated.add("static_extensions.zig", loader.written());
+    const loader_mod = b.createModule(.{ .root_source_file = loader_path });
+    loader_mod.addImport("duckdb_static", duckdb_static_mod);
+    exe.root_module.addImport("static_extensions", loader_mod);
+    const names = b.addOptions();
+    names.addOption([]const []const u8, "extensions", extensions);
+    exe.root_module.addOptions("static_embed_options", names);
+    return exe;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -760,71 +882,23 @@ pub fn build(b: *std.Build) void {
         const libstdcxx_path = libstdcxx_path_override orelse gccFileName(b, "libstdc++.a");
         const libgcc_eh_path = libgcc_eh_path_override orelse gccFileName(b, "libgcc_eh.a");
 
-        const static_embed_poc_exe = b.addExecutable(.{
-            .name = "v2_static_embed_poc",
-            .use_llvm = true,
-            .use_lld = true,
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/static_embed_poc_main.zig"),
-                .target = target,
-                .optimize = optimize,
-            }),
-        });
-        // The real extension against the static backend: `get_api` is always null under static
-        // loading, and the direct-link bindings do not need it.
-        const static_graph = v2Graph(b, target, optimize, duckdb_v2_static_mod);
-        static_embed_poc_exe.root_module.addImport("duckdb_v2_types", duckdb_v2_types_mod);
-        static_embed_poc_exe.root_module.addImport("duckdb_static", duckdb_static_mod);
-        static_embed_poc_exe.root_module.addImport("duckdb_full_c", duckdb_full_c.mod);
-        static_embed_poc_exe.root_module.addImport("root_v2", b.createModule(.{
-            .root_source_file = b.path("src/root_v2.zig"),
+        const static_embed_ctx: StaticEmbed = .{
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "duckdb_v2_api", .module = duckdb_v2_static_mod },
-                .{ .name = "v2_helpers", .module = static_graph.helpers },
-                .{ .name = "comptime_scalar_v2", .module = static_graph.scalar },
-                .{ .name = "comptime_table_v2", .module = static_graph.table },
-            },
-        }));
-        static_embed_poc_exe.root_module.link_libc = true;
-        // NOT `link_libcpp = true` or `linkSystemLibrary("stdc++", .{})`:
-        // confirmed live this static libduckdb was built against GNU
-        // libstdc++ (its unresolved symbols are all classic libstdc++-ABI
-        // names: `std::__cxx11::basic_string`, `__once_proxy`, etc.), but
-        // `linkSystemLibrary("stdc++", ...)` doesn't link the system's
-        // actual libstdc++ — `std.Build.Module.linkSystemLibrary`'s own
-        // source (confirmed by reading it) special-cases any libc++-like
-        // name (`isLibCxxLibName`) and silently redirects it to
-        // `link_libcpp = true`, i.e. Zig's own bundled LLVM libc++ —
-        // identical, ABI-incompatible result either way. The only way to
-        // get the REAL system libstdc++ is to link its file directly,
-        // bypassing that name-based redirect.
-        //
-        // The exact path (`/usr/lib/gcc/<triple>/<version>/`) differs by
-        // distro and GCC version, so it's resolved via `g++
-        // -print-file-name=...` (the same query GCC's own driver uses
-        // internally) rather than hardcoded — `-Dlibstdcxx-path=`/
-        // `-Dlibgcc-eh-path=` override it explicitly for a host without
-        // `g++` on `PATH`, or a nonstandard toolchain layout.
-        static_embed_poc_exe.root_module.addObjectFile(.{ .cwd_relative = libstdcxx_path });
-        // libstdc++ itself needs GCC's own unwinder (`_Unwind_*`, C++
-        // exception-handling primitives) — a separate archive, not part
-        // of libstdc++.a and not supplied by Zig's own LLVM-based
-        // unwinder either (confirmed live: without this, the `_Unwind_*`
-        // symbols libstdc++.a's eh_throw.o/eh_personality.o reference are
-        // undefined).
-        static_embed_poc_exe.root_module.addObjectFile(.{ .cwd_relative = libgcc_eh_path });
-        // `addLibraryPath` + `linkSystemLibrary` (not `addObjectFile`): a
-        // plain static archive added via `addObjectFile` ended up ordered
-        // BEFORE the object files that reference its symbols on the
-        // actual link command line (confirmed live via the failing
-        // command's own argv) — classic single-pass-linker archive
-        // ordering problem (a library must come AFTER what needs its
-        // symbols). `linkSystemLibrary` puts it where system libraries
-        // normally go, resolving this.
-        static_embed_poc_exe.root_module.addLibraryPath(static_libs_dep.path("."));
-        static_embed_poc_exe.root_module.linkSystemLibrary("duckdb_static", .{});
+            .static_libs_dep = static_libs_dep,
+            .duckdb_full_c_mod = duckdb_full_c.mod,
+            .duckdb_static_mod = duckdb_static_mod,
+            .duckdb_v2_types_mod = duckdb_v2_types_mod,
+            .duckdb_v2_static_mod = duckdb_v2_static_mod,
+            .libstdcxx_path = libstdcxx_path,
+            .libgcc_eh_path = libgcc_eh_path,
+        };
+        const static_extensions_arg = b.option([]const u8, "static-extensions", "Comma-separated static extension archives to link into v2-static-embed-poc, in registration order (e.g. json,core_functions; httplib and loadable_extensions are capabilities)") orelse "";
+        var static_extensions_list: std.ArrayList([]const u8) = .empty;
+        var static_extensions_it = std.mem.tokenizeScalar(u8, static_extensions_arg, ',');
+        while (static_extensions_it.next()) |name| static_extensions_list.append(b.allocator, name) catch @panic("OOM");
+        const static_extensions = static_extensions_list.items;
+        const static_embed_poc_exe = addStaticEmbedExe(b, static_embed_ctx, "v2_static_embed_poc", static_extensions);
 
         const install_static_embed_poc = b.addInstallArtifact(static_embed_poc_exe, .{});
         const run_static_embed_poc = b.addRunArtifact(static_embed_poc_exe);
@@ -832,6 +906,15 @@ pub fn build(b: *std.Build) void {
 
         const static_embed_poc_step = b.step("v2-static-embed-poc", "Build and run the real static-extension-registration link test");
         static_embed_poc_step.dependOn(&run_static_embed_poc.step);
+
+        // The same program with several extension archives linked: the capabilities first, then the
+        // extensions, `libduckdb_static.a` last.
+        const static_embed_poc_ext_exe = addStaticEmbedExe(b, static_embed_ctx, "v2_static_embed_poc_extensions", &.{ "httplib", "loadable_extensions", "core_functions", "json", "icu", "parquet" });
+        const install_static_embed_poc_ext = b.addInstallArtifact(static_embed_poc_ext_exe, .{});
+        const run_static_embed_poc_ext = b.addRunArtifact(static_embed_poc_ext_exe);
+        run_static_embed_poc_ext.step.dependOn(&install_static_embed_poc_ext.step);
+        const static_embed_poc_ext_step = b.step("v2-static-embed-poc-extensions", "Build and run the static-embedding link test with several extension archives linked");
+        static_embed_poc_ext_step.dependOn(&run_static_embed_poc_ext.step);
 
         // ── v2 static-extension registration, take 2: the real *direct*,
         // non-vtable binding mode the first POC above identified as
