@@ -14,6 +14,13 @@ const default_target_duckdb_version = "v1.2.0";
 const default_extension_version = "v0.1.0";
 const abi_type = "C_STRUCT";
 
+/// The DuckDB version the v2 extensions are built for. The v2 API is only guaranteed for this exact version, so the
+/// footer says `C_STRUCT_UNSTABLE` with it: DuckDB then refuses to load the file in any other version, with a message.
+/// (With `C_STRUCT` and "v2.0.0" a build for one alpha loaded in another one and crashed it.) Move it with the pin in
+/// build.zig.zon.
+const v2_duckdb_version = "v2.0.0-alpha48730";
+const v2_abi_type = "C_STRUCT_UNSTABLE";
+
 /// Map a resolved target to the platform string DuckDB's extension
 /// metadata expects (`linux_amd64`, `osx_arm64`, ...). Used both for the
 /// default/host build and for each target in the `cross` step, since the
@@ -199,6 +206,66 @@ fn addCrossBuild(
     // not a change to what DuckDB sees when it loads the extension.
     const unique_name = b.fmt("{s}_{s}", .{ extension_name, platform });
     return addDuckdbExtensionMetadata(b, lib, unique_name, target_duckdb_version, extension_version, abi_type, platform);
+}
+
+/// The v2 extensions that are published.
+const V2Extension = enum { zig_ext_v2, zig_ext_cookbook };
+
+/// Cross-compile one of the v2 extensions for one target. The v2 bindings are plain Zig (no C header is translated),
+/// so, unlike `addCrossBuild`, nothing but the modules has to be made again for the target.
+fn addV2CrossBuild(
+    b: *std.Build,
+    extension: V2Extension,
+    duckdb_version: []const u8,
+    extension_version: []const u8,
+    optimize: std.builtin.OptimizeMode,
+    query: std.Target.Query,
+) std.Build.LazyPath {
+    const resolved_target = b.resolveTargetQuery(query);
+    const platform = duckdbPlatformString(resolved_target);
+
+    const types_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/duckdb_v2_types.zig"),
+        .target = resolved_target,
+        .optimize = optimize,
+    });
+    const dynamic_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/duckdb_v2_dynamic.zig"),
+        .target = resolved_target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "duckdb_v2_types", .module = types_mod }},
+    });
+    const graph = v2Graph(b, resolved_target, optimize, dynamic_mod);
+
+    const name = @tagName(extension);
+    const lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = b.fmt("{s}_{s}", .{ name, platform }),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(switch (extension) {
+                .zig_ext_v2 => "src/root_v2.zig",
+                .zig_ext_cookbook => "src/root_cookbook.zig",
+            }),
+            .target = resolved_target,
+            .optimize = optimize,
+        }),
+    });
+    lib.root_module.addImport("duckdb_v2_api", dynamic_mod);
+    lib.root_module.addImport("v2_helpers", graph.helpers);
+    switch (extension) {
+        .zig_ext_v2 => {
+            lib.root_module.addImport("comptime_scalar_v2", graph.scalar);
+            lib.root_module.addImport("comptime_table_v2", graph.table);
+        },
+        .zig_ext_cookbook => lib.root_module.addImport("arrow", b.createModule(.{
+            .root_source_file = b.path("third_party/gld-arrow-zig/src/arrow.zig"),
+            .target = resolved_target,
+            .optimize = optimize,
+        })),
+    }
+    lib.root_module.link_libc = true;
+    // The file name is only for the build artifacts; the metadata footer does not carry it.
+    return addDuckdbExtensionMetadata(b, lib, b.fmt("{s}_{s}", .{ name, platform }), duckdb_version, extension_version, v2_abi_type, platform);
 }
 
 /// The modules written against `duckdb_v2_api`, instantiated against one backend: `api` is the
@@ -514,6 +581,13 @@ pub fn build(b: *std.Build) void {
         "dist-version",
         "DuckDB client version directory for `dist` packaging (default: v1.5.6)",
     ) orelse "v1.5.6";
+    // The same for the v2 extensions: the exact alpha, because the v2 API is only guaranteed for one DuckDB version.
+    const dist_version_v2 = b.option(
+        []const u8,
+        "dist-version-v2",
+        "DuckDB version the v2 extensions are built for: the directory `dist-v2` packages under and the version in their footer (default: v2.0.0-alpha48730)",
+    ) orelse v2_duckdb_version;
+    const extension_version_v2 = b.option([]const u8, "extension-version-v2", "Extension version recorded in the v2 extensions (default: v0.1.0)") orelse "v0.1.0";
 
     // `v2-static-embed-poc` link paths — see that step's own comment.
     const libstdcxx_path_override = b.option([]const u8, "libstdcxx-path", "Path to the system libstdc++.a for `v2-static-embed-poc` (default: `g++ -print-file-name=libstdc++.a`)");
@@ -863,7 +937,7 @@ pub fn build(b: *std.Build) void {
     });
     const install_fake_nethogs = b.addInstallArtifact(fake_nethogs_exe, .{});
 
-    const v2_poc_output = addDuckdbExtensionMetadata(b, v2_poc_lib, "zig_ext_v2_poc", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
+    const v2_poc_output = addDuckdbExtensionMetadata(b, v2_poc_lib, "zig_ext_v2_poc", v2_duckdb_version, "v0.0.0-poc", v2_abi_type, duckdbPlatformString(target));
 
     // ── Real, parallel v2 extension (zig_ext_v2) — migrated-off-v1
     // functions only (see src/ext/init_v2.zig); v1's real `zig_ext` target
@@ -883,7 +957,7 @@ pub fn build(b: *std.Build) void {
     ext_v2_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
     ext_v2_lib.root_module.link_libc = true;
 
-    const ext_v2_output = addDuckdbExtensionMetadata(b, ext_v2_lib, "zig_ext_v2", "v2.0.0", "v0.1.0", "C_STRUCT", duckdbPlatformString(target));
+    const ext_v2_output = addDuckdbExtensionMetadata(b, ext_v2_lib, "zig_ext_v2", v2_duckdb_version, "v0.1.0", v2_abi_type, duckdbPlatformString(target));
     const install_ext_v2 = b.addInstallFile(ext_v2_output, "lib/zig_ext_v2.duckdb_extension");
 
     const ext_v2_step = b.step("ext-v2", "Build the real, parallel v2 .duckdb_extension file");
@@ -904,7 +978,7 @@ pub fn build(b: *std.Build) void {
     bad_ext_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
     bad_ext_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
     bad_ext_lib.root_module.link_libc = true;
-    const bad_ext_output = addDuckdbExtensionMetadata(b, bad_ext_lib, "zig_ext_bad", "v2.0.0", "v0.1.0", "C_STRUCT", duckdbPlatformString(target));
+    const bad_ext_output = addDuckdbExtensionMetadata(b, bad_ext_lib, "zig_ext_bad", v2_duckdb_version, "v0.1.0", v2_abi_type, duckdbPlatformString(target));
     {
         const run = std.Build.Step.Run.create(b, "load an extension whose registration fails");
         if (duckdb_cli_v2) |cli| run.addFileArg(cli) else run.addArg("duckdb");
@@ -941,7 +1015,7 @@ pub fn build(b: *std.Build) void {
     ext_cookbook_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
     ext_cookbook_lib.root_module.addImport("arrow", arrow_mod);
     ext_cookbook_lib.root_module.link_libc = true;
-    const ext_cookbook_output = addDuckdbExtensionMetadata(b, ext_cookbook_lib, "zig_ext_cookbook", "v2.0.0", "v0.1.0", "C_STRUCT", duckdbPlatformString(target));
+    const ext_cookbook_output = addDuckdbExtensionMetadata(b, ext_cookbook_lib, "zig_ext_cookbook", v2_duckdb_version, "v0.1.0", v2_abi_type, duckdbPlatformString(target));
     const install_ext_cookbook = b.addInstallFile(ext_cookbook_output, "lib/zig_ext_cookbook.duckdb_extension");
     const ext_cookbook_step = b.step("ext-cookbook", "Build the v2 cookbook .duckdb_extension file");
     ext_cookbook_step.dependOn(&install_ext_cookbook.step);
@@ -997,7 +1071,7 @@ pub fn build(b: *std.Build) void {
     v2_gen_poc_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
     v2_gen_poc_lib.root_module.addImport("gen_hello", gen_hello_dynamic_mod);
     v2_gen_poc_lib.root_module.link_libc = true;
-    const v2_gen_poc_output = addDuckdbExtensionMetadata(b, v2_gen_poc_lib, "zig_ext_v2_gen_poc", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
+    const v2_gen_poc_output = addDuckdbExtensionMetadata(b, v2_gen_poc_lib, "zig_ext_v2_gen_poc", v2_duckdb_version, "v0.0.0-poc", v2_abi_type, duckdbPlatformString(target));
 
     const v2_gen_poc_step = b.step("v2-gen-poc", "Build the generated-dynamic-bindings .duckdb_extension, load it in the pinned v2 CLI and call gen_hello()");
     {
@@ -1229,7 +1303,7 @@ pub fn build(b: *std.Build) void {
         v2_poc_braille_lib.root_module.addImport("braille_image", braille_image_mod);
         v2_poc_braille_lib.root_module.link_libc = true;
 
-        const v2_poc_braille_output = addDuckdbExtensionMetadata(b, v2_poc_braille_lib, "zig_ext_v2_poc_braille", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
+        const v2_poc_braille_output = addDuckdbExtensionMetadata(b, v2_poc_braille_lib, "zig_ext_v2_poc_braille", v2_duckdb_version, "v0.0.0-poc", v2_abi_type, duckdbPlatformString(target));
         const install_v2_poc_braille = b.addInstallFile(v2_poc_braille_output, "lib/zig_ext_v2_poc_braille.duckdb_extension");
 
         const v2_poc_braille_step = b.step("v2-poc-braille", "Build the image-to-braille-art v2 proof-of-concept .duckdb_extension file");
@@ -1278,7 +1352,7 @@ pub fn build(b: *std.Build) void {
             v2_poc_stipple_lib.root_module.addImport("stipple_image", stipple_image_mod);
             v2_poc_stipple_lib.root_module.link_libc = true;
 
-            const v2_poc_stipple_output = addDuckdbExtensionMetadata(b, v2_poc_stipple_lib, "zig_ext_v2_poc_stipple", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
+            const v2_poc_stipple_output = addDuckdbExtensionMetadata(b, v2_poc_stipple_lib, "zig_ext_v2_poc_stipple", v2_duckdb_version, "v0.0.0-poc", v2_abi_type, duckdbPlatformString(target));
             const install_v2_poc_stipple = b.addInstallFile(v2_poc_stipple_output, "lib/zig_ext_v2_poc_stipple.duckdb_extension");
 
             const v2_poc_stipple_step = b.step("v2-poc-stipple", "Build the weighted-Voronoi-stippling v2 proof-of-concept .duckdb_extension file");
@@ -1374,6 +1448,35 @@ pub fn build(b: *std.Build) void {
     const dist_step = b.step("dist", "Cross-compile, then arrange and gzip into dist/<dist-version>/<platform>/<name>.duckdb_extension.gz");
     dist_step.dependOn(cross_step);
     dist_step.dependOn(&dist_run.step);
+
+    // ── the v2 extensions (zig_ext_v2 and the cookbook), the same way, under the exact alpha's directory ──
+    const cross_v2_step = b.step("cross-v2", "Cross-compile the v2 extensions for every target in cross_targets, into zig-out/lib-v2/<platform>/");
+    const dist_v2_step = b.step("dist-v2", "Cross-compile the v2 extensions, then arrange and gzip into dist/<dist-version-v2>/<platform>/<name>.duckdb_extension.gz");
+    for (cross_targets) |query| {
+        const platform = duckdbPlatformString(b.resolveTargetQuery(query));
+        for ([_]V2Extension{ .zig_ext_v2, .zig_ext_cookbook }) |extension| {
+            const output = addV2CrossBuild(b, extension, dist_version_v2, extension_version_v2, optimize, query);
+            const install = b.addInstallFile(output, b.fmt("lib-v2/{s}/{s}.duckdb_extension", .{ platform, @tagName(extension) }));
+            cross_v2_step.dependOn(&install.step);
+        }
+    }
+    // Installs both from dist/ (a file:// repository) into the pinned alpha CLI, after `dist-v2` has made the tree.
+    const verify_dist_v2_step = b.step("verify-dist-v2", "Install the v2 extensions from dist/ into the pinned DuckDB alpha and use them (run dist-v2 first)");
+    {
+        const verify = b.addSystemCommand(&.{"tools/verify_dist_v2.sh"});
+        if (duckdb_cli_v2) |cli| verify.addFileArg(cli) else verify.addArg("duckdb");
+        verify.addArg("dist");
+        verify_dist_v2_step.dependOn(&verify.step);
+    }
+    for ([_]V2Extension{ .zig_ext_v2, .zig_ext_cookbook }) |extension| {
+        const run = b.addRunArtifact(dist_tool);
+        run.step.dependOn(cross_v2_step);
+        run.addArg("zig-out/lib-v2");
+        run.addArg("dist");
+        run.addArg(@tagName(extension));
+        run.addArg(dist_version_v2);
+        dist_v2_step.dependOn(&run.step);
+    }
 
     // ── Interactive session with the real v1 extension pre-loaded ────────
     // See the v2 step above for why this uses -cmd + addFileArg2's

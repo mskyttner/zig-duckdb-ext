@@ -177,15 +177,26 @@ Error texts changed in places too (`qname_parse` of an empty string now says "Ze
 
 ## 7. Package and publish
 
-- `zig build dist` cross-compiles for every target in `cross_targets` and arranges
-  `dist/<duckdb-version>/<platform>/<name>.duckdb_extension.gz`; `.github/workflows/release.yml` publishes that tree to
-  GitHub Pages on a `v*` tag. Users then `INSTALL my_ext FROM 'https://<owner>.github.io/<repo>/'` with
-  `allow_unsigned_extensions` (`docs/rationale/0004_extension-distribution-and-signing.md` says why it is unsigned).
+- `zig build dist` cross-compiles the v1 extension for every target in `cross_targets` and arranges
+  `dist/<duckdb-version>/<platform>/<name>.duckdb_extension.gz`; `zig build dist-v2` does the same for the v2 extensions
+  (`zig_ext_v2` and the cookbook) under `dist/v2.0.0-alpha48730/…`. `.github/workflows/release.yml` builds both, installs
+  the v2 ones in the alpha CLI (`tools/verify_dist_v2.sh`), and publishes the tree to GitHub Pages on a `v*` tag. Users
+  then `INSTALL zig_ext_v2 FROM 'https://<owner>.github.io/<repo>/'` with `allow_unsigned_extensions`
+  (`docs/rationale/0004_extension-distribution-and-signing.md` says why it is unsigned). Rehearse it locally with
+  `task dist:v2` and `task verify:dist-v2`, which install from a `file://` repository.
 - The repository directory must match the DuckDB version of the client that installs, not the extension's API version.
+  A v1.5.6 client looks in `v1.5.6/`, the alpha in `v2.0.0-alpha48730/`.
+- **A v2 extension must say which DuckDB it is for.** The v2 API is only guaranteed for one exact version. The footer of
+  `zig_ext_v2` and the cookbook is `C_STRUCT_UNSTABLE` with that version (`v2_duckdb_version` in `build.zig`; it moves with
+  the pin). With `C_STRUCT` and `v2.0.0`, which is what this repository used at first, an extension built for alpha48730
+  *loaded in alpha46057 and crashed it* (a segmentation fault). With `C_STRUCT_UNSTABLE` that DuckDB refuses it: "The file
+  was built specifically for DuckDB version 'v2.0.0-alpha48730' and can only be loaded with that version of DuckDB".
+- The entry point is found by the **file name**: `zig_ext_v2.duckdb_extension` must export `zig_ext_v2_init_c_api_v2`, so a
+  copy under another name (`unstable.duckdb_extension`) fails with "did not contain function …".
 - `description.yml` at the repository root is **not** per-function documentation. It is the extension-level descriptor in
   the format of DuckDB's community-extensions program (name, version, license, maintainers, a `hello_world` example).
   This repository does not submit there; the file feeds the landing page (`zig build docs-index`). Its functions'
-  signatures come from `duckdb_functions()` and, until step 6 is done, have no prose.
+  signatures come from `duckdb_functions()`, which has the prose of step 6 for the functions that set it.
 
 ## Where to go next
 
