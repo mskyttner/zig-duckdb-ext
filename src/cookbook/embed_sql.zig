@@ -11,6 +11,11 @@
 ///!   statement_execute / prepared_statement_execute -> a **lazy** result: nothing runs until it is stepped
 ///!   result_fetch_chunk / result_drain / result_get_schema -> rows, side effects, columns
 ///!
+///! **Tokenizing and parsing** are also here, because both take a connection (`tokenize_sql`, `parse_sql`): the lexical
+///! classes of a text (`tokenizing`), and the kind, text and parameters of each statement without binding it
+///! (`parsing`). The calls that work on text alone (identifiers, qualified names, UTF-8) run in an extension: see
+///! `names.zig`.
+///!
 ///! A query can also come back as **Arrow** (`statement_execute_arrow`: an `ArrowSchema` and `ArrowArray`s of the C Data
 ///! Interface instead of chunks), which is what a host handing rows to PyArrow or Arrow C++ wants. `arrowResults` below
 ///! reads one; the extension side of the interface (an exporter and an importer made from a context) is
@@ -328,6 +333,89 @@ fn run(arena: std.mem.Allocator, s: *Session) !void {
     try errors(arena, s);
     try lazyExecution(arena, s);
     try arrowResults(s);
+    try tokenizing(arena, s);
+    try parsing(arena, s);
+}
+
+/// The tokens of `sql` as "CLASS:lexeme" words, separated by a space. Whitespace is not a token.
+fn tokens(arena: std.mem.Allocator, s: *Session, sql: ?[]const u8, unterminated: ?*bool) ![]const u8 {
+    var c: Call = .{};
+    const text = if (sql) |t| helpers.str(t) else v2.duckdb_v2_str{ .ptr = null, .len = 0 };
+    var iterator: v2.duckdb_v2_token_iterator_handle = undefined;
+    try c.ok(v2.duckdb_v2_tokenize_sql(s.conn, &text, &iterator, c.err()));
+    defer _ = v2.duckdb_v2_token_iterator_destroy(&iterator);
+    var out: std.ArrayList(u8) = .empty;
+    while (true) {
+        var class: v2.DUCKDB_V2_TOKEN_TYPE = undefined;
+        var start: u64 = 0;
+        var length: u64 = 0;
+        try c.ok(v2.duckdb_v2_token_iterator_next(iterator, &class, &start, &length, c.err()));
+        // After the last token: END_OF_INPUT, at the end of the input, with no length. It repeats if asked again.
+        if (class == .TOKEN_TYPE_END_OF_INPUT) {
+            try expectInt("END_OF_INPUT starts at the end", (sql orelse @as([]const u8, "")).len, start);
+            try expectInt("END_OF_INPUT has no length", 0, length);
+            break;
+        }
+        const name = @tagName(class)["TOKEN_TYPE_".len..];
+        if (out.items.len > 0) try out.append(arena, ' ');
+        try out.print(arena, "{s}:{s}", .{ name, (sql.?)[start..][0..length] });
+    }
+    if (unterminated) |flag| try c.ok(v2.duckdb_v2_token_iterator_ends_unterminated(iterator, flag, c.err()));
+    return out.items;
+}
+
+/// Tokenizing: the lexical classes of a statement's text, with offsets into it, by the grammar of the connection.
+/// No parsing and no catalog, so nothing needs to exist, and malformed input is not an error: the iterator says
+/// whether the input ended inside an open string, quoted identifier or comment.
+fn tokenizing(arena: std.mem.Allocator, s: *Session) !void {
+    try expectEqual("a query", "KEYWORD:SELECT NUMBER_LITERAL:1 OPERATOR:+ NUMBER_LITERAL:2.5e3 KEYWORD:AS IDENTIFIER:x OPERATOR:, STRING_LITERAL:'it''s' KEYWORD:FROM IDENTIFIER:\"My Col\" TERMINATOR:;", try tokens(arena, s, "SELECT 1 + 2.5e3 AS x, 'it''s' FROM \"My Col\";", null));
+    try expectEqual("comments are tokens", "KEYWORD:SELECT COMMENT:/* a ; b */ NUMBER_LITERAL:1 COMMENT:-- tail", try tokens(arena, s, "SELECT /* a ; b */ 1 -- tail", null));
+    try expectEqual("a dollar-quoted string is one token", "KEYWORD:SELECT STRING_LITERAL:$$x;y$$ TERMINATOR:;", try tokens(arena, s, "SELECT $$x;y$$;", null));
+    try expectEqual("nothing", "", try tokens(arena, s, null, null));
+    try expectEqual("only whitespace", "", try tokens(arena, s, "  \n\t ", null));
+
+    var open = false;
+    try expectEqual("a string left open", "KEYWORD:SELECT STRING_LITERAL:'abc", try tokens(arena, s, "SELECT 'abc", &open));
+    try expectInt("the input ended inside a token", 1, @intFromBool(open));
+    inline for (.{ "SELECT \"abc", "SELECT 1 /* x", "SELECT 1 -- no newline", "SELECT $$abc" }) |sql| {
+        open = false;
+        _ = try tokens(arena, s, sql, &open);
+        try expectInt("unterminated: " ++ sql, 1, @intFromBool(open));
+    }
+    inline for (.{ "SELECT 1", "SELECT 1 -- with newline\n", "SELECT 'a'", "", "  " }) |sql| {
+        open = true;
+        _ = try tokens(arena, s, sql, &open);
+        try expectInt("terminated: " ++ sql, 0, @intFromBool(open));
+    }
+}
+
+/// Parsing: text to statements, and what can be known without a catalog: the kind, the text of each statement and
+/// its parameters. Nothing is bound, so a statement may name a table that does not exist.
+fn parsing(arena: std.mem.Allocator, s: *Session) !void {
+    var c: Call = .{};
+    const sql = try arena.dupeSentinel(u8, "SELECT $1; /* c */ INSERT INTO no_such_table VALUES (1);\nCREATE TABLE x (i INTEGER); DROP TABLE y", 0);
+    var iterator: v2.duckdb_v2_statement_iterator_handle = undefined;
+    try c.ok(v2.duckdb_v2_parse_sql(s.conn, sql.ptr, &iterator, c.err()));
+    defer _ = v2.duckdb_v2_statement_iterator_destroy(&iterator);
+
+    var seen: std.ArrayList(u8) = .empty;
+    while (true) {
+        var statement: ?v2.duckdb_v2_sql_statement_handle = null;
+        try c.ok(v2.duckdb_v2_statement_iterator_next(iterator, @ptrCast(&statement), c.err()));
+        var owned = statement orelse break;
+        defer _ = v2.duckdb_v2_sql_statement_destroy(&owned);
+        var kind: v2.DUCKDB_V2_STATEMENT_TYPE = undefined;
+        try c.ok(v2.duckdb_v2_sql_statement_get_type(owned, &kind, c.err()));
+        var text: v2.duckdb_v2_str = undefined;
+        try c.ok(v2.duckdb_v2_sql_statement_get_text(owned, &text, c.err()));
+        var n_params: u64 = 0;
+        try c.ok(v2.duckdb_v2_sql_statement_get_parameter_count(owned, &n_params, c.err()));
+        try seen.print(arena, "{s}|{s}|{d};", .{ @tagName(kind)["STATEMENT_TYPE_".len..], view(text), n_params });
+    }
+    // Four statements, each with its kind, its own text (up to the next statement: the comment and the newline that
+    // follow a `;` belong to the statement before it) and its parameter count. Nothing was bound: `no_such_table`
+    // is not looked up.
+    try expectEqual("statements", "SELECT|SELECT $1; /* c */ |1;INSERT|INSERT INTO no_such_table VALUES (1);\n|0;CREATE|CREATE TABLE x (i INTEGER); |0;DROP|DROP TABLE y|0;", seen.items);
 }
 
 /// A query's rows as Arrow: the schema first (a struct whose children are the columns), then arrays of at most the

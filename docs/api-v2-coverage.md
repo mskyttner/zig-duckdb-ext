@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 66 scanned source files. Referenced by the extension: **293**; by the extension or the PoC: **313**.
+587 functions (26 unstable) in 32 spec modules, from 67 scanned source files. Referenced by the extension: **306**; by the extension or the PoC: **324**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -31,19 +31,19 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | function/scalar | 24 | 0 | 20 | 20 | 4 |
 | function/signature | 2 | 0 | 2 | 2 | 0 |
 | function/table | 83 | 19 | 34 | 38 | 45 |
-| identifier | 1 | 0 | 0 | 0 | 1 |
+| identifier | 1 | 0 | 1 | 1 | 0 |
 | instance | 13 | 0 | 4 | 4 | 9 |
 | logging | 1 | 0 | 1 | 1 | 0 |
 | logical_type/custom_type | 6 | 0 | 5 | 5 | 1 |
 | logical_type | 16 | 0 | 7 | 7 | 9 |
 | prepared_statement | 4 | 0 | 4 | 4 | 0 |
-| qname | 8 | 0 | 2 | 4 | 4 |
+| qname | 8 | 0 | 8 | 8 | 0 |
 | query_result | 10 | 0 | 6 | 6 | 4 |
 | schema | 3 | 0 | 3 | 3 | 0 |
-| sql_statement | 9 | 0 | 8 | 8 | 1 |
-| tokenizer | 4 | 0 | 0 | 0 | 4 |
+| sql_statement | 9 | 0 | 9 | 9 | 0 |
+| tokenizer | 4 | 0 | 4 | 4 | 0 |
 | value | 112 | 0 | 28 | 30 | 82 |
-| vector | 21 | 0 | 11 | 11 | 10 |
+| vector | 21 | 0 | 12 | 12 | 9 |
 
 ## Not referenced
 
@@ -81,23 +81,15 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **function/table**: `table_function_create_with_connection`, `table_function_set_partitioning_callback`, `table_function_init_global_get_user_data`, `table_function_init_global_get_column_count`, `table_function_init_global_get_column_index`, `table_function_init_local_get_user_data`, `table_function_init_local_get_bind_data`, `table_function_init_local_get_column_count`, `table_function_init_local_get_column_index`, `table_function_progress_get_user_data`, `table_function_progress_get_global_state`, `table_function_filter_pushdown_get_user_data`, `table_function_filter_pushdown_get_column_count`, `table_function_partition_data_get_user_data`, `table_function_partition_data_get_bind_data`, `table_function_partition_data_get_global_state`, `table_function_partition_data_requires_batch_index`, `table_function_partition_data_requires_partition_columns`, `table_function_partition_data_get_partition_column_count`, `table_function_partition_data_get_partition_column_index`, `table_function_partition_data_set_partition_value`, `table_function_partitioning_get_user_data`, `table_function_partitioning_get_bind_data`, `table_function_partitioning_get_partition_column_count`, `table_function_partitioning_get_partition_column_index`, `table_function_partitioning_set_partition_info`, `table_function_set_claim_batch_callback` *(u)*, `table_function_claim_batch_get_user_data` *(u)*, `table_function_claim_batch_get_bind_data` *(u)*, `table_function_claim_batch_get_global_state` *(u)*, `table_function_claim_batch_get_local_state` *(u)*, `table_function_claim_batch_set_claimed` *(u)*, `table_function_set_get_bind_info_callback` *(u)*, `table_function_get_bind_info_get_user_data` *(u)*, `table_function_get_bind_info_get_bind_data` *(u)*, `table_function_get_bind_info_set_column_identifier` *(u)*, `table_function_get_bind_info_set_option` *(u)*, `multi_file_function_create_with_connection` *(u)*, `multi_file_function_create_with_extension` *(u)*, `multi_file_function_set_name` *(u)*, `multi_file_function_set_single_file_function` *(u)*, `multi_file_function_set_reader_type` *(u)*, `multi_file_function_set_file_extension` *(u)*, `multi_file_function_register` *(u)*, `multi_file_function_destroy` *(u)*
 
-**identifier**: `identifier_render_quoted`
-
 **instance**: `instance_detach`, `instance_set_default`, `attach_options_create`, `attach_options_set`, `attach_options_destroy`, `instance_set_option`, `instance_get_option_by_name`, `instance_get_option_count`, `instance_get_option_by_index`
 
 **logical_type/custom_type**: `custom_type_create_with_connection`
 
 **logical_type**: `connection_create_type_from_name`, `connection_create_type_from_text`, `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_name`, `logical_type_to_text`, `logical_type_get_param_count`, `logical_type_get_param`, `connection_create_type_with_alias`
 
-**qname**: `qname_parse`, `qname_render`, `qname_equals`, `qname_hash`
-
 **query_result**: `result_step`, `result_wait`, `result_render_box`, `result_get_statement_type`
-
-**sql_statement**: `sql_statement_get_text`
-
-**tokenizer**: `tokenize_sql`, `token_iterator_next`, `token_iterator_ends_unterminated`, `token_iterator_destroy`
 
 **value**: `value_create_null`, `value_get_utinyint`, `value_get_usmallint`, `value_get_uint`, `value_get_ubigint`, `value_get_uhugeint`, `value_get_hugeint`, `value_get_blob`, `value_get_date`, `value_get_time`, `value_get_time_ns`, `value_get_time_tz`, `value_get_timestamp`, `value_get_timestamp_sec`, `value_get_timestamp_ms`, `value_get_timestamp_ns`, `value_get_timestamp_tz`, `value_get_timestamp_tz_ns`, `value_get_interval`, `value_get_uuid`, `value_get_decimal`, `value_get_type`, `value_create_null_with_context`, `value_create_usmallint_with_context`, `value_create_uint_with_context`, `value_create_ubigint_with_context`, `value_create_uhugeint_with_context`, `value_create_hugeint_with_context`, `value_create_null_with_connection`, `value_create_bool_with_connection`, `value_create_utinyint_with_connection`, `value_create_usmallint_with_connection`, `value_create_uint_with_connection`, `value_create_ubigint_with_connection`, `value_create_uhugeint_with_connection`, `value_create_tinyint_with_connection`, `value_create_smallint_with_connection`, `value_create_bigint_with_connection`, `value_create_hugeint_with_connection`, `value_create_varchar_with_connection`, `value_create_blob_with_connection`, `value_create_float_with_connection`, `value_create_double_with_connection`, `value_create_type_with_connection`, `value_create_date_with_context`, `value_create_date_with_connection`, `value_create_time_with_context`, `value_create_time_with_connection`, `value_create_time_ns_with_context`, `value_create_time_ns_with_connection`, `value_create_time_tz_with_context`, `value_create_time_tz_with_connection`, `value_create_timestamp_with_context`, `value_create_timestamp_with_connection`, `value_create_timestamp_sec_with_context`, `value_create_timestamp_sec_with_connection`, `value_create_timestamp_ms_with_context`, `value_create_timestamp_ms_with_connection`, `value_create_timestamp_ns_with_context`, `value_create_timestamp_ns_with_connection`, `value_create_timestamp_tz_with_context`, `value_create_timestamp_tz_with_connection`, `value_create_timestamp_tz_ns_with_context`, `value_create_timestamp_tz_ns_with_connection`, `value_create_interval_with_context`, `value_create_interval_with_connection`, `value_create_decimal_with_context`, `value_create_decimal_with_connection`, `value_create_uuid_with_context`, `value_create_uuid_with_connection`, `value_create_bit_with_context`, `value_create_bit_with_connection`, `value_create_bignum_with_context`, `value_create_bignum_with_connection`, `value_create_list_with_connection`, `value_create_array_with_connection`, `value_create_struct_with_connection`, `value_create_tuple_with_context`, `value_create_tuple_with_connection`, `value_create_map_with_connection`, `value_get_logical_type`, `value_to_string`
 
-**vector**: `vector_get_vector_type`, `vector_get_size`, `vector_make_constant`, `vector_make_sequence`, `vector_flat_get_validity_mutable`, `vector_constant_set_valid`, `vector_get_child_count`, `bignum_decode`, `bignum_encode`, `validate_utf8`
+**vector**: `vector_get_vector_type`, `vector_get_size`, `vector_make_constant`, `vector_make_sequence`, `vector_flat_get_validity_mutable`, `vector_constant_set_valid`, `vector_get_child_count`, `bignum_decode`, `bignum_encode`
 

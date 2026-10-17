@@ -1813,3 +1813,114 @@ SELECT count(*) FROM duckdb_logs WHERE message = 'zl7-off'
 
 statement ok
 SET enable_logging = false
+
+# Identifiers and qualified names: the engine's own rules, from text alone. (The tokenizer and the parser need a
+# connection: see the embedding recipe.)
+query T
+SELECT replace(zig_cookbook_quote_ident(x), '"', '#') FROM (VALUES (1, 'abc'), (2, 'select'), (3, 'a b'), (4, 'a"b'), (5, 'Abc'), (6, ''), (7, '1abc'), (8, 'héllo'), (9, 'a.b')) v(o, x) ORDER BY o
+----
+abc
+#select#
+#a b#
+#a##b#
+Abc
+##
+#1abc#
+#héllo#
+#a.b#
+
+# Quoted text parses back to the same name.
+query I
+SELECT count(*) FROM (VALUES ('abc'), ('select'), ('a b'), ('a"b'), ('1abc'), ('a.b')) v(x)
+WHERE zig_cookbook_qname_equals(zig_cookbook_quote_ident(x), zig_cookbook_quote_ident(x)) AND zig_cookbook_qname_render(zig_cookbook_quote_ident(x)) = zig_cookbook_quote_ident(x)
+----
+6
+
+query T
+SELECT replace(zig_cookbook_qname_render(x), '"', '#') FROM (VALUES (1, 'a.b'), (2, '"My Schema"."t.x"'), (3, 'Select.x.y'), (4, '"plain"'), (5, '  a  '), (6, 'a."b""c"')) v(o, x) ORDER BY o
+----
+a.b
+#My Schema#.#t.x#
+#Select#.x.y
+plain
+#  a  #
+a.#b##c#
+
+query IT
+SELECT position, replace(part || ' => ' || quoted, '"', '#') FROM zig_cookbook_qname_parts('main."a.b".select')
+----
+0
+main => main
+1
+a.b => #a.b#
+2
+select => #select#
+
+query I
+SELECT count(*) FROM zig_cookbook_qname_parts('t')
+----
+1
+
+# Equality is case-insensitive in every part; the hash agrees; a different number of parts differs.
+query IIII
+SELECT zig_cookbook_qname_equals('A.B', 'a."b"'), zig_cookbook_qname_equals('A.B', 'a.c'), zig_cookbook_qname_equals('a.b', 'x.a.b'), zig_cookbook_qname_hash('A.B') = zig_cookbook_qname_hash('a.b')
+----
+true
+false
+false
+true
+
+query I
+SELECT zig_cookbook_qname_hash('a.b') = zig_cookbook_qname_hash('a.c')
+----
+false
+
+# NULL in, NULL out.
+query T
+SELECT zig_cookbook_quote_ident(NULL)
+----
+NULL
+
+query T
+SELECT zig_cookbook_qname_equals('a', NULL)
+----
+NULL
+
+# The parser's own errors.
+statement error
+SELECT zig_cookbook_qname_render('a.b.c.d')
+----
+between one and three parts
+
+statement error
+SELECT zig_cookbook_qname_render('"abc')
+----
+Unterminated quote
+
+statement error
+SELECT zig_cookbook_qname_render('')
+----
+between one and three parts
+
+# An empty identifier is rendered as "", which does not parse back as a name.
+statement error
+SELECT zig_cookbook_qname_render(zig_cookbook_quote_ident(''))
+----
+Zero-length delimited identifier
+
+statement error
+SELECT * FROM zig_cookbook_qname_parts('a.b.c.d')
+----
+between one and three parts
+
+# validate_utf8 sees bytes: a BLOB can hold what a VARCHAR cannot.
+query T
+SELECT zig_cookbook_is_utf8(x) FROM (VALUES (1, 'h\xc3\xa9llo'::BLOB), (2, '\xc3\x28'::BLOB), (3, '\xff'::BLOB), (4, ''::BLOB), (5, 'a\x00b'::BLOB), (6, '\xf0\x9f\xa6\x86'::BLOB), (7, '\xed\xa0\x80'::BLOB)) v(o, x) ORDER BY o
+----
+true
+false
+false
+true
+true
+true
+false
