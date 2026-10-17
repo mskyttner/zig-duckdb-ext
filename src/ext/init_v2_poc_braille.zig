@@ -32,7 +32,6 @@
 ///!   already proved, applied to a URL-shaped "table name" instead of a
 ///!   bare identifier.
 const std = @import("std");
-const db = @import("duckdb_v2");
 const v2 = @import("duckdb_v2_dynamic");
 const helpers = @import("v2_helpers");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
@@ -154,11 +153,8 @@ fn braillereplacementScanCallback(info: v2.duckdb_v2_replacement_scan_info_handl
     _ = v2.duckdb_v2_replacement_scan_add_argument(info, url_value, err);
 }
 
-export fn zig_ext_v2_poc_braille_init_c_api_v2(raw_input: *const db.ExtensionInput) callconv(.c) void {
-    if (!db.initApi(raw_input, "v2.0.0")) return;
-    // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
-    // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
-    const input: *const v2.duckdb_v2_extension_input = @ptrCast(raw_input);
+export fn zig_ext_v2_poc_braille_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
+    if (!v2.init(input, "v2.0.0")) return;
     BrailleFromUrlCt.register(input) catch {};
     BrailleFromUrlTableCt.register(input) catch {};
     registerBrailleReplacementScan(input);

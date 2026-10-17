@@ -2,7 +2,7 @@
 ///!
 ///! v2 port of hello.zig, and the first function module written against the generated bindings
 ///! (`duckdb_v2_dynamic`, see tools/gen_v2_bindings.zig) rather than the hand-written
-///! `duckdb_v2.zig`: C names, enums for the error codes, handle types that cannot be mixed up.
+///! `duckdb_v2_dynamic.zig`: C names, enums for the error codes, handle types that cannot be mixed up.
 ///!
 ///! Hand-written rather than through comptime_scalar_v2: that framework's VARCHAR-return path
 ///! requires `implFn` to return a slice that outlives the call (borrowed from an argument, a

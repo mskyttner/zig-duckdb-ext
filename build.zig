@@ -289,23 +289,6 @@ pub fn build(b: *std.Build) void {
     });
     duckdb_c.addIncludePath(duckdb_headers_v1_dep.path("."));
 
-    // ── v2 API translation (in-progress rewrite, not yet wired into the
-    // extension build — see src/lib/duckdb_v2.zig) ───────────────────────
-    const duckdb_c_v2: Translator = .init(translate_c_dep, .{
-        .name = "duckdb_c_v2",
-        .c_source_file = duckdb_headers_v2_dep.path("duckdb_extension_v2.h"),
-        .target = target,
-        .optimize = optimize,
-    });
-    duckdb_c_v2.addIncludePath(duckdb_headers_v2_dep.path("."));
-
-    const duckdb_v2_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib/duckdb_v2.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    duckdb_v2_mod.addImport("duckdb_c_v2", duckdb_c_v2.mod);
-
     // ── Static-extension registration header (speculative prototype —
     // see docs/v2-migration-plan.md's "Static linking" section) ──────────
     // Vendored directly in src/lib/ rather than pinned via build.zig.zon;
@@ -322,12 +305,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     duckdb_static_mod.addImport("duckdb_c_static", duckdb_c_static.mod);
-    duckdb_static_mod.addImport("duckdb_v2", duckdb_v2_mod);
     const duckdb_static_check = b.addTest(.{ .root_module = duckdb_static_mod });
     const run_duckdb_static_check = b.addRunArtifact(duckdb_static_check);
-
-    const v2_check = b.addTest(.{ .root_module = duckdb_v2_mod });
-    const run_v2_check = b.addRunArtifact(v2_check);
 
     // ── Generated v2 bindings: shared types, static (direct-link) and
     // dynamic (get_api) backends ───────────────────────────────────────────
@@ -451,7 +430,6 @@ pub fn build(b: *std.Build) void {
     }
 
     // The hand-written layer shares its single `get_api` call with the generated bindings.
-    duckdb_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
 
     // Helpers over the generated types that several function modules share.
     // A module of its own, not a file imported by path, because the function modules and the
@@ -464,6 +442,18 @@ pub fn build(b: *std.Build) void {
     });
     const v2_helpers_check = b.addTest(.{ .root_module = v2_helpers_mod });
     const run_v2_helpers_check = b.addRunArtifact(v2_helpers_check);
+
+    // The value types a user function of the comptime frameworks takes or returns (DATE, TIME,
+    // TIMESTAMP, INTERVAL, BLOB, DECIMAL).
+    const v2_values_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib/v2_values.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod }},
+    });
+    const v2_values_check = b.addTest(.{ .root_module = v2_values_mod });
+    const run_v2_values_check = b.addRunArtifact(v2_values_check);
+    duckdb_static_mod.addImport("duckdb_v2_types", duckdb_v2_types_mod);
 
     // One hello-world scalar function written against `duckdb_v2_api`,
     // instantiated once per backend: the same source, two bindings.
@@ -498,8 +488,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    comptime_scalar_v2_mod.addImport("duckdb_v2", duckdb_v2_mod);
     comptime_scalar_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    comptime_scalar_v2_mod.addImport("v2_values", v2_values_mod);
     comptime_scalar_v2_mod.addImport("v2_helpers", v2_helpers_mod);
     const comptime_scalar_v2_check = b.addTest(.{ .root_module = comptime_scalar_v2_mod });
     const run_comptime_scalar_v2_check = b.addRunArtifact(comptime_scalar_v2_check);
@@ -508,8 +498,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/lib/comptime_table_v2.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
-    comptime_table_v2_mod.addImport("duckdb_v2", duckdb_v2_mod);
     comptime_table_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
     comptime_table_v2_mod.addImport("v2_helpers", v2_helpers_mod);
     const comptime_table_v2_check = b.addTest(.{ .root_module = comptime_table_v2_mod });
@@ -519,8 +509,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/lib/comptime_aggregate_v2.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
-    comptime_aggregate_v2_mod.addImport("duckdb_v2", duckdb_v2_mod);
     comptime_aggregate_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
     comptime_aggregate_v2_mod.addImport("v2_helpers", v2_helpers_mod);
     const comptime_aggregate_v2_check = b.addTest(.{ .root_module = comptime_aggregate_v2_mod });
@@ -531,7 +521,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    comptime_appender_v2_mod.addImport("duckdb_v2", duckdb_v2_mod);
     comptime_appender_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
     comptime_appender_v2_mod.addImport("v2_helpers", v2_helpers_mod);
     const comptime_appender_v2_check = b.addTest(.{ .root_module = comptime_appender_v2_mod });
@@ -542,8 +531,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    comptime_cast_v2_mod.addImport("duckdb_v2", duckdb_v2_mod);
     comptime_cast_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    comptime_cast_v2_mod.addImport("v2_values", v2_values_mod);
     comptime_cast_v2_mod.addImport("v2_helpers", v2_helpers_mod);
     const comptime_cast_v2_check = b.addTest(.{ .root_module = comptime_cast_v2_mod });
     const run_comptime_cast_v2_check = b.addRunArtifact(comptime_cast_v2_check);
@@ -570,7 +559,7 @@ pub fn build(b: *std.Build) void {
     const run_nethogs_trace_check = b.addRunArtifact(nethogs_trace_check);
 
     const v2_check_step = b.step("v2-check", "Type-check the in-progress duckdb v2 API bindings");
-    v2_check_step.dependOn(&run_v2_check.step);
+    v2_check_step.dependOn(&run_v2_values_check.step);
     v2_check_step.dependOn(&run_v2_static_parity.step);
     v2_check_step.dependOn(&run_v2_dynamic_parity.step);
     v2_check_step.dependOn(&run_v2_helpers_check.step);
@@ -586,7 +575,7 @@ pub fn build(b: *std.Build) void {
 
     // ── v2 proof-of-concept extension (real runtime test, not the real
     // extension) — registers one scalar function against a live DuckDB
-    // v2.0 alpha, proving duckdb_v2.zig's bindings beyond type-checking.
+    // v2.0 alpha, proving duckdb_v2_dynamic.zig's bindings beyond type-checking.
     const v2_poc_lib = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "zig_ext_v2_poc",
@@ -596,8 +585,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    v2_poc_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
     v2_poc_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    v2_poc_lib.root_module.addImport("v2_values", v2_values_mod);
     v2_poc_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
     v2_poc_lib.root_module.addImport("duckdb_v2_examples", duckdb_v2_examples_mod);
     v2_poc_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
@@ -636,7 +625,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    ext_v2_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
     ext_v2_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
     ext_v2_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
     ext_v2_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
@@ -765,7 +753,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             }),
         });
-        static_embed_poc_exe.root_module.addImport("duckdb_v2", duckdb_v2_mod);
+        static_embed_poc_exe.root_module.addImport("duckdb_v2_types", duckdb_v2_types_mod);
         static_embed_poc_exe.root_module.addImport("duckdb_static", duckdb_static_mod);
         static_embed_poc_exe.root_module.addImport("duckdb_full_c", duckdb_full_c.mod);
         static_embed_poc_exe.root_module.addImport("root_v2", b.createModule(.{
@@ -773,7 +761,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "duckdb_v2", .module = duckdb_v2_mod },
                 .{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod },
                 .{ .name = "v2_helpers", .module = v2_helpers_mod },
                 .{ .name = "comptime_scalar_v2", .module = comptime_scalar_v2_mod },
@@ -835,8 +822,8 @@ pub fn build(b: *std.Build) void {
         // Translated from `duckdb_v2.h` (the full host-embedding header,
         // with real top-level `extern` prototypes for every function) —
         // NOT `duckdb_extension_v2.h` (which only ever declares them as
-        // vtable struct fields), and NOT `duckdb_v2_mod`
-        // (`duckdb_v2.zig`), which intentionally only implements the
+        // vtable struct fields), and NOT the
+        // (`duckdb_v2_dynamic.zig`), which intentionally only implements the
         // dynamic/vtable path.
         const duckdb_v2_full_c: Translator = .init(translate_c_dep, .{
             .name = "duckdb_v2_full_c",
@@ -926,7 +913,6 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             }),
         });
-        v2_poc_braille_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
         v2_poc_braille_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
         v2_poc_braille_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
         v2_poc_braille_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
@@ -977,7 +963,6 @@ pub fn build(b: *std.Build) void {
                     .optimize = optimize,
                 }),
             });
-            v2_poc_stipple_lib.root_module.addImport("duckdb_v2", duckdb_v2_mod);
             v2_poc_stipple_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
             v2_poc_stipple_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
             v2_poc_stipple_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);

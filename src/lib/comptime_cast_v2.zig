@@ -10,7 +10,7 @@
 ///! The caller supplies a function `fn(SourceT) ?TargetT`:
 ///!   - returning a value writes it into the output row;
 ///!   - returning `null` means "this row failed to convert" — what that
-///!     does depends on the cast's mode (`db.CastMode`, read via
+///!     does depends on the cast's mode (`v2.DUCKDB_V2_CAST_MODE`, read via
 ///!     `castFunctionExecGetMode`, see its own doc comment for the full
 ///!     contract): in **TRY** mode (SQL `TRY_CAST`, or an implicit cast
 ///!     DuckDB is speculatively probing) a `null` writes NULL for that row
@@ -93,7 +93,7 @@
 ///!   }.cast);
 ///!   try VarcharToInt.register(input); // input: *const v2.duckdb_v2_extension_input
 const std = @import("std");
-const db = @import("duckdb_v2");
+const v2_values = @import("v2_values");
 const v2 = @import("duckdb_v2_dynamic");
 const helpers = @import("v2_helpers");
 
@@ -119,12 +119,12 @@ fn isDecimalType(comptime T: type) bool {
 }
 
 fn isEnumType(comptime T: type) bool {
-    if (T == db.Date or T == db.Time or T == db.Timestamp) return false;
+    if (T == v2_values.Date or T == v2_values.Time or T == v2_values.Timestamp) return false;
     return @typeInfo(T) == .@"enum";
 }
 
 fn isStructType(comptime T: type) bool {
-    if (T == db.Blob) return false;
+    if (T == v2_values.Blob) return false;
     if (comptime isDecimalType(T)) return false;
     return @typeInfo(T) == .@"struct";
 }
@@ -662,7 +662,7 @@ test "Function supports a conversion that can fail (null return)" {
 }
 
 test "Function supports DECIMAL as either source or target type" {
-    const Price = db.Decimal(10, 2);
+    const Price = v2_values.Decimal(10, 2);
     const PriceToDouble = Function(Price, f64, struct {
         fn cast(p: Price) ?f64 {
             return @as(f64, @floatFromInt(p.raw)) / 100.0;

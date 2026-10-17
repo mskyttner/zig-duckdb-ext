@@ -35,7 +35,7 @@
 ///!   - `pub fn pushdown(self: *State, info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, err: *v2.duckdb_v2_error_info_handle) void`
 ///!     — optional. Called during optimization, after `bind` and before
 ///!     any `next`, with the filter predicates the query applies to this
-///!     function's rows (see `duckdb_v2.zig`'s
+///!     function's rows (see `duckdb_v2_dynamic.zig`'s
 ///!     `tableFunctionSetFilterPushdownCallback` doc comment for the full
 ///!     accept/not-accept contract). Inspect predicates via
 ///!     `tableFunctionFilterPushdownGetFilter` + the `expression*`
@@ -102,7 +102,6 @@
 ///!   });
 ///!   try Range.register(input); // input: *const v2.duckdb_v2_extension_input
 const std = @import("std");
-const db = @import("duckdb_v2");
 const v2 = @import("duckdb_v2_dynamic");
 const helpers = @import("v2_helpers");
 

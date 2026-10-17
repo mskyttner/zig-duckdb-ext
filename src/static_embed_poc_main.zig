@@ -12,7 +12,7 @@
 ///! point (`root_v2.zig`'s `zig_ext_v2_init_c_api_v2` — completely
 ///! unmodified, no stub), opens a real in-memory database via plain
 ///! `duckdb_open`/`duckdb_connect` (the host-embedding C API from the
-///! real `duckdb.h`, NOT the extension vtable API `duckdb_v2.zig` wraps),
+///! real `duckdb.h`, NOT the extension vtable API the dynamic bindings wrap),
 ///! and runs a query against a function only the static extension
 ///! provides. No `.duckdb_extension` file, no `dlopen`, no `LOAD` from a
 ///! file path, no `-unsigned` — exactly the use case this mechanism
@@ -26,7 +26,7 @@
 ///! `input.get_api = statically_linked ? nullptr : ExtensionGetAPIV2;`)
 ///! — for the static-extension path, `get_api` is ALWAYS null. This
 ///! project's real `zig_ext_v2_init_c_api_v2` (`root_v2.zig`/`init_v2.zig`)
-///! calls `duckdb_v2.initApi`, which does
+///! calls `duckdb_v2_dynamic.init`, which does
 ///! `input.get_api orelse return false` — so it silently returns having
 ///! registered nothing, every time, under static loading. This
 ///! disproves what `docs/v2-migration-plan.md`'s "Static linking"
@@ -41,7 +41,7 @@
 ///! toggle) — out of scope for this prototype, which exists to establish
 ///! exactly where the real boundary is, not to build that layer.
 const std = @import("std");
-const duckdb_v2 = @import("duckdb_v2");
+const v2_types = @import("duckdb_v2_types");
 const duckdb_static = @import("duckdb_static");
 const c = @import("duckdb_full_c");
 
@@ -53,7 +53,7 @@ const c = @import("duckdb_full_c");
 // gives this file a typed reference to that same real, already-exported
 // symbol, to take its address for the descriptor below.
 const root_v2 = @import("root_v2");
-extern fn zig_ext_v2_init_c_api_v2(input: *const duckdb_v2.ExtensionInput) callconv(.c) void;
+extern fn zig_ext_v2_init_c_api_v2(input: *const v2_types.duckdb_v2_extension_input) callconv(.c) void;
 
 fn describe(descriptor: *duckdb_static.ExtensionDescriptor) callconv(.c) i32 {
     descriptor.version = duckdb_static.descriptor_version;

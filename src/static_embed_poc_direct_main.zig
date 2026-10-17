@@ -19,7 +19,7 @@
 ///! DUCKDB_BUILD_STATIC_EXTENSION)`) for an in-tree C-API extension.
 ///!
 ///! This file is the direct-link counterpart to `static_embed_poc_main.zig`:
-///! instead of going through `duckdb_v2.zig`'s vtable-based bindings (which
+///! instead of going through `duckdb_v2_dynamic.zig`'s vtable-based bindings (which
 ///! intentionally only implement the dynamic path), it declares and calls
 ///! the real `duckdb_v2_*` symbols directly via `duckdb_v2_full_c`
 ///! (translated from the real, full `duckdb_v2.h` — the host-embedding

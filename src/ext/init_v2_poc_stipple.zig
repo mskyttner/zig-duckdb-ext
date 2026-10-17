@@ -18,7 +18,6 @@
 ///!   return convention in `comptime_scalar_v2.zig` yet) — acceptable for
 ///!   this POC.
 const std = @import("std");
-const db = @import("duckdb_v2");
 const v2 = @import("duckdb_v2_dynamic");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const stipple_image = @import("stipple_image");
@@ -37,10 +36,7 @@ const StippleFromUrlCt = comptime_scalar_v2.FunctionNamed("stipple_from_url_ct",
     }
 }.eval, &.{ "url", "width", "height", "n_points", "iterations" });
 
-export fn zig_ext_v2_poc_stipple_init_c_api_v2(raw_input: *const db.ExtensionInput) callconv(.c) void {
-    if (!db.initApi(raw_input, "v2.0.0")) return;
-    // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
-    // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
-    const input: *const v2.duckdb_v2_extension_input = @ptrCast(raw_input);
+export fn zig_ext_v2_poc_stipple_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
+    if (!v2.init(input, "v2.0.0")) return;
     StippleFromUrlCt.register(input) catch {};
 }

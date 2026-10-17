@@ -382,3 +382,13 @@ test "makeBytesValue reports a failed arena allocation" {
     const too_long: [100]u8 = @splat('x');
     try std.testing.expectError(error.DuckDbError, makeBytesValue(arena, &too_long, &err));
 }
+
+test "init fails cleanly when get_api is null" {
+    const input: v2.duckdb_v2_extension_input = .{
+        .get_api = null,
+        .extension = undefined,
+        .context = undefined,
+        .err = undefined,
+    };
+    try std.testing.expect(!v2.init(&input, "v2.0.0"));
+}

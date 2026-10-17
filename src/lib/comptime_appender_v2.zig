@@ -5,7 +5,7 @@
 ///! `duckdb_v2_appender_*` family. What v2 offers instead is bulk/columnar:
 ///! build a `duckdb_v2_data_chunk_handle` yourself and hand whole chunks to
 ///! a `duckdb_v2_column_data_collection_handle` via
-///! `duckdb_v2_column_data_collection_append` (see `duckdb_v2.zig`'s
+///! `duckdb_v2_column_data_collection_append` (see `duckdb_v2_dynamic.zig`'s
 ///! "Column Data Collection" section).
 ///!
 ///! This generalizes that into the same "derive the plumbing from a plain
@@ -26,7 +26,7 @@
 ///!     table function exec callbacks, and `bind`, are all handed a
 ///!     `ContextHandle` instead (confirmed against `duckdb_v2.h`'s
 ///!     callback typedefs), so this uses the `_with_context` variant of
-///!     every call throughout. `duckdb_v2.zig` keeps the `_with_connection`
+///!     every call throughout. `duckdb_v2_dynamic.zig` keeps the `_with_connection`
 ///!     wrappers too, for a standalone embedder that does have a real
 ///!     connection, but `Appender` itself only needs the context path.
 ///!   - `append(self, row, err) !void` — buffer one row; auto-flushes the
@@ -47,7 +47,7 @@
 ///! the helpers in `v2_helpers.zig`), and its methods take and return the generated handles.
 ///!
 ///! VARIANT is NOT supported: this v2 alpha has no `Value` constructor for
-///! it at all (matching `duckdb_v2.zig`'s own VARIANT caveats on the read
+///! it at all (matching `duckdb_v2_dynamic.zig`'s own VARIANT caveats on the read
 ///! side), so there is nothing for a write path to call.
 const std = @import("std");
 const v2 = @import("duckdb_v2_dynamic");
@@ -57,7 +57,7 @@ const helpers = @import("v2_helpers");
 /// vector size, same hand-pinned constant `comptime_table_v2.zig` uses
 /// (`duckdb_v2_data_chunk_get_capacity` would be the live-queried
 /// equivalent, but it's gated behind `DUCKDB_V2_API_ALLOW_UNSTABLE` and not
-/// in this build's vtable — see `duckdb_v2.zig`'s note on it).
+/// in this build's vtable — see `duckdb_v2_dynamic.zig`'s note on it).
 const max_rows_per_batch = 2048;
 
 /// Leaf (non-nested) type → logical type id. Covers every type a LIST
@@ -510,7 +510,7 @@ pub fn Appender(comptime Row: type) type {
 // ─── Tests ────────────────────────────────────────────────────────────────
 //
 // Type-level only — no live v2 instance/connection to append against yet
-// (same constraint `duckdb_v2.zig`'s own tests operate under).
+// (same constraint `duckdb_v2_dynamic.zig`'s own tests operate under).
 
 test "Appender generates a valid Zig type for a single-column numeric Row" {
     const Row = struct { value: i64 };

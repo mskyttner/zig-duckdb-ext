@@ -22,7 +22,7 @@
 ///! unverified.
 const std = @import("std");
 const c = @import("duckdb_c_static");
-const duckdb_v2 = @import("duckdb_v2");
+const v2_types = @import("duckdb_v2_types");
 
 pub const ExtensionDescriptor = c.duckdb_extension_descriptor;
 pub const DescribeFn = c.duckdb_extension_describe_t;
@@ -39,9 +39,9 @@ pub fn registerStaticExtension(describe_fn: DescribeFn) i32 {
 
 /// The exact signature this project's real v2 entrypoint
 /// (`zig_ext_v2_init_c_api_v2` in src/ext/init_v2.zig) has today.
-const EntryCApiV2Fn = *const fn (*const duckdb_v2.ExtensionInput) callconv(.c) void;
+const EntryCApiV2Fn = *const fn (*const v2_types.duckdb_v2_extension_input) callconv(.c) void;
 
-fn exampleEntryCApiV2(input: *const duckdb_v2.ExtensionInput) callconv(.c) void {
+fn exampleEntryCApiV2(input: *const v2_types.duckdb_v2_extension_input) callconv(.c) void {
     _ = input;
 }
 

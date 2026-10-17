@@ -14,7 +14,7 @@
 ///! hand-written callbacks reused from `zig_v2_range3`), and
 ///! `zig_v2_agg_sum_ct`, registered through `comptime_aggregate_v2.Function`.
 const std = @import("std");
-const db = @import("duckdb_v2");
+const v2_values = @import("v2_values");
 const v2 = @import("duckdb_v2_dynamic");
 const helpers = @import("v2_helpers");
 const examples = @import("duckdb_v2_examples");
@@ -26,11 +26,8 @@ const comptime_cast_v2 = @import("comptime_cast_v2");
 const matmul = @import("matmul");
 const nethogs_trace = @import("nethogs_trace");
 
-export fn zig_ext_v2_poc_init_c_api_v2(raw_input: *const db.ExtensionInput) callconv(.c) void {
-    if (!db.initApi(raw_input, "v2.0.0")) return;
-    // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
-    // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
-    const input: *const v2.duckdb_v2_extension_input = @ptrCast(raw_input);
+export fn zig_ext_v2_poc_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
+    if (!v2.init(input, "v2.0.0")) return;
 
     var err: v2.duckdb_v2_error_info_handle = undefined;
 
@@ -139,7 +136,7 @@ const WordOrDigitsToBigint = comptime_cast_v2.Function([]const u8, i64, struct {
 
 /// Proves comptime_cast_v2's DECIMAL support: CAST(price AS DOUBLE)
 /// dividing out the DECIMAL(10,2)'s own scale, and the reverse direction.
-const CastPrice = db.Decimal(10, 2);
+const CastPrice = v2_values.Decimal(10, 2);
 const PriceToDoubleCast = comptime_cast_v2.Function(CastPrice, f64, struct {
     fn cast(p: CastPrice) ?f64 {
         return @as(f64, @floatFromInt(p.raw)) / 100.0;
@@ -259,10 +256,10 @@ const NarrowSum = comptime_scalar_v2.Function("zig_v2_narrow_sum_ct", struct {
 /// Proves TIMESTAMP and INTERVAL: adds an INTERVAL to a TIMESTAMP and
 /// returns the result, both fixed-width types read/written through the
 /// same direct-buffer path as any numeric type — no new exec-path code,
-/// just a new duckdbV2TypeId case each (see duckdb_v2.zig's doc comments
+/// just a new duckdbV2TypeId case each (see duckdb_v2_dynamic.zig's doc comments
 /// on Date/Time/Timestamp/Interval for why).
 const TimestampAddCt = comptime_scalar_v2.Function("zig_v2_timestamp_add_ct", struct {
-    fn eval(ts: db.Timestamp, iv: db.Interval) db.Timestamp {
+    fn eval(ts: v2_values.Timestamp, iv: v2_values.Interval) v2_values.Timestamp {
         const micros: i64 = @backingInt(ts);
         // Calendar-aware add (months/days need the catalog's calendar,
         // not pure arithmetic) is out of scope here — this proves the
@@ -275,7 +272,7 @@ const TimestampAddCt = comptime_scalar_v2.Function("zig_v2_timestamp_add_ct", st
 
 /// Proves BLOB as a parameter and return type: first N bytes of a blob.
 const BlobPrefixCt = comptime_scalar_v2.Function("zig_v2_blob_prefix_ct", struct {
-    fn eval(b: db.Blob, n: i64) db.Blob {
+    fn eval(b: v2_values.Blob, n: i64) v2_values.Blob {
         const len = @min(@as(usize, @intCast(@max(n, 0))), b.bytes.len);
         return .{ .bytes = b.bytes[0..len] };
     }
@@ -283,7 +280,7 @@ const BlobPrefixCt = comptime_scalar_v2.Function("zig_v2_blob_prefix_ct", struct
 
 /// Proves DECIMAL as a parameter and return type: applies a tax rate
 /// (as a plain double) to a DECIMAL(10,2) price, returning DECIMAL(10,2).
-const Price = db.Decimal(10, 2);
+const Price = v2_values.Decimal(10, 2);
 const ApplyTaxCt = comptime_scalar_v2.Function("zig_v2_apply_tax_ct", struct {
     fn eval(price: Price, rate: f64) Price {
         const scaled: f64 = @as(f64, @floatFromInt(price.raw)) * (1.0 + rate);
@@ -292,7 +289,7 @@ const ApplyTaxCt = comptime_scalar_v2.Function("zig_v2_apply_tax_ct", struct {
 }.eval);
 
 /// Proves DECIMAL at the i128 storage tier (width 38).
-const BigDecimal = db.Decimal(38, 10);
+const BigDecimal = v2_values.Decimal(38, 10);
 const BigDecimalDoubleCt = comptime_scalar_v2.Function("zig_v2_big_decimal_double_ct", struct {
     fn eval(d: BigDecimal) BigDecimal {
         return .{ .raw = d.raw * 2 };
@@ -348,7 +345,7 @@ const ArrayScale3Ct = comptime_scalar_v2.Function("zig_v2_array_scale3_ct", stru
 }.eval);
 
 /// Proves MAP(BIGINT, BIGINT) as a parameter type: zero-copy-ish decode
-/// (zipped into a bounded per-row stack buffer, since db.Map's `entries`
+/// (zipped into a bounded per-row stack buffer, since a MAP's `entries`
 /// field is an array of structs but the source storage is two parallel
 /// flat key/value arrays) from the parent MAP vector's own
 /// ListEntry{offset,length} plus its nested entries-STRUCT child.
@@ -1741,7 +1738,7 @@ fn nestedTestRoundTrip(context: v2.duckdb_v2_context_handle, buf: []u8, err: *v2
 /// built from a Zig `enum`), `finish`es, scans back, and formats what it
 /// reads. Reads nested-type columns via the generic `vectorGetValue` +
 /// `valueGetChild`/`valueCastWithContext` fallback rather than ARRAY's raw
-/// vector layout, which `duckdb_v2.zig`'s own `vectorGetChild` doc comment
+/// vector layout, which `duckdb_v2_dynamic.zig`'s own `duckdb_v2_vector_get_child` doc comment
 /// leaves ambiguous for ARRAY specifically (groups it with LIST's
 /// `ListEntry` addressing, which doesn't obviously fit a fixed-size type).
 /// `zig_v2_appender_array_enum_test()` takes no arguments; its result
@@ -2137,7 +2134,7 @@ fn projectionLastMaskExec(info: v2.duckdb_v2_scalar_function_exec_info_handle, c
     while (row < row_count) : (row += 1) ptr[row] = projection_last_mask;
 }
 
-/// Live test for `duckdb_v2.zig`'s replacement-scan wrappers: recognizes
+/// Live test for `duckdb_v2_dynamic.zig`'s replacement-scan wrappers: recognizes
 /// an unresolved table reference of the form `zig_v2_range_<N>` (e.g.
 /// `FROM zig_v2_range_7`) and claims it by redirecting to
 /// `zig_v2_range_ct(N)` — proves both the name-recognition path and

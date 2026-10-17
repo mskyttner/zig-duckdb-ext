@@ -162,7 +162,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
     // its result for states that get finalized, or from `destroyCallback`
     // for states discarded without being finalized (combine's merged-away
     // sources, states abandoned on error/cancellation) — see
-    // `duckdb_v2.zig`'s `aggregateFunctionSetDestroyCallback` doc comment.
+    // `duckdb_v2_dynamic.zig`'s `duckdb_v2_aggregate_function_set_destroy_callback` doc comment.
     const has_deinit = @hasDecl(State, "deinit");
     // Optional ungrouped batch fast path — see this file's module doc
     // comment on `updateBatch`.
@@ -341,7 +341,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
                 // valueCreateVarcharWithContext + vectorSetValue boxing path
                 // is unavailable here — write BytesValue directly into the
                 // vector's own arena instead. See `vectorGetArena`'s doc
-                // comment in duckdb_v2.zig.
+                // comment in duckdb_v2_dynamic.zig.
                 var arena: v2.duckdb_v2_arena_handle = undefined;
                 if (v2.duckdb_v2_vector_get_arena(result_vec, &arena, err) != .ERROR_NONE) return;
                 var out_data: ?*anyopaque = null;

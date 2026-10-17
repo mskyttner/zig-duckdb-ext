@@ -6,12 +6,12 @@
 ///! convention and extension-based (not connection-based) registration.
 ///! Supports the same numeric types as the v1 framework (i8, i16, i32, i64,
 ///! f32, f64, bool), plus `[]const u8` for VARCHAR parameters and/or return
-///! type — see duckdb_v2.zig's `bytesSlice`/`valueCreateVarcharWithContext`
+///! type — see duckdb_v2_dynamic.zig's `bytesSlice` (in `v2_helpers.zig`)/`duckdb_v2_value_create_varchar_with_context`
 ///! doc comments for how vector-stored strings differ from numeric types.
-///! Also: `db.Date`/`db.Time`/`db.Timestamp`/`db.Interval` (fixed-width,
+///! Also: `v2_values.Date`/`v2_values.Time`/`v2_values.Timestamp`/`v2_values.Interval` (fixed-width,
 ///! same direct-buffer path as the numeric types — see their doc comments
-///! in duckdb_v2.zig for why no new exec-path code was needed) and
-///! `db.Blob` (VARCHAR's `BytesValue`/boxed-`Value` machinery, reused as-is,
+///! in duckdb_v2_dynamic.zig for why no new exec-path code was needed) and
+///! `v2_values.Blob` (VARCHAR's `BytesValue`/boxed-`Value` machinery, reused as-is,
 ///! just tagged as BLOB instead of VARCHAR at registration).
 ///!
 ///! CAUTION: a `[]const u8`-returning `implFn` must return a slice that
@@ -20,7 +20,7 @@
 ///! It must NOT return a slice into its own local stack buffer: the result
 ///! is boxed into a Value immediately after `implFn` returns, by which
 ///! point a local buffer's storage is already gone. (The hand-written
-///! `zig_v2_hello` example in duckdb_v2.zig sidesteps this by building and
+///! `zig_v2_hello` example in duckdb_v2_dynamic.zig sidesteps this by building and
 ///! consuming its buffer inline, before returning — not available to a
 ///! plain per-row function passed through this framework.)
 ///!
@@ -53,7 +53,7 @@
 ///!   parameter type, a VARIANT argument does NOT participate in the
 ///!   automatic "any NULL argument skips the row" convention — SQL NULL is
 ///!   ordinary data VARIANT can hold, not an absent argument, so `implFn`
-///!   always runs and decides what NULL means itself, via `db.valueIsNull`
+///!   always runs and decides what NULL means itself, via ``v2.duckdb_v2_value_is_null``
 ///!   (see `zig_v2_variant_default_ct` in `init_v2_poc.zig` for the
 ///!   pattern: substitute a fallback when NULL, decode otherwise). A
 ///!   VARIANT argument value is borrowed for the call only (the framework
@@ -126,7 +126,7 @@
 ///! Bindings: the framework calls DuckDB through the generated bindings
 ///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). A user function takes and returns
 ///! the generated handles (`v2.duckdb_v2_context_handle`, `v2.duckdb_v2_value_handle`) and the
-///! value types `db.Interval`, `db.Date`/`Time`/`Timestamp`, `db.Blob`, `db.Decimal`.
+///! value types `v2_values.Interval`, `v2_values.Date`/`Time`/`Timestamp`, `v2_values.Blob`, `v2_values.Decimal`.
 ///!
 ///! Usage:
 ///!   const MyFn = comptime_scalar_v2.Function("my_double", struct {
@@ -134,7 +134,7 @@
 ///!   }.eval);
 ///!   try MyFn.register(input); // input: *const v2.duckdb_v2_extension_input
 const std = @import("std");
-const db = @import("duckdb_v2");
+const v2_values = @import("v2_values");
 const v2 = @import("duckdb_v2_dynamic");
 const helpers = @import("v2_helpers");
 
@@ -152,11 +152,11 @@ fn duckdbV2TypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
         bool => .LOGICAL_TYPE_ID_BOOLEAN,
         []const u8 => .LOGICAL_TYPE_ID_VARCHAR,
         UserValue => .LOGICAL_TYPE_ID_VARIANT,
-        db.Blob => .LOGICAL_TYPE_ID_BLOB,
-        db.Date => .LOGICAL_TYPE_ID_DATE,
-        db.Time => .LOGICAL_TYPE_ID_TIME,
-        db.Timestamp => .LOGICAL_TYPE_ID_TIMESTAMP,
-        db.Interval => .LOGICAL_TYPE_ID_INTERVAL,
+        v2_values.Blob => .LOGICAL_TYPE_ID_BLOB,
+        v2_values.Date => .LOGICAL_TYPE_ID_DATE,
+        v2_values.Time => .LOGICAL_TYPE_ID_TIME,
+        v2_values.Timestamp => .LOGICAL_TYPE_ID_TIMESTAMP,
+        v2_values.Interval => .LOGICAL_TYPE_ID_INTERVAL,
         else => @compileError("unsupported type for DuckDB v2 mapping: " ++ @typeName(T)),
     };
 }
@@ -166,15 +166,15 @@ fn isDecimalType(comptime T: type) bool {
 }
 
 fn isEnumType(comptime T: type) bool {
-    // db.Date/db.Time/db.Timestamp are themselves non-exhaustive enums
+    // v2_values.Date/v2_values.Time/v2_values.Timestamp are themselves non-exhaustive enums
     // (a zero-cost way to get a distinct type with the same layout as
-    // their backing int — see duckdb_v2.zig's doc comment on them), not
+    // their backing int — see duckdb_v2_dynamic.zig's doc comment on them), not
     // SQL ENUMs, so they must be excluded here the same way Blob/Decimal
     // are excluded from isStructType. Found live: without this, building
-    // a db.Timestamp's logical type tried `enumSqlText(db.Timestamp)` —
+    // a v2_values.Timestamp's logical type tried `enumSqlText(v2_values.Timestamp)` —
     // an empty dictionary, since the enum has no named fields — and
     // segfaulted DuckDB's own `context_create_type_from_text`.
-    if (T == db.Date or T == db.Time or T == db.Timestamp) return false;
+    if (T == v2_values.Date or T == v2_values.Time or T == v2_values.Timestamp) return false;
     return @typeInfo(T) == .@"enum";
 }
 
@@ -222,19 +222,19 @@ fn isSupportedUnionMember(comptime T: type) bool {
 }
 
 fn isStructType(comptime T: type) bool {
-    // db.Blob and db.Decimal(w,s) are Zig structs (wrapping a []const u8
+    // v2_values.Blob and v2_values.Decimal(w,s) are Zig structs (wrapping a []const u8
     // and a raw storage int, respectively) but must never be treated as a
     // one-field SQL STRUCT — each has its own dedicated decode/encode path
     // instead (see the `return_is_blob`/`return_is_decimal` branches
     // below). Map(K,V) (wrapping `entries: []const Entry`) is excluded
     // the same way.
-    if (T == db.Blob) return false;
+    if (T == v2_values.Blob) return false;
     if (comptime isDecimalType(T)) return false;
     if (comptime isMapType(T)) return false;
     return @typeInfo(T) == .@"struct";
 }
 
-/// MAP(key_type, value_type): `db.Map(K, V)`, a dedicated wrapper type
+/// MAP(key_type, value_type): `v2_values.Map(K, V)`, a dedicated wrapper type
 /// (Zig has no built-in parallel-key/value-array shape) wrapping a flat
 /// `entries: []const Entry` slice. K/V scoped to the same flat leaf set
 /// `isSupportedListArrayElem` already uses — not `[]const u8`, not
@@ -575,7 +575,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         }
 
         const return_is_varchar = ReturnType == []const u8;
-        const return_is_blob = ReturnType == db.Blob;
+        const return_is_blob = ReturnType == v2_values.Blob;
         const WriteType = if (return_is_decimal) ReturnType.Raw else ReturnType;
 
         /// Vectorized exec callback invoked by DuckDB for each batch of rows.
@@ -605,7 +605,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
             // Cache each argument's view (flattened first — sequence/FSST/
             // dictionary-encoded args aren't directly readable otherwise,
-            // see duckdb_v2.zig's vectorFlatten doc comment).
+            // see duckdb_v2_dynamic.zig's `duckdb_v2_vector_flatten` doc comment).
             var views: [param_types.len]v2.duckdb_v2_vector_view = undefined;
             inline for (0..param_types.len) |i| {
                 var arg_vec: v2.duckdb_v2_vector_handle = undefined;
@@ -621,7 +621,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
             // VARCHAR/BLOB results can't be written through a flat typed
             // buffer (variable width) — each row boxes through a Value
-            // instead, via duckdb_v2.zig's valueCreateVarcharWithContext/
+            // instead, via duckdb_v2_dynamic.zig's `duckdb_v2_value_create_varchar_with_context`/
             // valueCreateBlobWithContext + vectorSetValue.
             if (comptime return_is_varchar or return_is_blob) {
                 var row: u64 = 0;
@@ -674,7 +674,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
             // DECIMAL is a typed leaf array in vector storage, same as any
             // numeric type, once its width's storage int is picked (see
-            // `db.Decimal`'s doc comment) — written through the flat
+            // `v2_values.Decimal`'s doc comment) — written through the flat
             // buffer below, same as any other non-variable-width return,
             // just unwrapping `.raw` first via `writeResult`.
             var out_data: ?*anyopaque = null;
@@ -731,14 +731,14 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                     // duckdb_v2_bytes elements (the signature registered this param as VARCHAR).
                     const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views.*[i].data));
                     args[i] = helpers.bytesSlice(&typed[row]);
-                } else if (T == db.Blob) {
+                } else if (T == v2_values.Blob) {
                     // SAFETY: same duckdb_v2_bytes storage shape as VARCHAR,
                     // registered as BLOB instead (see duckdbV2TypeId).
                     const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(views.*[i].data));
                     args[i] = .{ .bytes = helpers.bytesSlice(&typed[row]) };
                 } else if (comptime isDecimalType(T)) {
                     // SAFETY: DECIMAL is a typed leaf array over T.Raw, per
-                    // db.Decimal's own doc comment.
+                    // v2_values.Decimal's own doc comment.
                     const typed: [*]const T.Raw = @ptrCast(@alignCast(views.*[i].data));
                     args[i] = .{ .raw = typed[row] };
                 } else if (comptime isEnumType(T)) {
@@ -1248,7 +1248,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// LIST/MAP/ARRAY together); `vectorGetChild(map_vec, 0, ...)`
         /// descends into the entries STRUCT vector, whose own children
         /// [0]/[1] are the flat key/value arrays. Unlike LIST, this can't
-        /// be a zero-copy slice reinterpretation — `db.Map(K,V).entries`
+        /// be a zero-copy slice reinterpretation — `v2_values.Map(K,V).entries`
         /// is `[]const Entry{key,value}`, an array of structs, but the
         /// source storage is two parallel flat arrays — so each row's
         /// entries are zipped into a bounded stack buffer
@@ -1676,7 +1676,7 @@ test "Function supports the smaller integer/float types" {
 
 test "Function supports DATE/TIME/TIMESTAMP/INTERVAL" {
     const DateTimeStuff = Function("v2_test_date_time", struct {
-        fn eval(d: db.Date, t: db.Time, ts: db.Timestamp, iv: db.Interval) db.Timestamp {
+        fn eval(d: v2_values.Date, t: v2_values.Time, ts: v2_values.Timestamp, iv: v2_values.Interval) v2_values.Timestamp {
             _ = d;
             _ = t;
             _ = iv;
@@ -1688,7 +1688,7 @@ test "Function supports DATE/TIME/TIMESTAMP/INTERVAL" {
 
 test "Function supports BLOB as a parameter and return type" {
     const FirstByte = Function("v2_test_blob_first_byte", struct {
-        fn eval(b: db.Blob) db.Blob {
+        fn eval(b: v2_values.Blob) v2_values.Blob {
             return .{ .bytes = b.bytes[0..@min(1, b.bytes.len)] };
         }
     }.eval);
@@ -1698,7 +1698,7 @@ test "Function supports BLOB as a parameter and return type" {
 }
 
 test "Function supports DECIMAL as a parameter and return type" {
-    const Price = db.Decimal(10, 2);
+    const Price = v2_values.Decimal(10, 2);
     const DoublePrice = Function("v2_test_decimal_double", struct {
         fn eval(p: Price) Price {
             return .{ .raw = p.raw * 2 };
@@ -1710,10 +1710,10 @@ test "Function supports DECIMAL as a parameter and return type" {
 }
 
 test "Function supports DECIMAL at each storage-width tier" {
-    const Narrow = db.Decimal(4, 1); // i16
-    const Medium = db.Decimal(9, 2); // i32
-    const Wide = db.Decimal(18, 4); // i64
-    const Huge = db.Decimal(38, 10); // i128
+    const Narrow = v2_values.Decimal(4, 1); // i16
+    const Medium = v2_values.Decimal(9, 2); // i32
+    const Wide = v2_values.Decimal(18, 4); // i64
+    const Huge = v2_values.Decimal(38, 10); // i128
     try std.testing.expectEqual(i16, Narrow.Raw);
     try std.testing.expectEqual(i32, Medium.Raw);
     try std.testing.expectEqual(i64, Wide.Raw);
