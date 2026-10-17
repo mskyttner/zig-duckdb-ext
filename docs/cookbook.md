@@ -31,6 +31,7 @@ if it is stale, so the gaps below are measured, not remembered.
 | Scalar callbacks: resolve types, bind, init, user data, properties | — | `cookbook/scalar_callbacks.zig`: `zig_cookbook_negate` (result type follows the argument), `_round_to` (a constant argument read at bind), `_times2/3/10` (user data), `_row_number` (per-thread init data, `VOLATILE`) | The four callbacks in the order they run, and what each hands to the next. |
 | Aggregate callbacks: bind (result type), bind data, user data, properties | — | `cookbook/aggregate_callbacks.zig`: `zig_cookbook_agg_sum` / `_sumsq` (one set of callbacks, user data = the power), `zig_cookbook_agg_last` (order dependent) | `AGG_ORDER_DEPENDENT` and `AGG_DISTINCT_DEPENDENT`: what the planner does with `ORDER BY` and `DISTINCT` inside the call. |
 | Parallel table function: global and local state, threads, output order | — | `cookbook/table_callbacks.zig`: `zig_cookbook_parallel_range` | `init_global` (max threads), `init_local` (a worker's state), `partition_data` (batch index), user data = block size. Without the partition data callback the rows stay in order but one worker produces them. |
+| A custom `COPY` format | — | `cookbook/copy_format.zig`: `FORMAT zig_cookbook_lines` (`DELIMITER`, `HEADER`, `NULL_TEXT`), both `COPY ... TO` and `COPY ... FROM` | TO: bind, batch size, init, batch (prepares, in parallel), flush (writes, serial), finalize. FROM: bind (the table's columns), init_global, exec (an empty chunk ends the read), progress. Values travel as text through DuckDB's own cast, so every type works. |
 | Appender, building a result set | — | `lib/comptime_appender_v2.zig`, `zig_v2_appender_*_test`, `zig_v2_nethogs_trace` (PoC) | |
 | Replacement scan | — | `zig_v2_range_<N>`, the braille demo (PoC) | `SELECT * FROM zig_v2_range_5`. |
 
@@ -54,7 +55,9 @@ Taken from the generated coverage report. In the order I would write the recipes
    (`cookbook/scalar_callbacks.zig`), aggregate functions (`cookbook/aggregate_callbacks.zig`) and parallel table
    functions (`cookbook/table_callbacks.zig`). Still open in `function/table`: projection and partitioning-column
    callbacks, `table_function_partitioning`, and the unstable batch-claiming and multi-file functions.
-3. **A `COPY` format** (`function/copy`, 78 functions).
+3. ~~A `COPY` format~~ — done (`cookbook/copy_format.zig`), with the C library for files. Left in `function/copy`: the
+   unstable `RETURN_STATS` statistics callback, and reading and writing through DuckDB's file system (so that remote
+   paths work), which belongs to the `filesystem` recipe.
 4. **Running SQL from an extension**: connection, prepared statements, result chunks (`connection`,
    `prepared_statement`, `query_result`).
 5. **Custom types** (`logical_type/custom_type`), **filesystem** access, **Arrow** import and export, **logging**,

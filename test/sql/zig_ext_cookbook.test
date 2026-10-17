@@ -562,3 +562,211 @@ statement error
 SELECT * FROM zig_cookbook_parallel_range(10, max_threads := 65)
 ----
 zig_cookbook_parallel_range: max_threads must be between 1 and 64, got 65
+
+# ── A custom COPY format (src/cookbook/copy_format.zig) ───────────────────────────────────────────────
+# DuckDB's read_text() and its own CSV writer are the oracles for the file; COPY ... FROM reads it back.
+
+statement ok
+SET threads = 4
+
+statement ok
+COPY (SELECT i, 'name' || i AS s, i * 1.5 AS d, i % 3 = 0 AS b FROM range(1, 6) t(i)) TO '/tmp/zig_ext_cookbook_copy_a.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT replace(content, chr(10), '<NL>') FROM read_text('/tmp/zig_ext_cookbook_copy_a.txt')
+----
+1|name1|1.5|false<NL>2|name2|3.0|false<NL>3|name3|4.5|true<NL>4|name4|6.0|false<NL>5|name5|7.5|false<NL>
+
+# On plain data the file is what DuckDB's CSV writer writes with the same delimiter.
+statement ok
+COPY (SELECT i, 'name' || i AS s, i * 1.5 AS d, i % 3 = 0 AS b FROM range(1, 6) t(i)) TO '/tmp/zig_ext_cookbook_copy_csv.txt' (FORMAT csv, DELIMITER '|', HEADER false)
+
+query T
+SELECT (SELECT content FROM read_text('/tmp/zig_ext_cookbook_copy_a.txt')) = (SELECT content FROM read_text('/tmp/zig_ext_cookbook_copy_csv.txt'))
+----
+true
+
+# Options: a delimiter, a header line, a NULL marker.
+statement ok
+COPY (SELECT i, CASE WHEN i % 2 = 0 THEN NULL ELSE 'v' || i END AS s FROM range(1, 5) t(i)) TO '/tmp/zig_ext_cookbook_copy_b.txt' (FORMAT zig_cookbook_lines, DELIMITER ';', HEADER, NULL_TEXT 'NULL')
+
+query T
+SELECT replace(content, chr(10), '<NL>') FROM read_text('/tmp/zig_ext_cookbook_copy_b.txt')
+----
+i;s<NL>1;v1<NL>2;NULL<NL>3;v3<NL>4;NULL<NL>
+
+# The empty NULL marker is what CSV does.
+statement ok
+COPY (SELECT i, CASE WHEN i % 2 = 0 THEN NULL ELSE 'v' || i END AS s FROM range(1, 5) t(i)) TO '/tmp/zig_ext_cookbook_copy_b2.txt' (FORMAT zig_cookbook_lines, NULL_TEXT '')
+
+statement ok
+COPY (SELECT i, CASE WHEN i % 2 = 0 THEN NULL ELSE 'v' || i END AS s FROM range(1, 5) t(i)) TO '/tmp/zig_ext_cookbook_copy_b3.txt' (FORMAT csv, DELIMITER '|', HEADER false)
+
+query T
+SELECT (SELECT content FROM read_text('/tmp/zig_ext_cookbook_copy_b2.txt')) = (SELECT content FROM read_text('/tmp/zig_ext_cookbook_copy_b3.txt'))
+----
+true
+
+# COPY FROM: the table's types decide how the text is read; the header is skipped.
+statement ok
+CREATE TABLE cookbook_copy_in (i BIGINT, s VARCHAR, d DOUBLE, b BOOLEAN)
+
+statement ok
+COPY cookbook_copy_in FROM '/tmp/zig_ext_cookbook_copy_a.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT string_agg(i || ':' || s || ':' || d || ':' || b, ',' ORDER BY i) FROM cookbook_copy_in
+----
+1:name1:1.5:false,2:name2:3.0:false,3:name3:4.5:true,4:name4:6.0:false,5:name5:7.5:false
+
+statement ok
+CREATE TABLE cookbook_copy_in2 (i BIGINT, s VARCHAR)
+
+statement ok
+COPY cookbook_copy_in2 FROM '/tmp/zig_ext_cookbook_copy_b.txt' (FORMAT zig_cookbook_lines, DELIMITER ';', HEADER, NULL_TEXT 'NULL')
+
+query T
+SELECT string_agg(i || ':' || coalesce(s, '<null>'), ',' ORDER BY i) FROM cookbook_copy_in2
+----
+1:v1,2:<null>,3:v3,4:<null>
+
+# Text that needs escaping survives a round trip: the delimiter, a backslash, a line break, the NULL marker as text.
+statement ok
+CREATE TABLE cookbook_copy_tricky AS SELECT * FROM (VALUES (1, 'a|b', E'line\nbreak', '\N'), (2, 'back\slash', E'cr\rlf', ''), (3, NULL, '|', '||')) t(id, x, y, z)
+
+statement ok
+COPY cookbook_copy_tricky TO '/tmp/zig_ext_cookbook_copy_tricky.txt' (FORMAT zig_cookbook_lines)
+
+statement ok
+CREATE TABLE cookbook_copy_tricky_in (id INTEGER, x VARCHAR, y VARCHAR, z VARCHAR)
+
+statement ok
+COPY cookbook_copy_tricky_in FROM '/tmp/zig_ext_cookbook_copy_tricky.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT count(*) FROM (SELECT * FROM cookbook_copy_tricky EXCEPT SELECT * FROM cookbook_copy_tricky_in) UNION ALL SELECT count(*) FROM (SELECT * FROM cookbook_copy_tricky_in EXCEPT SELECT * FROM cookbook_copy_tricky)
+----
+0
+0
+
+# Every type travels as text: dates, decimals, nested values, blobs.
+statement ok
+CREATE TABLE cookbook_copy_types AS SELECT DATE '2024-02-29' AS d, TIMESTAMP '2024-02-29 12:34:56.789' AS ts, 12345.678::DECIMAL(10, 3) AS dec, [1, 2, 3] AS l, {'a': 1, 'b': 'x'} AS s, 'AB'::BLOB AS bl, 170141183460469231731687303715884105727::HUGEINT AS h
+
+statement ok
+COPY cookbook_copy_types TO '/tmp/zig_ext_cookbook_copy_types.txt' (FORMAT zig_cookbook_lines)
+
+statement ok
+CREATE TABLE cookbook_copy_types_in (d DATE, ts TIMESTAMP, dec DECIMAL(10, 3), l INTEGER[], s STRUCT(a INTEGER, b VARCHAR), bl BLOB, h HUGEINT)
+
+statement ok
+COPY cookbook_copy_types_in FROM '/tmp/zig_ext_cookbook_copy_types.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT count(*) FROM (SELECT * FROM cookbook_copy_types EXCEPT SELECT * FROM cookbook_copy_types_in)
+----
+0
+
+# Many rows: several batches prepared on several threads, flushed in order; read back in chunks of 2048.
+statement ok
+COPY (SELECT i AS id, 'row ' || i AS s, i % 7 = 0 AS b FROM range(200000) t(i)) TO '/tmp/zig_ext_cookbook_copy_big.txt' (FORMAT zig_cookbook_lines)
+
+statement ok
+CREATE TABLE cookbook_copy_big (id BIGINT, s VARCHAR, b BOOLEAN)
+
+statement ok
+COPY cookbook_copy_big FROM '/tmp/zig_ext_cookbook_copy_big.txt' (FORMAT zig_cookbook_lines)
+
+query IIT
+SELECT count(*), sum(id), bool_and(id = rowid) FROM cookbook_copy_big
+----
+200000
+19999900000
+true
+
+query T
+SELECT count(*) FROM (SELECT * FROM cookbook_copy_big EXCEPT SELECT i, 'row ' || i, i % 7 = 0 FROM range(200000) t(i))
+----
+0
+
+# BATCH_SIZE of the statement decides the batches; the file is the same.
+statement ok
+COPY (SELECT i AS id, 'row ' || i AS s, i % 7 = 0 AS b FROM range(200000) t(i)) TO '/tmp/zig_ext_cookbook_copy_big2.txt' (FORMAT zig_cookbook_lines, BATCH_SIZE 333)
+
+query T
+SELECT (SELECT md5(content) FROM read_text('/tmp/zig_ext_cookbook_copy_big.txt')) = (SELECT md5(content) FROM read_text('/tmp/zig_ext_cookbook_copy_big2.txt'))
+----
+true
+
+# A file with Windows line ends reads the same.
+statement ok
+COPY (SELECT 'x|1' || chr(13) AS l UNION ALL SELECT 'y|2' || chr(13)) TO '/tmp/zig_ext_cookbook_copy_crlf.txt' (FORMAT csv, QUOTE '', ESCAPE '', HEADER false)
+
+statement ok
+CREATE TABLE cookbook_copy_crlf (a VARCHAR, b VARCHAR)
+
+statement ok
+COPY cookbook_copy_crlf FROM '/tmp/zig_ext_cookbook_copy_crlf.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT string_agg(a || ':' || b || ':' || length(b), ',' ORDER BY a) FROM cookbook_copy_crlf
+----
+x:1:1,y:2:1
+
+# An empty source writes an empty file (with HEADER, only the header), and an empty file reads as no rows.
+statement ok
+COPY (SELECT 1 AS a, 2 AS b WHERE false) TO '/tmp/zig_ext_cookbook_copy_empty.txt' (FORMAT zig_cookbook_lines, HEADER)
+
+query T
+SELECT replace(content, chr(10), '<NL>') FROM read_text('/tmp/zig_ext_cookbook_copy_empty.txt')
+----
+a|b<NL>
+
+statement ok
+CREATE TABLE cookbook_copy_empty (a INTEGER, b INTEGER)
+
+statement ok
+COPY cookbook_copy_empty FROM '/tmp/zig_ext_cookbook_copy_empty.txt' (FORMAT zig_cookbook_lines, HEADER)
+
+query I
+SELECT count(*) FROM cookbook_copy_empty
+----
+0
+
+# Errors: options and delimiters are checked at bind time, a missing file too, and a row that does not fit the table
+# fails the statement with the line number.
+statement error
+COPY (SELECT 1) TO '/tmp/zig_ext_cookbook_copy_err.txt' (FORMAT zig_cookbook_lines, FOO 1)
+----
+zig_cookbook_lines: unknown option foo
+
+statement error
+COPY (SELECT 1) TO '/tmp/zig_ext_cookbook_copy_err.txt' (FORMAT zig_cookbook_lines, DELIMITER 'ab')
+----
+DELIMITER must be one character
+
+statement error
+COPY (SELECT 1) TO '/tmp/zig_ext_cookbook_copy_err.txt' (FORMAT zig_cookbook_lines, DELIMITER '\')
+----
+DELIMITER must be one character
+
+statement error
+COPY cookbook_copy_in FROM '/tmp/zig_ext_cookbook_copy_missing.txt' (FORMAT zig_cookbook_lines)
+----
+zig_cookbook_lines: cannot open /tmp/zig_ext_cookbook_copy_missing.txt
+
+statement error
+COPY cookbook_copy_in2 FROM '/tmp/zig_ext_cookbook_copy_a.txt' (FORMAT zig_cookbook_lines)
+----
+zig_cookbook_lines: line 1: expected 2 fields, got 4
+
+statement error
+COPY cookbook_copy_in FROM '/tmp/zig_ext_cookbook_copy_b.txt' (FORMAT zig_cookbook_lines, DELIMITER ';')
+----
+zig_cookbook_lines: line 1: expected 4 fields, got 2
+
+# A value that does not fit the column's type is DuckDB's cast error.
+statement error
+COPY cookbook_copy_in FROM '/tmp/zig_ext_cookbook_copy_tricky.txt' (FORMAT zig_cookbook_lines)
+----
+Could not convert string

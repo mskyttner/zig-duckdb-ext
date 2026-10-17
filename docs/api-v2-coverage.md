@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 58 scanned source files. Referenced by the extension: **165**; by the extension or the PoC: **193**.
+587 functions (26 unstable) in 32 spec modules, from 59 scanned source files. Referenced by the extension: **218**; by the extension or the PoC: **240**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -17,15 +17,15 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | catalog | 11 | 0 | 0 | 0 | 11 |
 | configuration | 11 | 0 | 11 | 11 | 0 |
 | connection | 8 | 0 | 0 | 0 | 8 |
-| data_chunk/column_data_collection | 15 | 0 | 5 | 11 | 4 |
-| data_chunk | 10 | 1 | 4 | 5 | 5 |
+| data_chunk/column_data_collection | 15 | 0 | 10 | 11 | 4 |
+| data_chunk | 10 | 1 | 5 | 5 | 5 |
 | environment | 3 | 0 | 0 | 0 | 3 |
 | error | 6 | 0 | 2 | 2 | 4 |
 | expression | 9 | 0 | 0 | 4 | 5 |
 | filesystem/file_system | 17 | 0 | 0 | 0 | 17 |
 | function/aggregate | 44 | 0 | 33 | 33 | 11 |
 | function/cast | 14 | 0 | 10 | 10 | 4 |
-| function/copy | 78 | 6 | 0 | 0 | 78 |
+| function/copy | 78 | 6 | 47 | 47 | 31 |
 | function | 7 | 0 | 3 | 3 | 4 |
 | function/replacement_scan | 15 | 0 | 0 | 7 | 8 |
 | function/scalar | 24 | 0 | 20 | 20 | 4 |
@@ -71,7 +71,7 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **function/cast**: `cast_function_create_with_connection`, `cast_function_set_implicit_cast_cost`, `cast_function_set_user_data`, `cast_function_exec_get_user_data`
 
-**function/copy**: `copy_function_create_with_connection`, `copy_function_create_with_extension`, `copy_function_set_name`, `copy_function_set_user_data`, `copy_to_set_bind_callback`, `copy_to_set_batch_size_callback`, `copy_to_set_init_callback`, `copy_to_set_batch_callback`, `copy_to_set_flush_callback`, `copy_to_set_finalize_callback`, `copy_to_bind_get_user_data`, `copy_to_bind_set_bind_data`, `copy_to_bind_get_file_path`, `copy_to_bind_get_column_count`, `copy_to_bind_get_column_type`, `copy_to_bind_get_column_name`, `copy_to_bind_get_option_count`, `copy_to_bind_get_option_name`, `copy_to_bind_get_option_value`, `copy_to_batch_size_get_user_data`, `copy_to_batch_size_get_bind_data`, `copy_to_batch_size_set_target`, `copy_to_init_get_user_data`, `copy_to_init_get_bind_data`, `copy_to_init_get_file_path`, `copy_to_init_set_init_data`, `copy_to_batch_get_user_data`, `copy_to_batch_get_bind_data`, `copy_to_batch_get_init_data`, `copy_to_batch_take_input`, `copy_to_batch_set_batch_data`, `copy_to_flush_get_user_data`, `copy_to_flush_get_bind_data`, `copy_to_flush_get_init_data`, `copy_to_flush_get_batch_data`, `copy_to_finalize_get_user_data`, `copy_to_finalize_get_bind_data`, `copy_to_finalize_get_init_data`, `copy_from_set_bind_callback`, `copy_from_set_init_global_callback`, `copy_from_set_init_local_callback`, `copy_from_set_exec_callback`, `copy_from_set_progress_callback`, `copy_from_bind_get_user_data`, `copy_from_bind_set_bind_data`, `copy_from_bind_get_file_path`, `copy_from_bind_get_column_count`, `copy_from_bind_get_column_type`, `copy_from_bind_get_column_name`, `copy_from_bind_get_option_count`, `copy_from_bind_get_option_name`, `copy_from_bind_get_option_value`, `copy_from_bind_set_cardinality`, `copy_from_init_global_get_user_data`, `copy_from_init_global_get_bind_data`, `copy_from_init_global_set_global_state`, `copy_from_init_global_set_max_threads`, `copy_from_init_local_get_user_data`, `copy_from_init_local_get_bind_data`, `copy_from_init_local_get_global_state`, `copy_from_init_local_set_local_state`, `copy_from_exec_get_user_data`, `copy_from_exec_get_bind_data`, `copy_from_exec_get_global_state`, `copy_from_exec_get_local_state`, `copy_from_exec_get_output_chunk`, `copy_from_progress_get_user_data`, `copy_from_progress_get_bind_data`, `copy_from_progress_get_global_state`, `copy_from_progress_set_progress`, `copy_function_register`, `copy_function_destroy`, `copy_to_set_statistics_callback` *(u)*, `copy_to_statistics_get_user_data` *(u)*, `copy_to_statistics_get_bind_data` *(u)*, `copy_to_statistics_get_init_data` *(u)*, `copy_to_statistics_set_row_count` *(u)*, `copy_to_statistics_set_file_size` *(u)*
+**function/copy**: `copy_function_create_with_connection`, `copy_function_set_user_data`, `copy_to_bind_get_user_data`, `copy_to_bind_get_file_path`, `copy_to_batch_size_get_user_data`, `copy_to_batch_size_get_bind_data`, `copy_to_init_get_user_data`, `copy_to_batch_get_user_data`, `copy_to_batch_get_init_data`, `copy_to_flush_get_user_data`, `copy_to_flush_get_bind_data`, `copy_to_finalize_get_user_data`, `copy_to_finalize_get_bind_data`, `copy_from_set_init_local_callback`, `copy_from_bind_get_user_data`, `copy_from_bind_get_column_name`, `copy_from_init_global_get_user_data`, `copy_from_init_local_get_user_data`, `copy_from_init_local_get_bind_data`, `copy_from_init_local_get_global_state`, `copy_from_init_local_set_local_state`, `copy_from_exec_get_user_data`, `copy_from_exec_get_local_state`, `copy_from_progress_get_user_data`, `copy_from_progress_get_bind_data`, `copy_to_set_statistics_callback` *(u)*, `copy_to_statistics_get_user_data` *(u)*, `copy_to_statistics_get_bind_data` *(u)*, `copy_to_statistics_get_init_data` *(u)*, `copy_to_statistics_set_row_count` *(u)*, `copy_to_statistics_set_file_size` *(u)*
 
 **function**: `function_bind_get_user_data`, `function_bind_get_arg_count`, `function_bind_get_arg_name`, `function_bind_get_arg_index`
 
