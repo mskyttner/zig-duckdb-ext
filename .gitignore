@@ -10,3 +10,7 @@ dist/
 
 # Environment
 .env*
+
+# Scratch demos and scripts in the repository root, kept locally only (nothing builds or tests them)
+/demo_*.zig
+/test_snakemap.sh
