@@ -2104,15 +2104,26 @@ static one for the static embedding (below).
   `g++-mingw-w64-x86-64-posix` 13 (unpacked with `dpkg -x`, no install). The header is
   translated with `-DDUCKDB_STATIC_BUILD`, `ws2_32`, `wsock32` and `rstrtmgr` are linked,
   and the step installs the `.exe` instead of running it when the target is not the host's.
-  **Not run: there is no Wine here, so only the link is verified** (the imports are the UCRT
-  and KERNEL32 DLLs). What the toolchain has to match, found by trying three: the archives
-  want (1) emulated TLS for `std::call_once` (`__emutls_v._ZSt11__once_call`, defined by the
-  MinGW posix-model libstdc++, not by a GCC 16 UCRT one from MSYS2, which uses native TLS)
-  and, for `libduckdb_httplib.a` only, (2) `std::fpos<_Mbstatet>` (a UCRT-flavoured
-  libstdc++, which Ubuntu's msvcrt-flavoured `fpos<int>` is not). No toolchain I found has
-  both, so on Windows the extension set leaves out `httplib` (the other five archives link),
-  and `httplib` waits for a matching libstdc++ or a shim of the one `basic_streambuf::seekpos`
-  symbol. Ubuntu's GCC 10 libstdc++ is no better (it lacks the `__once_call` TLS objects).
+  **It runs under Wine.** With an unprivileged Wine (Kron4ek's prebuilt 11.19, unpacked
+  into the scratch directory, no install) `-Dwine=<path>/bin/wine` makes the two steps run
+  the `.exe` headless in a Wine prefix (`-Dwine-prefix=`, default `prefix/` beside the
+  unpacked Wine), and the checks pass: `LOAD zig_ext_v2`, `zig_hello`, `tp_bar`,
+  `zig_tokenize`, `ct_add_numbers`, and with `httplib, loadable_extensions, core_functions,
+  json, icu, parquet` linked, `LOAD` of each and the `core_functions`/`json` queries. (Wine
+  runs fine in a container too; a container would only add isolation for CI.)
+  What the toolchain has to match, found by trying three: the archives want (1) emulated
+  TLS for `std::call_once` (`__emutls_v._ZSt11__once_call`, defined by the MinGW
+  posix-model libstdc++, not by a GCC 16 UCRT one from MSYS2, which uses native TLS) and,
+  for `libduckdb_httplib.a` only, (2) `std::fpos<_Mbstatet>` (a UCRT-flavoured libstdc++;
+  Ubuntu's msvcrt-flavoured one has `fpos<int>`). No toolchain I found has both, so
+  `src/lib/mingw_libstdcxx_shim.zig` defines the one symbol that differs, a weak
+  `std::basic_streambuf<char>::seekpos(std::fpos<_Mbstatet>, std::_Ios_Openmode)` that returns
+  `pos_type(off_type(-1))` like the default one does (the x64 convention for a member
+  function returning a 16-byte class, with the hidden return pointer in RCX, was read off
+  GCC 13's assembly for the same shape). It is linked into the Windows embed only. httplib
+  never seeks its sink, so the function is not called; breaking the symbol name makes
+  the link fail again. Ubuntu's GCC 10 libstdc++ is no better than 13 (it lacks the
+  `__once_call` TLS objects).
   The cross step (`cross_targets` has `x86_64-windows-gnu`) builds the loadable extension DLL,
   which links no DuckDB code, so none of this applies to it.
 - **Windows: the PR's `GROUP` script finding** (lld/`zig cc` reject a `GROUP` linker script in

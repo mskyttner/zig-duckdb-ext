@@ -290,6 +290,20 @@ fn v2Graph(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     return .{ .helpers = helpers, .values = values, .examples = examples, .scalar = scalar, .table = table, .aggregate = aggregate, .appender = appender, .cast = cast };
 }
 
+/// Runs a Windows `exe` under Wine, headless, in the Wine prefix `prefix` (created by the first run). Wine's complaints about fonts are noise: nothing here draws.
+fn addWineRun(b: *std.Build, wine: []const u8, prefix: []const u8, exe: *std.Build.Step.Compile) *std.Build.Step.Run {
+    const run = b.addSystemCommand(&.{wine});
+    run.addArtifactArg(exe);
+    run.setEnvironmentVariable("WINEPREFIX", prefix);
+    run.setEnvironmentVariable("WINEDEBUG", "-all");
+    run.setEnvironmentVariable("WINEARCH", "win64");
+    run.removeEnvironmentVariable("DISPLAY");
+    run.expectExitCode(0);
+    run.addCheck(.{ .expect_stderr_match = "all static-extension queries returned the expected result" });
+    run.has_side_effects = true; // always run: the point is the check, not a cached result
+    return run;
+}
+
 /// What `addStaticEmbedExe` needs from `build`: the real extension linked into a process that has
 /// DuckDB's static libraries, with the extensions it is asked for registered next to it.
 const StaticEmbed = struct {
@@ -420,6 +434,14 @@ fn addStaticEmbedExe(b: *std.Build, ctx: StaticEmbed, exe_name: []const u8, exte
     const names = b.addOptions();
     names.addOption([]const []const u8, "extensions", extensions);
     exe.root_module.addOptions("static_embed_options", names);
+    if (is_windows) {
+        // The one libstdc++ symbol httplib needs that a msvcrt-flavoured MinGW libstdc++ lacks.
+        exe.root_module.addImport("mingw_shim", b.createModule(.{
+            .root_source_file = b.path("src/lib/mingw_libstdcxx_shim.zig"),
+            .target = target,
+            .optimize = optimize,
+        }));
+    }
     return exe;
 }
 
@@ -468,6 +490,10 @@ pub fn build(b: *std.Build) void {
 
     // `v2-static-embed-poc` link paths — see that step's own comment.
     const libstdcxx_path_override = b.option([]const u8, "libstdcxx-path", "Path to the system libstdc++.a for `v2-static-embed-poc` (default: `g++ -print-file-name=libstdc++.a`)");
+    const wine_path = b.option([]const u8, "wine", "Wine executable: the v2-static-embed-poc steps run a Windows build under it (e.g. a prebuilt Wine unpacked anywhere; no install needed)");
+    // Next to the unpacked Wine unless given, so the run never touches ~/.wine.
+    const wine_prefix = b.option([]const u8, "wine-prefix", "Wine prefix directory for -Dwine (default: ../prefix beside the Wine executable's directory)") orelse
+        if (wine_path) |w| b.fmt("{s}/prefix", .{std.fs.path.dirname(std.fs.path.dirname(w) orelse ".") orelse "."}) else "";
     const libgcc_path_override = b.option([]const u8, "libgcc-path", "Path to MinGW's libgcc.a for `v2-static-embed-poc` with `-Dtarget=x86_64-windows-gnu` (default: `x86_64-w64-mingw32-g++-posix -print-file-name=libgcc.a`)");
     const libgcc_eh_path_override = b.option([]const u8, "libgcc-eh-path", "Path to the system libgcc_eh.a for `v2-static-embed-poc` (default: `g++ -print-file-name=libgcc_eh.a`)");
 
@@ -725,6 +751,11 @@ pub fn build(b: *std.Build) void {
 
     const v2_check_step = b.step("v2-check", "Type-check the in-progress duckdb v2 API bindings");
     v2_check_step.dependOn(&run_v2_values_check.step);
+    v2_check_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/lib/mingw_libstdcxx_shim.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) })).step);
     v2_check_step.dependOn(&run_v2_static_parity.step);
     v2_check_step.dependOn(&run_v2_dynamic_parity.step);
     v2_check_step.dependOn(&run_v2_helpers_check.step);
@@ -948,25 +979,23 @@ pub fn build(b: *std.Build) void {
             const run_static_embed_poc = b.addRunArtifact(static_embed_poc_exe);
             run_static_embed_poc.step.dependOn(&install_static_embed_poc.step);
             static_embed_poc_step.dependOn(&run_static_embed_poc.step);
+        } else if (wine_path) |wine| {
+            static_embed_poc_step.dependOn(&addWineRun(b, wine, wine_prefix, static_embed_poc_exe).step);
         } else {
             static_embed_poc_step.dependOn(&install_static_embed_poc.step);
         }
 
         // The same program with several extension archives linked: the capabilities first, then the
         // extensions, `libduckdb_static.a` last.
-        const static_embed_poc_ext_exe = addStaticEmbedExe(b, static_embed_ctx, "v2_static_embed_poc_extensions", if (embed_for_windows)
-            // No httplib: its objects need a libstdc++ whose `mbstate_t` is `_Mbstatet` (a UCRT toolchain),
-            // and one with emulated TLS for `std::call_once` (the MinGW posix model); the MinGW GCC on a
-            // Linux host has the second, MSYS2's UCRT GCC the first, none both.
-            &.{ "loadable_extensions", "core_functions", "json", "icu", "parquet" }
-        else
-            &.{ "httplib", "loadable_extensions", "core_functions", "json", "icu", "parquet" });
+        const static_embed_poc_ext_exe = addStaticEmbedExe(b, static_embed_ctx, "v2_static_embed_poc_extensions", &.{ "httplib", "loadable_extensions", "core_functions", "json", "icu", "parquet" });
         const install_static_embed_poc_ext = b.addInstallArtifact(static_embed_poc_ext_exe, .{});
         const static_embed_poc_ext_step = b.step("v2-static-embed-poc-extensions", "Build and run the static-embedding link test with several extension archives linked (only built for a target the host cannot run)");
         if (embed_can_run) {
             const run_static_embed_poc_ext = b.addRunArtifact(static_embed_poc_ext_exe);
             run_static_embed_poc_ext.step.dependOn(&install_static_embed_poc_ext.step);
             static_embed_poc_ext_step.dependOn(&run_static_embed_poc_ext.step);
+        } else if (wine_path) |wine| {
+            static_embed_poc_ext_step.dependOn(&addWineRun(b, wine, wine_prefix, static_embed_poc_ext_exe).step);
         } else {
             static_embed_poc_ext_step.dependOn(&install_static_embed_poc_ext.step);
         }

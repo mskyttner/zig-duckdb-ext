@@ -41,6 +41,12 @@ const c = @import("duckdb_full_c");
 const root_v2 = @import("root_v2");
 const static_extensions = @import("static_extensions");
 const options = @import("static_embed_options");
+const builtin = @import("builtin");
+
+// On Windows, the libstdc++ symbol httplib needs that a msvcrt-flavoured MinGW libstdc++ lacks.
+comptime {
+    if (builtin.os.tag == .windows) _ = @import("mingw_shim");
+}
 extern fn zig_ext_v2_init_c_api_v2(input: *const v2_types.duckdb_v2_extension_input) callconv(.c) void;
 
 fn describe(descriptor: *duckdb_static.ExtensionDescriptor) callconv(.c) i32 {
