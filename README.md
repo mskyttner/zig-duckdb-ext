@@ -175,6 +175,9 @@ A table function takes constants, not a column, so the `tokenize` benchmark spli
 - [Task](https://taskfile.dev/) (optional, for convenience commands)
 - Optional: Python with `pyarrow` (`task verify:arrow-pyarrow`), and Docker (the Windows and QEMU checks, `task verify:static-windows`)
 
+Writing your own extension: [docs/creating-an-extension.md](docs/creating-an-extension.md) has the steps (build, entry
+point, a function with real parameter names, tests, publishing) and what `duckdb_functions()` can and cannot show.
+
 The SQL tests run a DuckDB CLI that the build fetches and pins; the one on your `PATH` is not used.
 
 ## Build
