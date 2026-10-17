@@ -1695,3 +1695,121 @@ statement error
 SELECT * FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', length := -2)
 ----
 length must be -1 (to the end) or more, got -2
+
+# Logging: zig_cookbook_log writes through context_log and returns its message. Whether an entry is recorded is up to
+# the log configuration; the call itself always succeeds. The log is read back with duckdb_logs.
+query T
+SELECT zig_cookbook_log('info', 'zl_a', 'zl-not recorded: logging is off')
+----
+zl-not recorded: logging is off
+
+# SET rather than CALL enable_logging: the CLI prints a warning when the call changes the log storage.
+statement ok
+SET logging_storage = 'memory'
+
+statement ok
+SET logging_level = 'debug'
+
+statement ok
+SET enable_logging = true
+
+query T
+SELECT string_agg(zig_cookbook_log(l, t, 'zl-' || l), ',' ORDER BY l) FROM (VALUES ('trace', 'zl_a'), ('debug', 'zl_a'), ('INFO', 'zl_b'), ('warning', ''), ('error', 'zl_a'), ('fatal', 'zl_a')) v(l, t)
+----
+zl-INFO,zl-debug,zl-error,zl-fatal,zl-trace,zl-warning
+
+# Each entry carries its level, its type (empty is the default type) and the connection's ids. TRACE is below the
+# threshold: the call succeeded and nothing was written.
+query T
+SELECT log_level || ':' || type || ':' || message FROM duckdb_logs WHERE message LIKE 'zl-%' ORDER BY message
+----
+INFO:zl_b:zl-INFO
+DEBUG:zl_a:zl-debug
+ERROR:zl_a:zl-error
+FATAL:zl_a:zl-fatal
+WARNING::zl-warning
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'zl-not recorded: logging is off' OR message = 'zl-trace'
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message LIKE 'zl-%' AND (scope <> 'CONNECTION' OR connection_id IS NULL OR query_id IS NULL OR thread_id IS NOT NULL)
+----
+0
+
+# Raising the threshold drops what is below it.
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SET logging_level = 'warning'
+
+query T
+SELECT string_agg(zig_cookbook_log(l, 'zl_a', 'zl2-' || l), ',' ORDER BY l) FROM (VALUES ('debug'), ('info'), ('warning'), ('error')) v(l)
+----
+zl2-debug,zl2-error,zl2-info,zl2-warning
+
+query T
+SELECT string_agg(log_level, ',' ORDER BY log_level) FROM duckdb_logs WHERE message LIKE 'zl2-%'
+----
+ERROR,WARNING
+
+# Not constant folded: a thousand equal calls are a thousand entries, all of one query.
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SET logging_level = 'info'
+
+query I
+SELECT count(zig_cookbook_log('info', 'zl_a', 'zl3-same')) FROM range(1000)
+----
+1000
+
+query II
+SELECT count(*), count(DISTINCT query_id) FROM duckdb_logs WHERE message = 'zl3-same'
+----
+1000
+1
+
+# NULL in, NULL out, nothing logged.
+query T
+SELECT zig_cookbook_log('info', 'zl_a', NULL)
+----
+NULL
+
+query T
+SELECT zig_cookbook_log(NULL, 'zl_a', 'zl5-x')
+----
+NULL
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'zl5-x'
+----
+0
+
+statement error
+SELECT zig_cookbook_log('loud', 'zl_a', 'zl6-x')
+----
+unknown level 'loud'
+
+statement ok
+SET enable_logging = false
+
+query T
+SELECT zig_cookbook_log('error', 'zl_a', 'zl7-off')
+----
+zl7-off
+
+statement ok
+SET enable_logging = true
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'zl7-off'
+----
+0
+
+statement ok
+SET enable_logging = false

@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 65 scanned source files. Referenced by the extension: **292**; by the extension or the PoC: **312**.
+587 functions (26 unstable) in 32 spec modules, from 66 scanned source files. Referenced by the extension: **293**; by the extension or the PoC: **313**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -33,7 +33,7 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | function/table | 83 | 19 | 34 | 38 | 45 |
 | identifier | 1 | 0 | 0 | 0 | 1 |
 | instance | 13 | 0 | 4 | 4 | 9 |
-| logging | 1 | 0 | 0 | 0 | 1 |
+| logging | 1 | 0 | 1 | 1 | 0 |
 | logical_type/custom_type | 6 | 0 | 5 | 5 | 1 |
 | logical_type | 16 | 0 | 7 | 7 | 9 |
 | prepared_statement | 4 | 0 | 4 | 4 | 0 |
@@ -84,8 +84,6 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 **identifier**: `identifier_render_quoted`
 
 **instance**: `instance_detach`, `instance_set_default`, `attach_options_create`, `attach_options_set`, `attach_options_destroy`, `instance_set_option`, `instance_get_option_by_name`, `instance_get_option_count`, `instance_get_option_by_index`
-
-**logging**: `context_log`
 
 **logical_type/custom_type**: `custom_type_create_with_connection`
 
