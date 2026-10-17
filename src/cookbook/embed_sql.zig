@@ -15,9 +15,13 @@
 ///! there: functions such as `sum` live in the `core_functions` extension, which is not linked (`-Dstatic-extensions`
 ///! links extensions into the other embedding programs).
 ///!
-///! One trap, found the hard way: the error slot passed to a call must start as NULL (`Call.slot`). An uninitialised
-///! one makes `statement_execute` crash, although the call succeeds. It links the static libraries (the
-///! static bindings: plain `extern` functions), like `v2-static-embed-poc`.
+///! One trap: the error slot passed to a call must start as NULL (`Call.slot`). A call that fails fills in the error
+///! info it finds in the slot, and only allocates one if the slot is empty (`WithErrorHandler` in DuckDB's source), so an
+///! uninitialised slot is written through at the first failure and the process crashes instead of reporting an error.
+///! A successful call never touches the slot. The slots DuckDB hands to an extension (a callback's `err`, the
+///! entry point's `input.err`) are live ones and safe to pass on.
+///!
+///! The program links the static libraries (the static bindings: plain `extern` functions), like `v2-static-embed-poc`.
 const std = @import("std");
 const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");

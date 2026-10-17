@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 60 scanned source files. Referenced by the extension: **253**; by the extension or the PoC: **275**.
+587 functions (26 unstable) in 32 spec modules, from 61 scanned source files. Referenced by the extension: **253**; by the extension or the PoC: **275**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|

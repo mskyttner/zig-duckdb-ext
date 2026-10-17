@@ -173,7 +173,10 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
 
     return struct {
         pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
-            var err: v2.duckdb_v2_error_info_handle = undefined;
+            // Start from DuckDB's own slot: a failing call fills in an existing error info and writes through a
+            // non-NULL slot as it finds it, so an uninitialised local would crash at the first failure, and a
+            // failure reports its reason to the load this way.
+            var err = (input.err orelse return error.MissingErrorSlot).*;
 
             var function: v2.duckdb_v2_aggregate_function_handle = undefined;
             if (v2.duckdb_v2_aggregate_function_create_with_extension(input.extension, &function, &err) != .ERROR_NONE) {

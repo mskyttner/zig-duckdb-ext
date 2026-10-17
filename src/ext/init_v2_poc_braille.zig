@@ -104,7 +104,7 @@ const BrailleTableState = struct {
 const BrailleFromUrlTableCt = comptime_table_v2.FunctionNamed("braille_from_url_table_ct", BrailleTableState, &.{"url"});
 
 fn registerBrailleReplacementScan(input: *const v2.duckdb_v2_extension_input) void {
-    var err: v2.duckdb_v2_error_info_handle = undefined;
+    var err = (input.err orelse return).*;
 
     var scan: v2.duckdb_v2_replacement_scan_handle = undefined;
     if (v2.duckdb_v2_replacement_scan_create_with_extension(input.extension, &scan, &err) != .ERROR_NONE) return;

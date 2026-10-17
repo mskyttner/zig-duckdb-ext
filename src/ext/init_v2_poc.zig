@@ -29,7 +29,8 @@ const nethogs_trace = @import("nethogs_trace");
 export fn zig_ext_v2_poc_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
     if (!helpers.init(input, "v2.0.0")) return;
 
-    var err: v2.duckdb_v2_error_info_handle = undefined;
+    // DuckDB's own slot: see comptime_scalar_v2.register for why an uninitialised one is not an option.
+    var err = (input.err orelse return).*;
 
     registerDouble(input, &err);
     registerRange3(input, &err);

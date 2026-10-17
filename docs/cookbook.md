@@ -45,6 +45,15 @@ if it is stale, so the gaps below are measured, not remembered.
 | SQL tests | `task sqllogictest` | `task sqllogictest:v2`, `sqllogictest:v2:poc` | |
 | Static linking into a host program | — | `v2-static-embed-poc`, `-extensions` (Linux), the same with `-Dtarget=x86_64-windows-gnu`; `task verify:static-windows` | The v2 bindings come in a dynamic (`get_api` table) and a static (direct `extern`) backend. |
 
+## Error slots
+
+A call that can fail takes an `err` slot. On failure it **fills in the error info it finds in the slot** (and allocates one only
+if the slot is NULL), so the slot you pass must start as NULL or hold a live info: an uninitialised one is written through at the
+first failure and crashes the process. The slots DuckDB gives an extension (a callback's `err`, the entry point's `input.err`) are
+live, so pass those on, as the frameworks' `register` functions now do (`zig build load-failure-v2` loads an extension whose
+registration fails and checks that the load fails with the reason; with an uninitialised local slot it crashed). A program that
+embeds DuckDB owns its slots and starts them empty (`cookbook/embed_sql.zig`, `Call`).
+
 ## What is not shown yet
 
 Taken from the generated coverage report. In the order I would write the recipes:

@@ -46,6 +46,11 @@ tasks:
     cmds:
       - zig build sqllogictest-v2
 
+  test:load-failure:
+    desc: "An extension whose registration fails must fail the load with its reason, not crash DuckDB"
+    cmds:
+      - zig build load-failure-v2
+
   sqllogictest:cookbook:
     desc: "SQL tests of the v2 cookbook extension (test/sql/zig_ext_cookbook.test)"
     cmds:

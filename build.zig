@@ -889,6 +889,33 @@ pub fn build(b: *std.Build) void {
     const ext_v2_step = b.step("ext-v2", "Build the real, parallel v2 .duckdb_extension file");
     ext_v2_step.dependOn(&install_ext_v2.step);
 
+    // An extension whose registration fails: loading it must fail with the reason, not crash (an error slot that
+    // started uninitialised made DuckDB write through garbage).
+    const bad_ext_lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "zig_ext_bad",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root_bad_ext.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    bad_ext_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
+    bad_ext_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
+    bad_ext_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
+    bad_ext_lib.root_module.link_libc = true;
+    const bad_ext_output = addDuckdbExtensionMetadata(b, bad_ext_lib, "zig_ext_bad", "v2.0.0", "v0.1.0", "C_STRUCT", duckdbPlatformString(target));
+    {
+        const run = std.Build.Step.Run.create(b, "load an extension whose registration fails");
+        if (duckdb_cli_v2) |cli| run.addFileArg(cli) else run.addArg("duckdb");
+        run.addArgs(&.{ "-unsigned", "-no-init", "-c" });
+        run.addFileArg2(bad_ext_output, .{ .prefix = "SET allow_extensions_metadata_mismatch=true; LOAD '", .suffix = "'; SELECT 1" });
+        run.expectExitCode(1);
+        run.addCheck(.{ .expect_stderr_match = "Duplicate parameter name" });
+        run.has_side_effects = true;
+        b.step("load-failure-v2", "Load an extension whose registration fails: the load must fail with the reason").dependOn(&run.step);
+    }
+
     // The cookbook: one small, tested example per capability of the v2 C API (docs/cookbook.md).
     const ext_cookbook_lib = b.addLibrary(.{
         .linkage = .dynamic,
