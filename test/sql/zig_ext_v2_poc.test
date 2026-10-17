@@ -1421,3 +1421,130 @@ query I
 SELECT length(string_split(zig_v2_appender_types_test(), ';')[3])
 ----
 116
+
+# ── The hand-written examples (duckdb_v2_examples.zig) and the partitioned weighted average ─────────
+
+query III
+SELECT zig_v2_double(21), zig_v2_double(-4), zig_v2_double(NULL)
+----
+42
+-8
+NULL
+
+# NULLs on some rows of a column, over more than one 64-row validity word.
+query II
+SELECT count(zig_v2_double(CASE WHEN i % 7 = 0 THEN NULL ELSE i END)), sum(zig_v2_double(CASE WHEN i % 7 = 0 THEN NULL ELSE i END)) FROM generate_series(1, 200) t(i)
+----
+172
+34516
+
+query IIII
+SELECT zig_v2_hello('x'), zig_v2_hello(''), zig_v2_hello('naïve 🦆'), zig_v2_hello(NULL)
+----
+Hello, x!
+Hello, !
+Hello, naïve 🦆!
+NULL
+
+# A name too long for the example's 1024-byte buffer falls back to a fixed greeting.
+query T
+SELECT zig_v2_hello(repeat('a', 2000))
+----
+Hello, world!
+
+query I
+SELECT count(zig_v2_hello(CASE WHEN i % 5 = 0 THEN NULL ELSE 'n' END)) FROM generate_series(1, 200) t(i)
+----
+160
+
+query I
+SELECT n FROM zig_v2_range3()
+----
+0
+1
+2
+
+query I
+SELECT zig_v2_agg_sum(x) FROM (VALUES (1), (2), (NULL), (4)) t(x)
+----
+7
+
+query I
+SELECT zig_v2_agg_sum(x) FROM (SELECT 1 AS x WHERE false) t
+----
+0
+
+query III
+SELECT g, zig_v2_agg_sum(x), sum(x) FROM (SELECT i % 3 AS g, i AS x FROM generate_series(1, 10) t(i)) GROUP BY g ORDER BY g
+----
+0
+18
+18
+1
+22
+22
+2
+15
+15
+
+# Many groups over several vectors, against DuckDB's own sum().
+query T
+SELECT bool_and(a = b) AND count(*) = 97 FROM (SELECT zig_v2_agg_sum(CASE WHEN i % 5 = 0 THEN NULL ELSE i END) AS a, sum(CASE WHEN i % 5 = 0 THEN NULL ELSE i END)::BIGINT AS b FROM generate_series(1, 20000) t(i) GROUP BY i % 97)
+----
+true
+
+query I
+SELECT zig_v2_weighted_avg_part_ct(x, w) FROM (VALUES (1.0, 1.0), (2.0, 3.0), (NULL, 5.0), (7.0, NULL)) t(x, w)
+----
+1.75
+
+query I
+SELECT zig_v2_weighted_avg_part_ct(x, w) FROM (VALUES (1.0, 0.0), (2.0, 0.0)) t(x, w)
+----
+NULL
+
+# Grouped, with NULLs in either argument and zero weights, against DuckDB's own sums.
+query T
+WITH d AS (SELECT i % 7 AS g, CASE WHEN i % 5 = 0 THEN NULL ELSE i::DOUBLE END AS x, CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 3)::DOUBLE END AS w FROM generate_series(1, 10000) t(i))
+SELECT count(*) = 7 AND bool_and(abs(a.v - b.v) < 1e-9) FROM (SELECT g, zig_v2_weighted_avg_part_ct(x, w) AS v FROM d GROUP BY g) a JOIN (SELECT g, sum(x * w) / sum(w) FILTER (WHERE x IS NOT NULL AND w IS NOT NULL) AS v FROM d GROUP BY g) b USING (g)
+----
+true
+
+# The replacement scan: `zig_v2_range_<N>` as a table name reads zig_v2_range_ct(N).
+query II
+SELECT count(*), sum(value) FROM zig_v2_range_5
+----
+5
+10
+
+query II
+SELECT count(*), sum(value) FROM zig_v2_range_5000
+----
+5000
+12497500
+
+query I
+SELECT count(*) FROM main.zig_v2_range_4
+----
+4
+
+query I
+SELECT count(*) FROM zig_v2_range_0
+----
+0
+
+# A name that does not end in a number is declined.
+statement error
+SELECT * FROM zig_v2_range_x
+----
+Table with name zig_v2_range_x does not exist
+
+query ITT
+SELECT kernel, gflops > 0, elapsed_ms >= 0 FROM zig_v2_matmul_bench_ct(16, 16, 16, 1) ORDER BY kernel
+----
+naive
+true
+true
+simd
+true
+true
