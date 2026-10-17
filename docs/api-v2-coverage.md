@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 61 scanned source files. Referenced by the extension: **253**; by the extension or the PoC: **275**.
+587 functions (26 unstable) in 32 spec modules, from 62 scanned source files. Referenced by the extension: **263**; by the extension or the PoC: **283**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -24,7 +24,7 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | expression | 9 | 0 | 0 | 4 | 5 |
 | filesystem/file_system | 17 | 0 | 0 | 0 | 17 |
 | function/aggregate | 44 | 0 | 33 | 33 | 11 |
-| function/cast | 14 | 0 | 10 | 10 | 4 |
+| function/cast | 14 | 0 | 11 | 11 | 3 |
 | function/copy | 78 | 6 | 47 | 47 | 31 |
 | function | 7 | 0 | 3 | 3 | 4 |
 | function/replacement_scan | 15 | 0 | 0 | 7 | 8 |
@@ -34,10 +34,10 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | identifier | 1 | 0 | 0 | 0 | 1 |
 | instance | 13 | 0 | 4 | 4 | 9 |
 | logging | 1 | 0 | 0 | 0 | 1 |
-| logical_type/custom_type | 6 | 0 | 0 | 0 | 6 |
-| logical_type | 16 | 0 | 5 | 5 | 11 |
+| logical_type/custom_type | 6 | 0 | 5 | 5 | 1 |
+| logical_type | 16 | 0 | 7 | 7 | 9 |
 | prepared_statement | 4 | 0 | 4 | 4 | 0 |
-| qname | 8 | 0 | 0 | 4 | 4 |
+| qname | 8 | 0 | 2 | 4 | 4 |
 | query_result | 10 | 0 | 6 | 6 | 4 |
 | schema | 3 | 0 | 3 | 3 | 0 |
 | sql_statement | 9 | 0 | 8 | 8 | 1 |
@@ -69,7 +69,7 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **function/aggregate**: `aggregate_function_create_with_connection`, `aggregate_function_size_get_user_data`, `aggregate_function_size_get_bind_data`, `aggregate_function_init_get_user_data`, `aggregate_function_init_get_bind_data`, `aggregate_function_update_get_arg_count`, `aggregate_function_combine_get_user_data`, `aggregate_function_combine_get_bind_data`, `aggregate_function_finalize_get_user_data`, `aggregate_function_destroy_get_user_data`, `aggregate_function_destroy_get_bind_data`
 
-**function/cast**: `cast_function_create_with_connection`, `cast_function_set_implicit_cast_cost`, `cast_function_set_user_data`, `cast_function_exec_get_user_data`
+**function/cast**: `cast_function_create_with_connection`, `cast_function_set_user_data`, `cast_function_exec_get_user_data`
 
 **function/copy**: `copy_function_create_with_connection`, `copy_function_set_user_data`, `copy_to_bind_get_user_data`, `copy_to_bind_get_file_path`, `copy_to_batch_size_get_user_data`, `copy_to_batch_size_get_bind_data`, `copy_to_init_get_user_data`, `copy_to_batch_get_user_data`, `copy_to_batch_get_init_data`, `copy_to_flush_get_user_data`, `copy_to_flush_get_bind_data`, `copy_to_finalize_get_user_data`, `copy_to_finalize_get_bind_data`, `copy_from_set_init_local_callback`, `copy_from_bind_get_user_data`, `copy_from_bind_get_column_name`, `copy_from_init_global_get_user_data`, `copy_from_init_local_get_user_data`, `copy_from_init_local_get_bind_data`, `copy_from_init_local_get_global_state`, `copy_from_init_local_set_local_state`, `copy_from_exec_get_user_data`, `copy_from_exec_get_local_state`, `copy_from_progress_get_user_data`, `copy_from_progress_get_bind_data`, `copy_to_set_statistics_callback` *(u)*, `copy_to_statistics_get_user_data` *(u)*, `copy_to_statistics_get_bind_data` *(u)*, `copy_to_statistics_get_init_data` *(u)*, `copy_to_statistics_set_row_count` *(u)*, `copy_to_statistics_set_file_size` *(u)*
 
@@ -87,9 +87,9 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **logging**: `context_log`
 
-**logical_type/custom_type**: `custom_type_create_with_connection`, `custom_type_create_with_extension`, `custom_type_set_name`, `custom_type_set_base_type`, `custom_type_register`, `custom_type_destroy`
+**logical_type/custom_type**: `custom_type_create_with_connection`
 
-**logical_type**: `context_create_type_from_name`, `connection_create_type_from_name`, `connection_create_type_from_text`, `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_name`, `logical_type_to_text`, `logical_type_get_param_count`, `logical_type_get_param`, `context_create_type_with_alias`, `connection_create_type_with_alias`
+**logical_type**: `connection_create_type_from_name`, `connection_create_type_from_text`, `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_name`, `logical_type_to_text`, `logical_type_get_param_count`, `logical_type_get_param`, `connection_create_type_with_alias`
 
 **qname**: `qname_parse`, `qname_render`, `qname_equals`, `qname_hash`
 

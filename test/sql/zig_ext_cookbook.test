@@ -770,3 +770,158 @@ statement error
 COPY cookbook_copy_in FROM '/tmp/zig_ext_cookbook_copy_tricky.txt' (FORMAT zig_cookbook_lines)
 ----
 Could not convert string
+
+# ── A custom type with casts and functions (src/cookbook/custom_type.zig) ───────────────────────────────
+# DuckDB's own DOUBLE arithmetic and casts are the oracle.
+
+# The type exists, and a value says what it is.
+query TT
+SELECT typeof('21.5C'::zig_cookbook_celsius), '21.5C'::zig_cookbook_celsius::VARCHAR
+----
+zig_cookbook_celsius
+21.5°C
+
+# VARCHAR -> celsius accepts a number with an optional C or °C, and spaces.
+query TTTTT
+SELECT '21.5'::zig_cookbook_celsius::DOUBLE, '21.5c'::zig_cookbook_celsius::DOUBLE, ' -3 °C '::zig_cookbook_celsius::DOUBLE, '1e2C'::zig_cookbook_celsius::DOUBLE, '-273.15'::zig_cookbook_celsius::DOUBLE
+----
+21.5
+21.5
+-3.0
+100.0
+-273.15
+
+# ... and refuses what it cannot read, below absolute zero, in the words of the cast; TRY_CAST gives NULL.
+statement error
+SELECT 'warm'::zig_cookbook_celsius
+----
+Could not convert string 'warm' to zig_cookbook_celsius
+
+statement error
+SELECT '-273.16C'::zig_cookbook_celsius
+----
+Could not convert string '-273.16C' to zig_cookbook_celsius
+
+statement error
+SELECT ''::zig_cookbook_celsius
+----
+Could not convert string '' to zig_cookbook_celsius
+
+query TTTTT
+SELECT TRY_CAST('warm' AS zig_cookbook_celsius) IS NULL, TRY_CAST('-300' AS zig_cookbook_celsius) IS NULL, TRY_CAST(NULL AS zig_cookbook_celsius) IS NULL, TRY_CAST('inf' AS zig_cookbook_celsius) IS NULL, TRY_CAST('20' AS zig_cookbook_celsius) IS NULL
+----
+true
+true
+true
+true
+false
+
+# DOUBLE -> celsius checks the bound too; celsius -> VARCHAR writes the value and the unit.
+query TTT
+SELECT (-5.5::DOUBLE)::zig_cookbook_celsius::VARCHAR, (0.0::DOUBLE)::zig_cookbook_celsius::VARCHAR, TRY_CAST((-500.0::DOUBLE) AS zig_cookbook_celsius) IS NULL
+----
+-5.5°C
+0°C
+true
+
+statement error
+SELECT (-500.0::DOUBLE)::zig_cookbook_celsius
+----
+below absolute zero
+
+# Over a column, with NULLs on some rows; writing a value and reading it back gives the value.
+query IIT
+SELECT count(*), count(t), bool_and(t::DOUBLE = x) FROM (SELECT x, CASE WHEN i % 5 = 0 THEN NULL ELSE x::DOUBLE::zig_cookbook_celsius END AS t FROM (SELECT i, i / 4.0 - 100 AS x FROM range(1, 2001) r(i)) s(i, x)) u WHERE t IS NOT NULL OR true
+----
+2000
+1600
+true
+
+query T
+SELECT bool_and(CAST(CAST(c AS VARCHAR) AS zig_cookbook_celsius)::DOUBLE = c::DOUBLE) FROM (SELECT (i / 8.0 - 50)::DOUBLE::zig_cookbook_celsius AS c FROM range(1, 1001) r(i))
+----
+true
+
+# Functions that take the type and return it.
+query TTTT
+SELECT zig_cookbook_to_fahrenheit('100C'), zig_cookbook_to_fahrenheit('-40C'), zig_cookbook_to_fahrenheit('0C'), zig_cookbook_to_fahrenheit(NULL)
+----
+212.0
+-40.0
+32.0
+NULL
+
+query TTT
+SELECT typeof(zig_cookbook_to_fahrenheit('1C')), typeof(zig_cookbook_from_fahrenheit(212.0)), zig_cookbook_from_fahrenheit(212.0)::VARCHAR
+----
+DOUBLE
+zig_cookbook_celsius
+100°C
+
+query TT
+SELECT bool_and(zig_cookbook_to_fahrenheit(c::DOUBLE::zig_cookbook_celsius) = c * 9.0 / 5.0 + 32.0), bool_and(abs(zig_cookbook_from_fahrenheit(zig_cookbook_to_fahrenheit(c::DOUBLE::zig_cookbook_celsius))::DOUBLE - c) < 1e-9) FROM (SELECT i / 2.0 - 100 AS c FROM range(1, 401) r(i))
+----
+true
+true
+
+# The bound is absolute zero, -459.67 degrees Fahrenheit.
+query T
+SELECT zig_cookbook_from_fahrenheit(-459.0)::DOUBLE < -272.7
+----
+true
+
+statement error
+SELECT zig_cookbook_from_fahrenheit(-460.0)
+----
+-460 degrees Fahrenheit is below absolute zero
+
+statement error
+SELECT zig_cookbook_from_fahrenheit(-1000.0)
+----
+-1000 degrees Fahrenheit is below absolute zero
+
+# One bad row of many fails the query.
+statement error
+SELECT zig_cookbook_from_fahrenheit(CASE WHEN i = 150 THEN -1000.0 ELSE 50.0 END) FROM range(1, 200) t(i)
+----
+below absolute zero
+
+# The one implicit direction: a celsius value goes where a DOUBLE is expected.
+query TT
+SELECT abs('-4.5C'::zig_cookbook_celsius), typeof('20C'::zig_cookbook_celsius + 1.5)
+----
+4.5
+DOUBLE
+
+# DOUBLE does not become a celsius value on its own: a column of the type is filled through the VARCHAR cast or an explicit one.
+statement ok
+CREATE TABLE cookbook_weather (city VARCHAR, temp zig_cookbook_celsius)
+
+statement ok
+INSERT INTO cookbook_weather VALUES ('oslo', '-3'), ('cairo', '35.5C'), ('lima', '19'), ('mars', NULL)
+
+query TTT
+SELECT city, temp::VARCHAR, typeof(temp) FROM cookbook_weather ORDER BY temp NULLS LAST
+----
+oslo
+-3°C
+zig_cookbook_celsius
+lima
+19°C
+zig_cookbook_celsius
+cairo
+35.5°C
+zig_cookbook_celsius
+mars
+NULL
+zig_cookbook_celsius
+
+query T
+SELECT max(temp)::VARCHAR || ' / ' || min(temp)::VARCHAR FROM cookbook_weather
+----
+35.5°C / -3°C
+
+statement error
+INSERT INTO cookbook_weather VALUES ('hell', '-400')
+----
+Could not convert string '-400' to zig_cookbook_celsius

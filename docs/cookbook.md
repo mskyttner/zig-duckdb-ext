@@ -33,6 +33,7 @@ if it is stale, so the gaps below are measured, not remembered.
 | Parallel table function: global and local state, threads, output order | — | `cookbook/table_callbacks.zig`: `zig_cookbook_parallel_range` | `init_global` (max threads), `init_local` (a worker's state), `partition_data` (batch index), user data = block size. Without the partition data callback the rows stay in order but one worker produces them. |
 | A custom `COPY` format | — | `cookbook/copy_format.zig`: `FORMAT zig_cookbook_lines` (`DELIMITER`, `HEADER`, `NULL_TEXT`), both `COPY ... TO` and `COPY ... FROM` | TO: bind, batch size, init, batch (prepares, in parallel), flush (writes, serial), finalize. FROM: bind (the table's columns), init_global, exec (an empty chunk ends the read), progress. Values travel as text through DuckDB's own cast, so every type works. |
 | Running SQL: parse, execute, prepared statements, results | — | `cookbook/embed_sql.zig`, `zig build cookbook-embed` (needs the static libraries): a program that **embeds** DuckDB | Environment, instance, connection; `parse_sql`; lazy results read by chunk; positional and named parameters; prepared statements; error codes; one live result per connection. **Not available to an extension**: see below. |
+| A custom type with casts | — | `cookbook/custom_type.zig`: `zig_cookbook_celsius` (a name bound to DOUBLE), its four casts (VARCHAR, DOUBLE, one implicit), `zig_cookbook_to_fahrenheit` / `_from_fahrenheit` | `custom_type_*` registers the name and base type; the type is created for signatures by lookup (`context_create_type_from_name`) or from the base type (`..._with_alias`); casts honour `TRY_CAST`; the implicit cost lets a value go where its base type is expected. |
 | Appender, building a result set | — | `lib/comptime_appender_v2.zig`, `zig_v2_appender_*_test`, `zig_v2_nethogs_trace` (PoC) | |
 | Replacement scan | — | `zig_v2_range_<N>`, the braille demo (PoC) | `SELECT * FROM zig_v2_range_5`. |
 
@@ -73,7 +74,7 @@ Taken from the generated coverage report. In the order I would write the recipes
    takes a *connection*, an extension is handed only an extension handle and a *context*, and no call turns a context
    into a connection (nor yields the instance to create one from). Settings, values, types and the file system are what
    a context is for.
-5. **Custom types** (`logical_type/custom_type`), **filesystem** access, **Arrow** import and export, **logging**,
+5. ~~Custom types~~ — done (`cookbook/custom_type.zig`). Still open: **filesystem** access, **Arrow** import and export, **logging**,
    **tokenizing and parsing SQL**.
 
 Before writing any of these, check in the report that the function is in the pinned alpha's table (an *unstable*

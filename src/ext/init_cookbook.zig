@@ -9,6 +9,7 @@ const scalar_callbacks = @import("../cookbook/scalar_callbacks.zig");
 const aggregate_callbacks = @import("../cookbook/aggregate_callbacks.zig");
 const table_callbacks = @import("../cookbook/table_callbacks.zig");
 const copy_format = @import("../cookbook/copy_format.zig");
+const custom_type = @import("../cookbook/custom_type.zig");
 
 export fn zig_ext_cookbook_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
     if (!helpers.init(input, "v2.0.0")) return;
@@ -18,4 +19,5 @@ export fn zig_ext_cookbook_init_c_api_v2(input: *const v2.duckdb_v2_extension_in
     aggregate_callbacks.register(input) catch return;
     table_callbacks.register(input) catch return;
     copy_format.register(input) catch return;
+    custom_type.register(input) catch return;
 }
