@@ -12,6 +12,7 @@ const copy_format = @import("../cookbook/copy_format.zig");
 const custom_type = @import("../cookbook/custom_type.zig");
 const arrow_ipc = @import("../cookbook/arrow_ipc.zig");
 const arrow_c_data = @import("../cookbook/arrow_c_data.zig");
+const file_system = @import("../cookbook/file_system.zig");
 
 export fn zig_ext_cookbook_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
     if (!helpers.init(input, "v2.0.0")) return;
@@ -24,4 +25,5 @@ export fn zig_ext_cookbook_init_c_api_v2(input: *const v2.duckdb_v2_extension_in
     custom_type.register(input) catch return;
     arrow_ipc.register(input) catch return;
     arrow_c_data.register(input) catch return;
+    file_system.register(input) catch return;
 }

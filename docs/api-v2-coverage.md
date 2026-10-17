@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 64 scanned source files. Referenced by the extension: **278**; by the extension or the PoC: **298**.
+587 functions (26 unstable) in 32 spec modules, from 65 scanned source files. Referenced by the extension: **292**; by the extension or the PoC: **312**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -22,7 +22,7 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | environment | 3 | 0 | 2 | 2 | 1 |
 | error | 6 | 0 | 5 | 5 | 1 |
 | expression | 9 | 0 | 0 | 4 | 5 |
-| filesystem/file_system | 17 | 0 | 0 | 0 | 17 |
+| filesystem/file_system | 17 | 0 | 14 | 14 | 3 |
 | function/aggregate | 44 | 0 | 33 | 33 | 11 |
 | function/cast | 14 | 0 | 11 | 11 | 3 |
 | function/copy | 78 | 6 | 47 | 47 | 31 |
@@ -65,7 +65,7 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **expression**: `expression_get_return_type`, `expression_get_child_count`, `expression_function_get_name`, `expression_function_get_qname`, `expression_cast_get_mode`
 
-**filesystem/file_system**: `file_system_get_from_context`, `file_system_get_from_connection`, `file_open_options_create`, `file_open_options_set_flag`, `file_open_options_set_value`, `file_open_options_destroy`, `file_system_open`, `file_read`, `file_write`, `file_read_at`, `file_write_at`, `file_tell`, `file_size`, `file_seek`, `file_sync`, `file_close`, `file_destroy`
+**filesystem/file_system**: `file_system_get_from_connection`, `file_open_options_set_value`, `file_seek`
 
 **function/aggregate**: `aggregate_function_create_with_connection`, `aggregate_function_size_get_user_data`, `aggregate_function_size_get_bind_data`, `aggregate_function_init_get_user_data`, `aggregate_function_init_get_bind_data`, `aggregate_function_update_get_arg_count`, `aggregate_function_combine_get_user_data`, `aggregate_function_combine_get_bind_data`, `aggregate_function_finalize_get_user_data`, `aggregate_function_destroy_get_user_data`, `aggregate_function_destroy_get_bind_data`
 

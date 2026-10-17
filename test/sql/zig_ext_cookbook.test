@@ -1548,3 +1548,150 @@ query I
 SELECT max(live_arrays) FROM (SELECT live_arrays FROM zig_cookbook_arrow_live_arrays(), zig_cookbook_arrow_import(10) LIMIT 1)
 ----
 1
+
+# DuckDB's file system: zig_cookbook_fs_write and zig_cookbook_fs_read. The oracle is DuckDB's own read_blob.
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'hello world')
+----
+11
+11
+11
+
+query I
+SELECT count(*) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt') a, read_blob('/tmp/zig_ext_cookbook_fs.txt') b WHERE a.content = b.content AND a.size = b.size AND a.content = 'hello world'::BLOB
+----
+1
+
+# create empties an existing file; append adds at the end.
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'hello', mode := 'create')
+----
+5
+5
+5
+
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', ' world', mode := 'append')
+----
+6
+11
+11
+
+query IT
+SELECT size, content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt')
+----
+11
+hello world
+
+# A range is read at its offset: all of it, or an error.
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', 6, 5)
+----
+world
+
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', 6)
+----
+world
+
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', length := 5)
+----
+hello
+
+query I
+SELECT octet_length(content) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', 3, 0)
+----
+0
+
+statement error
+SELECT * FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', 6, 100)
+----
+Could not read enough bytes
+
+# The path goes through DuckDB's file system, not libc's: a file: URL is understood.
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('file:///tmp/zig_ext_cookbook_fs.txt', 0, 5)
+----
+hello
+
+# at: written at an offset, past the end if need be (the gap is zeros); the position does not move.
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'XY', mode := 'at', start := 14)
+----
+2
+16
+0
+
+query T
+SELECT hex(content) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt')
+----
+68656C6C6F20776F726C640000005859
+
+# exclusive: a new file only. The path is new on every run.
+query I
+SELECT bytes FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs_' || strftime(now(), '%Y%m%d%H%M%S%f') || '.txt', 'fresh', mode := 'exclusive')
+----
+5
+
+statement error
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'again', mode := 'exclusive')
+----
+File exists
+
+# Empty content, and a file bigger than any buffer: written, then read back by the sequential loop.
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs_empty.txt', '')
+----
+0
+0
+0
+
+query II
+SELECT size, octet_length(content) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs_empty.txt')
+----
+0
+0
+
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs_big.txt', repeat('0123456789abcdef', 200000))
+----
+3200000
+3200000
+3200000
+
+query I
+SELECT count(*) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs_big.txt') a, read_blob('/tmp/zig_ext_cookbook_fs_big.txt') b WHERE a.content = b.content AND a.size = 3200000
+----
+1
+
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs_big.txt', 1600000 + 10, 12)
+----
+abcdef012345
+
+# Errors are DuckDB's own.
+statement error
+SELECT * FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs_does_not_exist')
+----
+No such file or directory
+
+statement error
+SELECT * FROM zig_cookbook_fs_write('/nonexistent_dir/x', 'x')
+----
+No such file or directory
+
+statement error
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'x', mode := 'truncate')
+----
+unknown mode 'truncate'
+
+statement error
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'x', mode := 'at', start := -1)
+----
+start must not be negative, got -1
+
+statement error
+SELECT * FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', length := -2)
+----
+length must be -1 (to the end) or more, got -2
