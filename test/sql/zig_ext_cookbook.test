@@ -925,3 +925,406 @@ statement error
 INSERT INTO cookbook_weather VALUES ('hell', '-400')
 ----
 Could not convert string '-400' to zig_cookbook_celsius
+
+# ── A COPY format over a library: Arrow IPC (src/cookbook/arrow_ipc.zig, third_party/gld-arrow-zig) ──
+# Reading: files written by PyArrow (tools/gen_arrow_fixtures.py), the independent writer, compared with the values
+# they were built from. Writing: DuckDB's own values are the oracle, and the file is read back by the same recipe;
+# `task verify:arrow-pyarrow` also reads the files this section writes with PyArrow.
+
+statement ok
+CREATE TABLE arrow_expected AS SELECT b::BOOLEAN b, i8::TINYINT i8, i16::SMALLINT i16, i32::INTEGER i32, i64::BIGINT i64, u8::UTINYINT u8, u16::USMALLINT u16, u32::UINTEGER u32, u64::UBIGINT u64, f32::FLOAT f32, f64::DOUBLE f64, d::DATE d, ts::TIMESTAMP ts, s::VARCHAR s FROM (VALUES
+  (true, -128, -32768, -2147483648, -9223372036854775808, 0, 0, 0, 0, 0.5, 0.1, DATE '1970-01-01', TIMESTAMP '1970-01-01 00:00:00', ''),
+  (false, 0, 0, 0, 0, 1, 1, 1, 1, -1.25, -2.5, DATE '1969-12-31', TIMESTAMP '1969-12-31 23:59:59.999999', 'héllo wörld'),
+  (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+  (true, 127, 32767, 2147483647, 9223372036854775807, 255, 65535, 4294967295, 18446744073709551615, 1e30, 1e300, DATE '2024-02-29', TIMESTAMP '2024-02-29 12:30:45.123456', 'a string that is longer than twelve bytes'),
+  (false, 5, 5, 5, 5, 5, 5, 5, 5, 3.0, 3.0, DATE '9999-12-31', TIMESTAMP '2000-01-01 00:00:00', E'tab\there')
+) v(b, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, d, ts, s)
+
+statement ok
+CREATE TABLE arrow_in AS SELECT * FROM arrow_expected LIMIT 0
+
+# A stream and a file (the footer layout) of the same table, both from PyArrow.
+statement ok
+COPY arrow_in FROM 'test/data/arrow/types.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM arrow_in
+----
+5
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_in EXCEPT SELECT * FROM arrow_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_expected EXCEPT SELECT * FROM arrow_in)
+----
+0
+
+# Row order is the file's.
+query T
+SELECT s FROM arrow_in ORDER BY rowid
+----
+(empty)
+héllo wörld
+NULL
+a string that is longer than twelve bytes
+tab\there
+
+statement ok
+DELETE FROM arrow_in
+
+statement ok
+COPY arrow_in FROM 'test/data/arrow/types.arrow' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_in EXCEPT SELECT * FROM arrow_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_in
+----
+5
+
+# Record batches larger than a vector (5000 rows in one batch: chunks of 2048), several batches, and both compressions.
+statement ok
+CREATE TABLE arrow_big_expected AS SELECT i::BIGINT id, CASE WHEN i % 7 = 0 THEN NULL ELSE 'row-' || i END s, CASE WHEN i % 5 = 0 THEN NULL ELSE i * 0.5 END::DOUBLE x FROM range(5000) t(i)
+
+statement ok
+CREATE TABLE arrow_big AS SELECT * FROM arrow_big_expected LIMIT 0
+
+statement ok
+COPY arrow_big FROM 'test/data/arrow/big_one_batch.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM arrow_big
+----
+5000
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_big EXCEPT SELECT * FROM arrow_big_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_big_expected EXCEPT SELECT * FROM arrow_big)
+----
+0
+
+# The order across chunks and batches is the file's (id counts up).
+query I
+SELECT count(*) FROM (SELECT id, row_number() OVER (ORDER BY rowid) - 1 AS n FROM arrow_big) WHERE id <> n
+----
+0
+
+statement ok
+DELETE FROM arrow_big
+
+statement ok
+COPY arrow_big FROM 'test/data/arrow/big_batches.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_big EXCEPT SELECT * FROM arrow_big_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT id, row_number() OVER (ORDER BY rowid) - 1 AS n FROM arrow_big) WHERE id <> n
+----
+0
+
+query I
+SELECT count(*) FROM arrow_big
+----
+5000
+
+statement ok
+DELETE FROM arrow_big
+
+statement ok
+COPY arrow_big FROM 'test/data/arrow/big_lz4.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_big EXCEPT SELECT * FROM arrow_big_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_big
+----
+5000
+
+# A file with no rows is a table with no rows.
+statement ok
+CREATE TABLE arrow_empty (id BIGINT, s VARCHAR)
+
+statement ok
+COPY arrow_empty FROM 'test/data/arrow/no_rows.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM arrow_empty
+----
+0
+
+# What the recipe will not read says why, naming the column.
+statement error
+COPY arrow_empty FROM 'test/data/arrow/dictionary.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+the file has 1 columns, the table 2
+
+statement ok
+CREATE TABLE arrow_one_text (s VARCHAR)
+
+statement error
+COPY arrow_one_text FROM 'test/data/arrow/dictionary.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (s) is utf8 (dictionary-encoded) in the file; the table expects VARCHAR
+
+statement error
+COPY arrow_one_text FROM 'test/data/arrow/large_string.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (s) is large_utf8 in the file; the table expects VARCHAR
+
+statement ok
+CREATE TABLE arrow_one_ts (ts TIMESTAMP)
+
+statement error
+COPY arrow_one_ts FROM 'test/data/arrow/timezone.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (ts) is timestamp[us, with a time zone] in the file; the table expects TIMESTAMP
+
+statement error
+COPY arrow_one_ts FROM 'test/data/arrow/millis.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (ts) is timestamp[ms] in the file; the table expects TIMESTAMP
+
+statement ok
+CREATE TABLE arrow_one_date (d DATE)
+
+statement error
+COPY arrow_one_date FROM 'test/data/arrow/date64.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (d) is date64 in the file; the table expects DATE
+
+statement ok
+CREATE TABLE arrow_one_id (id BIGINT)
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/int32.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (id) is int32 in the file; the table expects BIGINT
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/uint64.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (id) is uint64 in the file; the table expects BIGINT
+
+statement error
+COPY arrow_one_text FROM 'test/data/arrow/bad_utf8.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+a string in the file is not valid UTF-8
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/list.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (l) is list in the file; the table expects BIGINT
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/garbage.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+is not a readable Arrow IPC stream or file
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/does_not_exist.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+cannot open test/data/arrow/does_not_exist.arrows
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/int32.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'zstd')
+----
+unknown option codec (there are none)
+
+# The table's own types: a column the recipe does not move fails at planning, before the file is opened.
+statement ok
+CREATE TABLE arrow_hugeint (h HUGEINT)
+
+statement error
+COPY arrow_hugeint FROM 'test/data/arrow/int32.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 has a type that is not supported
+
+# Writing. The values are DuckDB's; the recipe's reader gives them back.
+statement ok
+COPY arrow_expected TO '/tmp/zig_ext_cookbook_arrow_types.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+statement ok
+DELETE FROM arrow_in
+
+statement ok
+COPY arrow_in FROM '/tmp/zig_ext_cookbook_arrow_types.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_in EXCEPT SELECT * FROM arrow_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_expected EXCEPT SELECT * FROM arrow_in)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_in
+----
+5
+
+# Many batches (BATCH_SIZE), prepared on several threads: nothing lost, nothing doubled, the order kept.
+statement ok
+COPY (SELECT * FROM range(100000) t(i)) TO '/tmp/zig_ext_cookbook_arrow_range.arrows' (FORMAT zig_cookbook_arrow_ipc, BATCH_SIZE 3000)
+
+statement ok
+CREATE TABLE arrow_range (i BIGINT)
+
+statement ok
+COPY arrow_range FROM '/tmp/zig_ext_cookbook_arrow_range.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query III
+SELECT count(*), sum(i), count(DISTINCT i) FROM arrow_range
+----
+100000
+4999950000
+100000
+
+query I
+SELECT count(*) FROM (SELECT i, row_number() OVER (ORDER BY rowid) - 1 AS n FROM arrow_range) WHERE i <> n
+----
+0
+
+# Strings of every size across a batch boundary: inline (up to 12 bytes), longer, empty and NULL.
+statement ok
+COPY (SELECT CASE WHEN i % 11 = 0 THEN NULL ELSE repeat('é', i % 40) END AS s FROM range(30000) t(i)) TO '/tmp/zig_ext_cookbook_arrow_strings.arrows' (FORMAT zig_cookbook_arrow_ipc, BATCH_SIZE 1111)
+
+statement ok
+CREATE TABLE arrow_strings (s VARCHAR)
+
+statement ok
+COPY arrow_strings FROM '/tmp/zig_ext_cookbook_arrow_strings.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT s FROM arrow_strings EXCEPT SELECT CASE WHEN i % 11 = 0 THEN NULL ELSE repeat('é', i % 40) END FROM range(30000) t(i))
+----
+0
+
+query T
+SELECT count(*) = 30000 AND count(s) = (SELECT count(*) FROM range(30000) t(i) WHERE i % 11 <> 0) AND sum(length(s)) = (SELECT sum(i % 40) FROM range(30000) t(i) WHERE i % 11 <> 0) FROM arrow_strings
+----
+true
+
+# The codecs of the writer: the same table back, whichever way it was stored (and a different size on disk).
+statement ok
+CREATE TABLE arrow_codec_expected AS SELECT i::BIGINT id, 'row-' || (i % 100) AS s, ((i % 17) * 0.25)::DOUBLE AS x FROM range(60000) t(i)
+
+statement ok
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_none.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'none', BATCH_SIZE 8000)
+
+statement ok
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_lz4.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'lz4', BATCH_SIZE 8000)
+
+statement ok
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_zstd.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'ZSTD', BATCH_SIZE 8000)
+
+statement ok
+CREATE TABLE arrow_codec (id BIGINT, s VARCHAR, x DOUBLE)
+
+statement ok
+COPY arrow_codec FROM '/tmp/zig_ext_cookbook_arrow_none.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_codec EXCEPT SELECT * FROM arrow_codec_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_codec
+----
+60000
+
+statement ok
+DELETE FROM arrow_codec
+
+statement ok
+COPY arrow_codec FROM '/tmp/zig_ext_cookbook_arrow_lz4.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_codec EXCEPT SELECT * FROM arrow_codec_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_codec
+----
+60000
+
+statement ok
+DELETE FROM arrow_codec
+
+statement ok
+COPY arrow_codec FROM '/tmp/zig_ext_cookbook_arrow_zstd.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_codec EXCEPT SELECT * FROM arrow_codec_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_codec
+----
+60000
+
+# The codec really ran. LZ4 shrinks the repeating data to under half; the library's Zstd writer stores its blocks
+# uncompressed (a valid frame, which PyArrow reads, but no smaller), so only the frame overhead tells it apart.
+query T
+SELECT (SELECT size FROM read_blob('/tmp/zig_ext_cookbook_arrow_lz4.arrows')) < (SELECT size FROM read_blob('/tmp/zig_ext_cookbook_arrow_none.arrows')) / 2 AND (SELECT size FROM read_blob('/tmp/zig_ext_cookbook_arrow_zstd.arrows')) > (SELECT size FROM read_blob('/tmp/zig_ext_cookbook_arrow_none.arrows'))
+----
+true
+
+statement error
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_bad.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'gzip')
+----
+CODEC must be 'none', 'lz4' or 'zstd', not 'gzip'
+
+statement error
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_bad.arrows' (FORMAT zig_cookbook_arrow_ipc, COMPRESSION 'zstd')
+----
+unknown option compression (CODEC exists)
+
+# A column the recipe does not move fails the statement at planning, naming the column; no file is written.
+statement error
+COPY (SELECT 1 AS id, [1, 2] AS l) TO '/tmp/zig_ext_cookbook_arrow_bad2.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column l has a type that is not supported
+
+statement error
+COPY (SELECT 1.5::DECIMAL(9, 2) AS price) TO '/tmp/zig_ext_cookbook_arrow_bad2.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column price has a type that is not supported
+
+# Nothing to write is a valid stream: the schema, no batches.
+statement ok
+COPY (SELECT 1::BIGINT AS id, 'x' AS s WHERE false) TO '/tmp/zig_ext_cookbook_arrow_nothing.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+statement ok
+COPY arrow_empty FROM '/tmp/zig_ext_cookbook_arrow_nothing.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM arrow_empty
+----
+0
+
+# A path that cannot be written.
+statement error
+COPY arrow_expected TO '/nonexistent_dir/x.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+cannot open /nonexistent_dir/x.arrows for writing

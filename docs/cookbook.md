@@ -32,6 +32,7 @@ if it is stale, so the gaps below are measured, not remembered.
 | Aggregate callbacks: bind (result type), bind data, user data, properties | — | `cookbook/aggregate_callbacks.zig`: `zig_cookbook_agg_sum` / `_sumsq` (one set of callbacks, user data = the power), `zig_cookbook_agg_last` (order dependent) | `AGG_ORDER_DEPENDENT` and `AGG_DISTINCT_DEPENDENT`: what the planner does with `ORDER BY` and `DISTINCT` inside the call. |
 | Parallel table function: global and local state, threads, output order | — | `cookbook/table_callbacks.zig`: `zig_cookbook_parallel_range` | `init_global` (max threads), `init_local` (a worker's state), `partition_data` (batch index), user data = block size. Without the partition data callback the rows stay in order but one worker produces them. |
 | A custom `COPY` format | — | `cookbook/copy_format.zig`: `FORMAT zig_cookbook_lines` (`DELIMITER`, `HEADER`, `NULL_TEXT`), both `COPY ... TO` and `COPY ... FROM` | TO: bind, batch size, init, batch (prepares, in parallel), flush (writes, serial), finalize. FROM: bind (the table's columns), init_global, exec (an empty chunk ends the read), progress. Values travel as text through DuckDB's own cast, so every type works. |
+| `COPY` with a **library** doing the format | — | `cookbook/arrow_ipc.zig`: `FORMAT zig_cookbook_arrow_ipc` (`CODEC 'none'\|'lz4'\|'zstd'`), `COPY ... TO` and `COPY ... FROM`, with [gld-arrow-zig](../third_party/gld-arrow-zig/PATCHES.md) (pure Zig, vendored) | The same callbacks as the line above; the recipe is the **seam** between DuckDB vectors and Arrow buffers: validity bits plus a flat array (booleans as bits, strings as offsets plus bytes), one copy per column. A `COPY ... TO` batch is prepared in parallel into column buffers, flushed into one record batch each, and the stream is encoded in finalize. Columns: BOOLEAN, 8 to 64-bit integers, FLOAT, DOUBLE, DATE, TIMESTAMP, VARCHAR; anything else fails at planning, naming the column. Reading takes a stream or a file and LZ4; the file's columns must match the table's by position and type (nothing is cast). |
 | Running SQL: parse, execute, prepared statements, results | — | `cookbook/embed_sql.zig`, `zig build cookbook-embed` (needs the static libraries): a program that **embeds** DuckDB | Environment, instance, connection; `parse_sql`; lazy results read by chunk; positional and named parameters; prepared statements; error codes; one live result per connection. **Not available to an extension**: see below. |
 | A custom type with casts | — | `cookbook/custom_type.zig`: `zig_cookbook_celsius` (a name bound to DOUBLE), its four casts (VARCHAR, DOUBLE, one implicit), `zig_cookbook_to_fahrenheit` / `_from_fahrenheit` | `custom_type_*` registers the name and base type; the type is created for signatures by lookup (`context_create_type_from_name`) or from the base type (`..._with_alias`); casts honour `TRY_CAST`; the implicit cost lets a value go where its base type is expected. |
 | Appender, building a result set | — | `lib/comptime_appender_v2.zig`, `zig_v2_appender_*_test`, `zig_v2_nethogs_trace` (PoC) | |
@@ -74,8 +75,16 @@ Taken from the generated coverage report. In the order I would write the recipes
    takes a *connection*, an extension is handed only an extension handle and a *context*, and no call turns a context
    into a connection (nor yields the instance to create one from). Settings, values, types and the file system are what
    a context is for.
-5. ~~Custom types~~ — done (`cookbook/custom_type.zig`). Still open: **filesystem** access, **Arrow** import and export, **logging**,
-   **tokenizing and parsing SQL**.
+5. ~~Custom types~~ — done (`cookbook/custom_type.zig`).
+6. ~~Arrow files~~ — done as a `COPY` format over a library (`cookbook/arrow_ipc.zig`). Still open: Arrow through the C Data
+   Interface (`arrow_importer_*`, `arrow_exporter_*`, `arrow_result_*`: `ArrowSchema` and `ArrowArray` structs, not IPC bytes),
+   **filesystem** access, **logging**, **tokenizing and parsing SQL**.
+
+   Limits of the vendored library (gld-arrow-zig 0.2.0), found while testing the recipe against PyArrow: its Zstd **decoder**
+   fails (`Compression`) on most frames PyArrow writes, for example 200 or more integers (it reads LZ4, and its own Zstd);
+   its Zstd **encoder** stores blocks uncompressed, valid but no smaller; it builds and reads whole streams, with no
+   incremental writer; dictionary-encoded columns are read as dictionaries, which the recipe rejects rather than expands.
+   Patches for Zig 0.17 are listed in `third_party/gld-arrow-zig/PATCHES.md`.
 
 Before writing any of these, check in the report that the function is in the pinned alpha's table (an *unstable*
 function is only present in a build with `DUCKDB_V2_API_ALLOW_UNSTABLE`), then write its SQL test, then the example.

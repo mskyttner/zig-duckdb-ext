@@ -247,6 +247,16 @@ tasks:
         done
         echo "verify:static-windows PASSED — the Windows static embedding runs under Wine with six extension archives linked"
 
+  verify:arrow-pyarrow:
+    desc: "Read the Arrow IPC files written by the cookbook suite with PyArrow (run sqllogictest:cookbook first; skips without pyarrow)"
+    cmds:
+      - python3 tools/verify_arrow_output.py
+
+  test:arrow-vendor:
+    desc: "Tests of the vendored gld-arrow-zig library (third_party/gld-arrow-zig)"
+    cmds:
+      - zig build test-arrow-vendor
+
   coverage:api-v2:
     desc: "Rewrite docs/api-v2-coverage.md: which v2 C API functions the hand-written code references"
     cmds:

@@ -916,6 +916,17 @@ pub fn build(b: *std.Build) void {
         b.step("load-failure-v2", "Load an extension whose registration fails: the load must fail with the reason").dependOn(&run.step);
     }
 
+    // The Arrow library the Arrow recipe uses (third_party/gld-arrow-zig/PATCHES.md), and its own tests, which read
+    // their golden files relative to the working directory.
+    const arrow_mod = b.createModule(.{
+        .root_source_file = b.path("third_party/gld-arrow-zig/src/arrow.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_arrow_vendor = b.addRunArtifact(b.addTest(.{ .root_module = arrow_mod }));
+    run_arrow_vendor.setCwd(b.path("third_party/gld-arrow-zig"));
+    b.step("test-arrow-vendor", "Run the tests of the vendored gld-arrow-zig library").dependOn(&run_arrow_vendor.step);
+
     // The cookbook: one small, tested example per capability of the v2 C API (docs/cookbook.md).
     const ext_cookbook_lib = b.addLibrary(.{
         .linkage = .dynamic,
@@ -928,6 +939,7 @@ pub fn build(b: *std.Build) void {
     });
     ext_cookbook_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
     ext_cookbook_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
+    ext_cookbook_lib.root_module.addImport("arrow", arrow_mod);
     ext_cookbook_lib.root_module.link_libc = true;
     const ext_cookbook_output = addDuckdbExtensionMetadata(b, ext_cookbook_lib, "zig_ext_cookbook", "v2.0.0", "v0.1.0", "C_STRUCT", duckdbPlatformString(target));
     const install_ext_cookbook = b.addInstallFile(ext_cookbook_output, "lib/zig_ext_cookbook.duckdb_extension");
