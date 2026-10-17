@@ -2094,15 +2094,40 @@ static one for the static embedding (below).
   in 1.3 s with lld-link, and the only undefined symbols (158) are libstdc++ and libgcc
   (`std::__cxx11`, `__once_proxy`, `__emutls_get_address`, ...): Zig's bundled libc++ is
   ABI-incompatible with them, the same situation as Linux, where `build.zig` passes the
-  system `libstdc++.a`. So a Windows static embed needs a MinGW GCC's `libstdc++.a` and
-  `libgcc` (`-Dlibstdcxx-path`-style); none is installed here, so it was not linked to the
-  end. The PR's finding that a `GROUP` linker script is rejected by lld/`zig cc` does not
-  touch us unless we split an archive ourselves; its `--start-group` workaround would be
-  needed then. The cross step (`cross_targets` has `x86_64-windows-gnu`) builds the
-  loadable extension DLL, which links no DuckDB code, so none of this applies to it.
-- **Not done:** a CI step for `v2-static-embed-poc` (it needs `libduckdb_static.a`
-  and a GNU libstdc++ on the host); porting the PoC extensions to the static
-  graph (not needed). - **`ct_add_numbers` overflow (`e9c10e3` v2, `3ef116c` v1), and v1's hand-written `zig_add_numbers`** (same message as the v2 one, "Overflow in addition of INT64 (a + b)!", through `scalarFunctionSetError`; mutations of both loops, the operand order and the error call are killed). The framework
+  system `libstdc++.a`. **A Windows static embed target now exists:** `zig build
+  v2-static-embed-poc -Dtarget=x86_64-windows-gnu` fetches the MinGW archives
+  (`duckdb_static_libs_v2_windows_mingw`, lazy) and links the real extension, built against
+  the static bindings, into `v2_static_embed_poc.exe` (PE32+, 42.7 MB; 56.5 MB with
+  `-Dstatic-extensions=loadable_extensions,core_functions,json,icu,parquet`). It needs a
+  MinGW GCC's runtime: `-Dlibstdcxx-path=`, `-Dlibgcc-eh-path=` and `-Dlibgcc-path=` (defaults
+  from `x86_64-w64-mingw32-g++-posix -print-file-name=...`); I used Ubuntu's
+  `g++-mingw-w64-x86-64-posix` 13 (unpacked with `dpkg -x`, no install). The header is
+  translated with `-DDUCKDB_STATIC_BUILD`, `ws2_32`, `wsock32` and `rstrtmgr` are linked,
+  and the step installs the `.exe` instead of running it when the target is not the host's.
+  **Not run: there is no Wine here, so only the link is verified** (the imports are the UCRT
+  and KERNEL32 DLLs). What the toolchain has to match, found by trying three: the archives
+  want (1) emulated TLS for `std::call_once` (`__emutls_v._ZSt11__once_call`, defined by the
+  MinGW posix-model libstdc++, not by a GCC 16 UCRT one from MSYS2, which uses native TLS)
+  and, for `libduckdb_httplib.a` only, (2) `std::fpos<_Mbstatet>` (a UCRT-flavoured
+  libstdc++, which Ubuntu's msvcrt-flavoured `fpos<int>` is not). No toolchain I found has
+  both, so on Windows the extension set leaves out `httplib` (the other five archives link),
+  and `httplib` waits for a matching libstdc++ or a shim of the one `basic_streambuf::seekpos`
+  symbol. Ubuntu's GCC 10 libstdc++ is no better (it lacks the `__once_call` TLS objects).
+  The cross step (`cross_targets` has `x86_64-windows-gnu`) builds the loadable extension DLL,
+  which links no DuckDB code, so none of this applies to it.
+- **Windows: the PR's `GROUP` script finding** (lld/`zig cc` reject a `GROUP` linker script in
+  place of a split archive) does not touch us unless we split an archive ourselves; its
+  `--start-group` workaround would be needed then. **The emulated-TLS finding above is the
+  one in duckdb-go-bindings#105** (`undefined reference to __emutls_v._ZSt11__once_call` /
+  `_ZSt15__once_callable` with MSYS2's GCC 16 against a prebuilt archive): that issue's
+  explanation is a GCC version mismatch, but the axis is whether the consumer's libstdc++
+  defines those two objects (emulated TLS) or uses native TLS, which the version only
+  correlates with. The symbols cannot be supplied by a shim: the libstdc++ `__once_proxy`
+  would read different variables than the archive's code writes. `build.zig` therefore
+  checks the `libstdc++.a` given for the Windows target and fails at configure time with
+  the reason, instead of the linker's undefined symbol (verified: Ubuntu's MinGW 13 posix
+  passes, MSYS2's GCC 16.2 is rejected).
+- **`ct_add_numbers` overflow (`e9c10e3` v2, `3ef116c` v1), and v1's hand-written `zig_add_numbers`** (same message as the v2 one, "Overflow in addition of INT64 (a + b)!", through `scalarFunctionSetError`; mutations of both loops, the operand order and the error call are killed). The framework
   now accepts an `implFn` returning `E!T` on the leaf, VARCHAR, BLOB, DECIMAL and
   ENUM paths (a nested type or VARIANT with an error union is a compile error):
   an error fails the query with `<function>: <error name>`, as out-of-range input
@@ -2113,6 +2138,9 @@ static one for the static embedding (below).
   paths and both error codes. Mutations of the code mapping, the message and the
   early return are killed; the unobservable one (continuing after an error) is
   not worth a test.
+- **Not done:** a CI step for `v2-static-embed-poc` (it needs `libduckdb_static.a`
+  and a GNU libstdc++ on the host); porting the PoC extensions to the static
+  graph (not needed).
 
 ### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
 

@@ -141,6 +141,14 @@
             .hash = "N-V-__8AABK7-Ap51O97S6GR_NBvztMr80sAma26ZeRToc7f",
             .lazy = true,
         },
+        // The same static libraries for Windows, built with MinGW (GCC 10.4, libstdc++) — NOT the plain
+        // `duckdb-static-libs-windows-amd64` tarball, which is an MSVC build (`.lib`, 206 MB). Only the
+        // `v2-static-embed-poc` steps ever fetch it, when built with `-Dtarget=x86_64-windows-gnu`.
+        .duckdb_static_libs_v2_windows_mingw = .{
+            .url = "https://duckdb-staging.duckdb.org/b15358c371/v2.0.0-alpha46057/duckdb/duckdb/github_release/duckdb-static-libs-windows-mingw.tar.gz",
+            .hash = "N-V-__8AAEyroQrxwDp_pcghYC3IF1IOZ33DpCJgaimqQwbw",
+            .lazy = true,
+        },
         // YAML parser, needed only by tools/gen_v2_bindings.zig, which
         // regenerates src/lib/duckdb_v2_{types,static,dynamic}.zig from the API spec
         // (`zig build gen-v2-bindings`). The spec uses block scalars and flow
