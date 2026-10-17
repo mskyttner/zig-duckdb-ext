@@ -8,7 +8,7 @@
 ///! docs/v2-migration-plan.md's "Function parameter naming & catalog
 ///! discoverability" section).
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 
 fn add(a: i64, b: i64) i64 {
     return a + b;

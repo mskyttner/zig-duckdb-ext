@@ -50,7 +50,7 @@
 ///! it at all (matching `duckdb_v2_dynamic.zig`'s own VARIANT caveats on the read
 ///! side), so there is nothing for a write path to call.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 
 /// Rows buffered per chunk before an auto-flush — matches DuckDB's standard

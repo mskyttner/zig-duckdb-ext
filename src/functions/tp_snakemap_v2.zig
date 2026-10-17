@@ -14,7 +14,7 @@
 ///!
 ///! Written against the generated bindings (`duckdb_v2_dynamic`), like hello_v2.zig.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 const renderSnakemap = @import("tp_snakemap.zig").renderSnakemap;
 

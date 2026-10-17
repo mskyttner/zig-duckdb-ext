@@ -15,7 +15,7 @@
 ///! slices in, slice out), with no DuckDB API dependency either version
 ///! needs to duplicate.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 const buildBar = @import("tp_bar.zig").buildBar;
 

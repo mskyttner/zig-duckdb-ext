@@ -7,7 +7,7 @@
 ///! `src/ext/init_v2_poc.zig`'s disposable experimentation harness has
 ///! something to register; not part of the permanent extension.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 
 // ─── Worked example ──────────────────────────────────────────────────────

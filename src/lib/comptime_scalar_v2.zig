@@ -135,7 +135,7 @@
 ///!   try MyFn.register(input); // input: *const v2.duckdb_v2_extension_input
 const std = @import("std");
 const v2_values = @import("v2_values");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 
 const UserContext = v2.duckdb_v2_context_handle;

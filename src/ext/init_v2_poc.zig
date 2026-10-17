@@ -15,7 +15,7 @@
 ///! `zig_v2_agg_sum_ct`, registered through `comptime_aggregate_v2.Function`.
 const std = @import("std");
 const v2_values = @import("v2_values");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 const examples = @import("duckdb_v2_examples");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
@@ -27,7 +27,7 @@ const matmul = @import("matmul");
 const nethogs_trace = @import("nethogs_trace");
 
 export fn zig_ext_v2_poc_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
-    if (!v2.init(input, "v2.0.0")) return;
+    if (!helpers.init(input, "v2.0.0")) return;
 
     var err: v2.duckdb_v2_error_info_handle = undefined;
 

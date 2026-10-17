@@ -9,7 +9,8 @@
 ///!
 ///! Registers all 9 functions ported off v1 — the full set — each written against the generated
 ///! bindings (`duckdb_v2_dynamic`), whose `init` fetches the function table from `get_api`.
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
+const helpers = @import("v2_helpers");
 const add_numbers = @import("../functions/add_numbers_v2.zig");
 const ct_add_numbers = @import("../functions/ct_add_numbers_v2.zig");
 const hello = @import("../functions/hello_v2.zig");
@@ -21,7 +22,7 @@ const tp_treemap = @import("../functions/tp_treemap_v2.zig");
 const tp_snakemap = @import("../functions/tp_snakemap_v2.zig");
 
 export fn zig_ext_v2_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
-    if (!v2.init(input, "v2.0.0")) return;
+    if (!helpers.init(input, "v2.0.0")) return;
 
     add_numbers.register(input) catch return;
     ct_add_numbers.register(input) catch return;

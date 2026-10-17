@@ -1799,8 +1799,11 @@ Both backends use the C names and re-export the one `duckdb_v2_types`
 module, so code written against an import name `duckdb_v2_api` builds
 against either: `src/lib/gen_hello.zig` is one `gen_hello()` source built
 both ways (`build.zig` binds `duckdb_v2_api` to one backend per
-instantiation). Which backend a consumer uses is its own build decision; no
-global switch exists yet.
+instantiation). Which backend a consumer uses is its own build decision: all
+the function modules, frameworks and helpers import `duckdb_v2_api`, and
+`build.zig`'s `v2Graph(api)` instantiates that whole set of modules against one
+backend — the dynamic one for the unit tests and every loadable extension, the
+static one for the static embedding (below).
 
 - **Generated files are committed.** `zig build gen-v2-bindings
   -Dv2-api-spec=<duckdb checkout>/api_spec/v2` rewrites them (formatted with
@@ -2031,11 +2034,34 @@ global switch exists yet.
   against DuckDB's own `sum(x * w) / sum(w)` per group. Mutations survive only
   in the table cardinality hint, which nothing observes. The `v2-poc-braille` and
   `v2-poc-stipple` extensions build but have no SQL suite of their own.
-- **Not done:** finally removing `duckdb_v2.zig`: move `initApi`, the
-  extension input and the value types (`Decimal`, `Blob`, `Date`, `Time`,
-  `Timestamp`, `Interval`, `Map`) somewhere generated-bindings-only, which means
-  the `Interval` a user function takes becomes the generated struct; a build option that binds `duckdb_v2_api` for
-  the frameworks. `ct_add_numbers` (v1 and v2) and v1's `zig_add_numbers` still
+- **`duckdb_v2.zig` removed (`4864c55`), and the backend choice (next commit).**
+  The entry points call `duckdb_v2_dynamic.init` (now `helpers.init`, below);
+  the value types a user function takes or returns (`Date`, `Time`, `Timestamp`,
+  `Interval`, `Blob`, `Decimal`) are in `src/lib/v2_values.zig` with tests; the
+  static-extension prototypes use the generated `duckdb_v2_extension_input`;
+  the translate-c of `duckdb_extension_v2.h` left the build. The hand-written
+  layer's only two tests (a zeroed vtable; `initApi` with a null `get_api`)
+  became one, on `helpers.init`. Nothing else was lost: no SQL test went through
+  the file itself. `v2_helpers.init` hides the one difference between backends: the
+  dynamic one fetches the table through `get_api`, the static one has nothing to
+  fetch (`@hasDecl`, no generator change).
+- **The build option, as it turned out: a backend per module graph, not a
+  switch.** A single `-D` flag cannot mean much here, because a loadable
+  `.duckdb_extension` can only use the dynamic backend (the static `extern`s
+  would be unresolved at `dlopen`) and a statically linked embedding can only
+  use the static one. So `v2Graph(b, target, optimize, api)` builds the shared
+  modules for one backend; unit tests and loadable extensions use the dynamic
+  graph, and `v2-static-embed-poc` builds the real `src/root_v2.zig` against the
+  static graph. **That makes the prototype that was documented as failing work:**
+  `LOAD zig_ext_v2` in a process with `libduckdb_static.a` linked now registers
+  all nine functions (`get_api` is null on this path, which the static backend
+  does not need), and the step runs `zig_hello`, `tp_bar`, `zig_tokenize` and
+  `ct_add_numbers` through it and checks the results. The earlier text claiming
+  this needed "a second, non-vtable v2 binding layer" is what the generated static
+  backend is.
+- **Not done:** a CI step for `v2-static-embed-poc` (it needs `libduckdb_static.a`
+  and a GNU libstdc++ on the host); porting the PoC extensions to the static
+  graph (not needed). `ct_add_numbers` (v1 and v2) and v1's `zig_add_numbers` still
   trap on overflow, now for the comptime framework as a design question: the
   framework calls a user function that returns a plain `i64`, so it has no way
   to report an error.

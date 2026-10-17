@@ -8,7 +8,7 @@
 ///! error of the query ("Overflow in addition of INT64 (a + b)!", as for DuckDB's own `+`), not a
 ///! trap that would take the whole process down.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 
 /// Reports `a + b` overflowing as the error of the query running the callback.

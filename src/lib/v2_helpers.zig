@@ -1,7 +1,15 @@
 ///! Small helpers over the generated v2 types (`duckdb_v2_dynamic`) that more than one function
 ///! module needs.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
+
+/// Gets the backend ready, whichever one `duckdb_v2_api` is bound to. The dynamic backend fetches
+/// the function table through `get_api` (returns false if DuckDB refuses the version); the static
+/// backend links the functions directly and has nothing to fetch. Call it first in the entrypoint.
+pub fn init(input: *const v2.duckdb_v2_extension_input, minimum_api_version: [*:0]const u8) bool {
+    if (comptime @hasDecl(v2, "init")) return v2.init(input, minimum_api_version);
+    return true;
+}
 
 /// Whether `row` is valid according to a vector's validity mask. A missing mask means every row is.
 pub fn isValid(validity: ?[*]const u64, row: u64) bool {
@@ -390,5 +398,5 @@ test "init fails cleanly when get_api is null" {
         .context = undefined,
         .err = undefined,
     };
-    try std.testing.expect(!v2.init(&input, "v2.0.0"));
+    try std.testing.expect(!init(&input, "v2.0.0"));
 }

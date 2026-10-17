@@ -12,7 +12,7 @@
 ///! way v1's hand-written hello.zig built and consumed its buffer inline. Not a gap worth closing
 ///! in the framework yet — most real functions either transform existing text or produce it like
 ///! this one does, and the two need different plumbing.
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 
 fn exec(

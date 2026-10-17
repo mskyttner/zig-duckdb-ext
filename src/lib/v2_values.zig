@@ -3,7 +3,7 @@
 ///! returns where a plain Zig type would be ambiguous: DATE/TIME/TIMESTAMP/INTERVAL, BLOB and
 ///! DECIMAL(width, scale). They have no DuckDB calls of their own.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 
 // ─── DATE/TIME/TIMESTAMP/INTERVAL: fixed-width, no Value boxing needed ──────
 //

@@ -101,7 +101,7 @@
 ///!   });
 ///!   try Sum.register(input); // input: *const v2.duckdb_v2_extension_input
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 
 fn duckdbV2TypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {

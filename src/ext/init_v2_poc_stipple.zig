@@ -18,7 +18,8 @@
 ///!   return convention in `comptime_scalar_v2.zig` yet) — acceptable for
 ///!   this POC.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
+const helpers = @import("v2_helpers");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const stipple_image = @import("stipple_image");
 
@@ -37,6 +38,6 @@ const StippleFromUrlCt = comptime_scalar_v2.FunctionNamed("stipple_from_url_ct",
 }.eval, &.{ "url", "width", "height", "n_points", "iterations" });
 
 export fn zig_ext_v2_poc_stipple_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
-    if (!v2.init(input, "v2.0.0")) return;
+    if (!helpers.init(input, "v2.0.0")) return;
     StippleFromUrlCt.register(input) catch {};
 }

@@ -8,7 +8,7 @@
 ///! proved here against the same custom, stateful tokenizing logic
 ///! `tokenize_v2.zig` hand-writes, not just a toy example.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const comptime_table_v2 = @import("comptime_table_v2");
 
 const State = struct {

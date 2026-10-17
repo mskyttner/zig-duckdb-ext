@@ -187,6 +187,95 @@ fn addCrossBuild(
     return addDuckdbExtensionMetadata(b, lib, unique_name, target_duckdb_version, extension_version, abi_type, platform);
 }
 
+/// The modules written against `duckdb_v2_api`, instantiated against one backend: `api` is the
+/// dynamic or the static generated bindings. Function modules import these by name.
+const V2Graph = struct {
+    helpers: *std.Build.Module,
+    values: *std.Build.Module,
+    examples: *std.Build.Module,
+    scalar: *std.Build.Module,
+    table: *std.Build.Module,
+    aggregate: *std.Build.Module,
+    appender: *std.Build.Module,
+    cast: *std.Build.Module,
+};
+
+fn v2Graph(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, api: *std.Build.Module) V2Graph {
+    const helpers = b.createModule(.{
+        .root_source_file = b.path("src/lib/v2_helpers.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "duckdb_v2_api", .module = api }},
+    });
+    const values = b.createModule(.{
+        .root_source_file = b.path("src/lib/v2_values.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "duckdb_v2_api", .module = api }},
+    });
+    const examples = b.createModule(.{
+        .root_source_file = b.path("src/lib/duckdb_v2_examples.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "duckdb_v2_api", .module = api },
+            .{ .name = "v2_helpers", .module = helpers },
+        },
+    });
+    // The frameworks need libc for `std.heap.c_allocator` (table, aggregate).
+    const scalar = b.createModule(.{
+        .root_source_file = b.path("src/lib/comptime_scalar_v2.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "duckdb_v2_api", .module = api },
+            .{ .name = "v2_values", .module = values },
+            .{ .name = "v2_helpers", .module = helpers },
+        },
+    });
+    const table = b.createModule(.{
+        .root_source_file = b.path("src/lib/comptime_table_v2.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "duckdb_v2_api", .module = api },
+            .{ .name = "v2_helpers", .module = helpers },
+        },
+    });
+    const aggregate = b.createModule(.{
+        .root_source_file = b.path("src/lib/comptime_aggregate_v2.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "duckdb_v2_api", .module = api },
+            .{ .name = "v2_helpers", .module = helpers },
+        },
+    });
+    const appender = b.createModule(.{
+        .root_source_file = b.path("src/lib/comptime_appender_v2.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "duckdb_v2_api", .module = api },
+            .{ .name = "v2_helpers", .module = helpers },
+        },
+    });
+    const cast = b.createModule(.{
+        .root_source_file = b.path("src/lib/comptime_cast_v2.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "duckdb_v2_api", .module = api },
+            .{ .name = "v2_values", .module = values },
+            .{ .name = "v2_helpers", .module = helpers },
+        },
+    });
+    return .{ .helpers = helpers, .values = values, .examples = examples, .scalar = scalar, .table = table, .aggregate = aggregate, .appender = appender, .cast = cast };
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -429,30 +518,25 @@ pub fn build(b: *std.Build) void {
         gen_v2_bindings_step.dependOn(&b.addFail("gen-v2-bindings needs -Dv2-api-spec=<duckdb checkout>/api_spec/v2").step);
     }
 
-    // The hand-written layer shares its single `get_api` call with the generated bindings.
-
-    // Helpers over the generated types that several function modules share.
-    // A module of its own, not a file imported by path, because the function modules and the
-    // comptime frameworks (themselves modules) all use it.
-    const v2_helpers_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib/v2_helpers.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod }},
-    });
-    const v2_helpers_check = b.addTest(.{ .root_module = v2_helpers_mod });
-    const run_v2_helpers_check = b.addRunArtifact(v2_helpers_check);
-
-    // The value types a user function of the comptime frameworks takes or returns (DATE, TIME,
-    // TIMESTAMP, INTERVAL, BLOB, DECIMAL).
-    const v2_values_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib/v2_values.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod }},
-    });
-    const v2_values_check = b.addTest(.{ .root_module = v2_values_mod });
-    const run_v2_values_check = b.addRunArtifact(v2_values_check);
+    // The modules written against `duckdb_v2_api`, bound to the dynamic backend. The unit tests and
+    // the loadable extensions use these; `v2Graph` builds the same set for another backend.
+    const v2_graph = v2Graph(b, target, optimize, duckdb_v2_dynamic_mod);
+    const v2_helpers_mod = v2_graph.helpers;
+    const v2_values_mod = v2_graph.values;
+    const duckdb_v2_examples_mod = v2_graph.examples;
+    const comptime_scalar_v2_mod = v2_graph.scalar;
+    const comptime_table_v2_mod = v2_graph.table;
+    const comptime_aggregate_v2_mod = v2_graph.aggregate;
+    const comptime_appender_v2_mod = v2_graph.appender;
+    const comptime_cast_v2_mod = v2_graph.cast;
+    const run_v2_helpers_check = b.addRunArtifact(b.addTest(.{ .root_module = v2_helpers_mod }));
+    const run_v2_values_check = b.addRunArtifact(b.addTest(.{ .root_module = v2_values_mod }));
+    const run_duckdb_v2_examples_check = b.addRunArtifact(b.addTest(.{ .root_module = duckdb_v2_examples_mod }));
+    const run_comptime_scalar_v2_check = b.addRunArtifact(b.addTest(.{ .root_module = comptime_scalar_v2_mod }));
+    const run_comptime_table_v2_check = b.addRunArtifact(b.addTest(.{ .root_module = comptime_table_v2_mod }));
+    const run_comptime_aggregate_v2_check = b.addRunArtifact(b.addTest(.{ .root_module = comptime_aggregate_v2_mod }));
+    const run_comptime_appender_v2_check = b.addRunArtifact(b.addTest(.{ .root_module = comptime_appender_v2_mod }));
+    const run_comptime_cast_v2_check = b.addRunArtifact(b.addTest(.{ .root_module = comptime_cast_v2_mod }));
     duckdb_static_mod.addImport("duckdb_v2_types", duckdb_v2_types_mod);
 
     // One hello-world scalar function written against `duckdb_v2_api`,
@@ -469,73 +553,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "duckdb_v2_api", .module = duckdb_v2_dynamic_mod }},
     });
-
-    // Worked examples kept separate from the bindings themselves — see the
-    // examples file's own doc comment for why.
-    const duckdb_v2_examples_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib/duckdb_v2_examples.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    duckdb_v2_examples_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
-    duckdb_v2_examples_mod.addImport("v2_helpers", v2_helpers_mod);
-    const duckdb_v2_examples_check = b.addTest(.{ .root_module = duckdb_v2_examples_mod });
-    const run_duckdb_v2_examples_check = b.addRunArtifact(duckdb_v2_examples_check);
-
-    const comptime_scalar_v2_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib/comptime_scalar_v2.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    comptime_scalar_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
-    comptime_scalar_v2_mod.addImport("v2_values", v2_values_mod);
-    comptime_scalar_v2_mod.addImport("v2_helpers", v2_helpers_mod);
-    const comptime_scalar_v2_check = b.addTest(.{ .root_module = comptime_scalar_v2_mod });
-    const run_comptime_scalar_v2_check = b.addRunArtifact(comptime_scalar_v2_check);
-
-    const comptime_table_v2_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib/comptime_table_v2.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    comptime_table_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
-    comptime_table_v2_mod.addImport("v2_helpers", v2_helpers_mod);
-    const comptime_table_v2_check = b.addTest(.{ .root_module = comptime_table_v2_mod });
-    const run_comptime_table_v2_check = b.addRunArtifact(comptime_table_v2_check);
-
-    const comptime_aggregate_v2_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib/comptime_aggregate_v2.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    comptime_aggregate_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
-    comptime_aggregate_v2_mod.addImport("v2_helpers", v2_helpers_mod);
-    const comptime_aggregate_v2_check = b.addTest(.{ .root_module = comptime_aggregate_v2_mod });
-    const run_comptime_aggregate_v2_check = b.addRunArtifact(comptime_aggregate_v2_check);
-
-    const comptime_appender_v2_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib/comptime_appender_v2.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    comptime_appender_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
-    comptime_appender_v2_mod.addImport("v2_helpers", v2_helpers_mod);
-    const comptime_appender_v2_check = b.addTest(.{ .root_module = comptime_appender_v2_mod });
-    const run_comptime_appender_v2_check = b.addRunArtifact(comptime_appender_v2_check);
-
-    const comptime_cast_v2_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib/comptime_cast_v2.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    comptime_cast_v2_mod.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
-    comptime_cast_v2_mod.addImport("v2_values", v2_values_mod);
-    comptime_cast_v2_mod.addImport("v2_helpers", v2_helpers_mod);
-    const comptime_cast_v2_check = b.addTest(.{ .root_module = comptime_cast_v2_mod });
-    const run_comptime_cast_v2_check = b.addRunArtifact(comptime_cast_v2_check);
 
     // No DuckDB dependency at all — a pure, independently testable kernel
     // module (see its own doc comment), used by the v2-poc matmul demo.
@@ -585,7 +602,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    v2_poc_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    v2_poc_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
     v2_poc_lib.root_module.addImport("v2_values", v2_values_mod);
     v2_poc_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
     v2_poc_lib.root_module.addImport("duckdb_v2_examples", duckdb_v2_examples_mod);
@@ -625,7 +642,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    ext_v2_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    ext_v2_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
     ext_v2_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
     ext_v2_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
     ext_v2_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
@@ -685,7 +702,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    v2_gen_poc_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+    v2_gen_poc_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
     v2_gen_poc_lib.root_module.addImport("gen_hello", gen_hello_dynamic_mod);
     v2_gen_poc_lib.root_module.link_libc = true;
     const v2_gen_poc_output = addDuckdbExtensionMetadata(b, v2_gen_poc_lib, "zig_ext_v2_gen_poc", "v2.0.0", "v0.0.0-poc", "C_STRUCT", duckdbPlatformString(target));
@@ -753,6 +770,9 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             }),
         });
+        // The real extension against the static backend: `get_api` is always null under static
+        // loading, and the direct-link bindings do not need it.
+        const static_graph = v2Graph(b, target, optimize, duckdb_v2_static_mod);
         static_embed_poc_exe.root_module.addImport("duckdb_v2_types", duckdb_v2_types_mod);
         static_embed_poc_exe.root_module.addImport("duckdb_static", duckdb_static_mod);
         static_embed_poc_exe.root_module.addImport("duckdb_full_c", duckdb_full_c.mod);
@@ -761,10 +781,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "duckdb_v2_dynamic", .module = duckdb_v2_dynamic_mod },
-                .{ .name = "v2_helpers", .module = v2_helpers_mod },
-                .{ .name = "comptime_scalar_v2", .module = comptime_scalar_v2_mod },
-                .{ .name = "comptime_table_v2", .module = comptime_table_v2_mod },
+                .{ .name = "duckdb_v2_api", .module = duckdb_v2_static_mod },
+                .{ .name = "v2_helpers", .module = static_graph.helpers },
+                .{ .name = "comptime_scalar_v2", .module = static_graph.scalar },
+                .{ .name = "comptime_table_v2", .module = static_graph.table },
             },
         }));
         static_embed_poc_exe.root_module.link_libc = true;
@@ -913,7 +933,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             }),
         });
-        v2_poc_braille_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+        v2_poc_braille_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
         v2_poc_braille_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
         v2_poc_braille_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
         v2_poc_braille_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
@@ -963,7 +983,7 @@ pub fn build(b: *std.Build) void {
                     .optimize = optimize,
                 }),
             });
-            v2_poc_stipple_lib.root_module.addImport("duckdb_v2_dynamic", duckdb_v2_dynamic_mod);
+            v2_poc_stipple_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
             v2_poc_stipple_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
             v2_poc_stipple_lib.root_module.addImport("comptime_scalar_v2", comptime_scalar_v2_mod);
             v2_poc_stipple_lib.root_module.addImport("stipple_image", stipple_image_mod);

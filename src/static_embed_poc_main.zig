@@ -18,28 +18,14 @@
 ///! file path, no `-unsigned` — exactly the use case this mechanism
 ///! exists for (a single self-contained embedding binary).
 ///!
-///! CONFIRMED, EXPECTED RESULT TODAY: registration, open, connect, and
-///! `LOAD zig_ext_v2;` all succeed — but the query that follows fails
-///! with "Scalar Function ... zig_v2_hello does not exist". This is not
-///! a bug in this file: traced to DuckDB's own C++ source
-///! (`src/main/capi/v2/capi_v2_extension.cpp`, the real line
-///! `input.get_api = statically_linked ? nullptr : ExtensionGetAPIV2;`)
-///! — for the static-extension path, `get_api` is ALWAYS null. This
-///! project's real `zig_ext_v2_init_c_api_v2` (`root_v2.zig`/`init_v2.zig`)
-///! calls `duckdb_v2_dynamic.init`, which does
-///! `input.get_api orelse return false` — so it silently returns having
-///! registered nothing, every time, under static loading. This
-///! disproves what `docs/v2-migration-plan.md`'s "Static linking"
-///! section previously assumed ("this project's existing init_v2.zig
-///! logic would very likely work unchanged under this path") — that
-///! assumption was reasonable but wrong, now corrected by this real
-///! test plus the source-level confirmation above. Making this actually
-///! register functions would need a second, non-vtable v2 binding layer
-///! that calls DuckDB's C API functions directly (resolved as real
-///! linked symbols at link time, matching the "mechanism 1" the
-///! migration plan already described as a substantial rewrite, not a
-///! toggle) — out of scope for this prototype, which exists to establish
-///! exactly where the real boundary is, not to build that layer.
+///! The extension is built against the STATIC generated bindings
+///! (`duckdb_v2_static`, plain `extern fn`s resolved at link time), because
+///! `build.zig` binds `duckdb_v2_api` for this graph to that backend: for the
+///! static-extension path DuckDB's own source passes `get_api = nullptr`
+///! (`src/main/capi/v2/capi_v2_extension.cpp`: `input.get_api = statically_linked
+///! ? nullptr : ExtensionGetAPIV2;`), which the dynamic bindings cannot work
+///! without. The same function modules that `ext-v2` builds against the dynamic
+///! backend therefore register here, unchanged, and the queries below run them.
 const std = @import("std");
 const v2_types = @import("duckdb_v2_types");
 const duckdb_static = @import("duckdb_static");
@@ -87,17 +73,26 @@ pub fn main() !void {
     }
     defer c.duckdb_disconnect(&connection);
 
+    try expectVarchar(connection, "LOAD zig_ext_v2; SELECT zig_hello('static world')", "Hello, static world!");
+    try expectVarchar(connection, "SELECT tp_bar(0.5, width := 4, \"on\" := 'X', \"off\" := '.')", "XX..");
+    try expectVarchar(connection, "SELECT token FROM zig_tokenize('a,b,c', ',') WHERE token_pos = 2", "c");
+    try expectVarchar(connection, "SELECT ct_add_numbers(40, 2)::VARCHAR", "42");
+    std.debug.print("all static-extension queries returned the expected result\n", .{});
+}
+
+fn expectVarchar(connection: c.duckdb_connection, query: [*:0]const u8, expected: []const u8) !void {
     var result: c.duckdb_result = undefined;
-    const query = "LOAD zig_ext_v2; SELECT zig_v2_hello('static world') AS msg;";
     const state = c.duckdb_query(connection, query, &result);
     defer c.duckdb_destroy_result(&result);
     if (state != c.DuckDBSuccess) {
-        const err_msg = c.duckdb_result_error(&result);
-        std.debug.print("query FAILED: {s}\n", .{err_msg});
+        std.debug.print("query FAILED: {s}\n  {s}\n", .{ query, c.duckdb_result_error(&result) });
         return error.QueryFailed;
     }
-
     const value = c.duckdb_value_varchar(&result, 0, 0);
     defer c.duckdb_free(value);
-    std.debug.print("query result: {s}\n", .{value});
+    const got = std.mem.span(value);
+    if (!std.mem.eql(u8, got, expected)) {
+        std.debug.print("query {s}: expected \"{s}\", got \"{s}\"\n", .{ query, expected, got });
+        return error.WrongResult;
+    }
 }

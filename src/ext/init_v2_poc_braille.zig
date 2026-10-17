@@ -32,7 +32,7 @@
 ///!   already proved, applied to a URL-shaped "table name" instead of a
 ///!   bare identifier.
 const std = @import("std");
-const v2 = @import("duckdb_v2_dynamic");
+const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const comptime_table_v2 = @import("comptime_table_v2");
@@ -154,7 +154,7 @@ fn braillereplacementScanCallback(info: v2.duckdb_v2_replacement_scan_info_handl
 }
 
 export fn zig_ext_v2_poc_braille_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
-    if (!v2.init(input, "v2.0.0")) return;
+    if (!helpers.init(input, "v2.0.0")) return;
     BrailleFromUrlCt.register(input) catch {};
     BrailleFromUrlTableCt.register(input) catch {};
     registerBrailleReplacementScan(input);
