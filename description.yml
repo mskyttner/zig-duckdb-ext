@@ -1,0 +1,52 @@
+# This project's own canonical metadata, in the schema DuckDB's official
+# community-extensions program expects
+# (https://duckdb.org/community_extensions/documentation#yaml-descriptor) —
+# a `description.yml` submitted via PR to
+# github.com/duckdb/community-extensions, under `extensions/<name>/`.
+#
+# This project is NOT currently submitting there, and this file is NOT
+# consumed by that program's own CI (see docs/rationale/0004_extension-
+# distribution-and-signing.md's "Decision" §5: a deliberate, separate,
+# later choice, not made yet). Kept here anyway, in the real standardized
+# shape rather than an invented ad hoc one, for two reasons: it's now the
+# single source of truth `zig build docs-index` reads to generate
+# docs/pages/index.html's prose (see src/gen_docs_index_main.zig), and it
+# keeps a future official submission cheap if that's ever decided.
+#
+# Deviates honestly from the schema in the one place this project's own
+# architecture actually differs: `extension.build` names the real build
+# tool (`zig`), not `cmake` — the schema's own docs say "at the moment
+# only `cmake` is supported" for the official program's CI, which this
+# project's Zig-native build deliberately doesn't use (ADR-0004's
+# "Decision" §1). A real submission would need to resolve that gap first;
+# this file doesn't pretend otherwise in the meantime.
+extension:
+  name: zig_ext
+  description: >-
+    A DuckDB extension written in Zig, demonstrating scalar and table
+    functions over the v1 C extension API, with an experimental parallel
+    port to DuckDB's unreleased v2.0 C API.
+  version: 0.1.0
+  language: Zig
+  build: zig
+  license: MIT
+  maintainers:
+    - mskyttner
+
+repo:
+  github: mskyttner/zig-duckdb-ext
+  ref: main
+
+docs:
+  hello_world: |
+    INSTALL zig_ext FROM 'https://mskyttner.github.io/zig-duckdb-ext/';
+    LOAD zig_ext;
+    SELECT zig_hello('world');
+    -- 'Hello, world!'
+  extended_description: >-
+    Demonstrates building DuckDB scalar and table functions in Zig with
+    direct C-API interop (no C++ ABI coupling to DuckDB internals), and a
+    comptime framework that generates vectorized callbacks and
+    registration boilerplate from plain per-row Zig functions. A
+    parallel, in-progress port to DuckDB's staged, unreleased v2.0 C API
+    lives on this same repository's duckdb-v2-api branch.

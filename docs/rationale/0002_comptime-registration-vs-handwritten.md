@@ -135,3 +135,24 @@ available for:
   (requires `duckdb_string_t` extraction and `vectorAssignStringElementLen`).
 - Consider a `comptime` table function wrapper that auto-generates bind/init
   callbacks from declarative column/state definitions.
+
+## Update (2026-10-17): the table function numbers above did not measure the work
+
+The scalar result stands. The table function row does not: it ran `zig_tokenize('a,b,c,d,e', ',')` in a `LATERAL`
+subquery, and a table function here takes constants (DuckDB rejects a column as an argument: "does not support lateral
+join column parameters"), so the subquery was uncorrelated and ran once, with `count(*)` over the cross join. The
+0.001s was the time of one call, not of 500K rows. The binary size row is also out of date: the extension now holds all
+of the v1 functions (4.0 MB), so the size of the hand-written and comptime versions can no longer be told apart, and
+that table never compared the machine code, only the file size.
+
+Re-measured with `task bench` (Linux x86-64, DuckDB v1.5.6, Zig 0.17.0, ReleaseSafe): `zig_add_numbers` 0.015s against
+`ct_add_numbers` 0.014s over 10M rows, and `zig_tokenize` 0.024s against `ct_tokenize` 0.024s over one input of 1M
+tokens. The conclusion (no measurable cost) holds on the same grounds: the differences are within run-to-run variance.
+
+The line counts in the ergonomics table (60 and 20) are now 74 and 23: both versions of `add_numbers` report overflow as
+an error of the query.
+
+Found on the way, and fixed: `tokenizeExec` called `std.mem.span` on the input in every exec call, which measures the whole
+string each time, so the cost grew with the square of the input (1M tokens: 0.5s, 5M tokens: 12s), in the hand-written
+and the comptime version alike. The lengths are now measured once in bind: 5M tokens take 0.09s. `test/sql/zig_ext.test`
+has a test with 2M tokens.

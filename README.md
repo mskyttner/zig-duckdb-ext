@@ -1,6 +1,7 @@
 # zig-duckdb-ext
 
-A DuckDB extension written in Zig, targeting the DuckDB v1.2.0 C extension API.
+A DuckDB extension written in Zig, targeting the DuckDB v1.2.0 C extension API (the stable one), with a v2 C API
+port and a cookbook alongside it: see [Two C APIs, and a cookbook](#two-c-apis-and-a-cookbook).
 
 Demonstrates how to build scalar and table functions for DuckDB using Zig's
 `@cImport` for zero-cost C interop, `defer`/`errdefer` for safe resource
@@ -63,11 +64,50 @@ Supports multi-character delimiters:
 SELECT * FROM zig_tokenize('x::y::z', '::');
 ```
 
+## Two C APIs, and a cookbook
+
+The repository builds the same kind of extension against **both** DuckDB C extension APIs:
+
+- **v1**, the stable API that the LTS and stable DuckDB releases ship: the `zig_ext` extension above
+  (`zig build ext`, sources in `src/functions`, tested by `test/sql/zig_ext.test`).
+- **v2**, the API of DuckDB 2.0, through bindings that are generated from DuckDB's API specification
+  (`src/lib/duckdb_v2_{types,static,dynamic}.zig`, `zig build gen-v2-bindings`). A dynamic backend (an extension
+  loaded by DuckDB) and a static one (DuckDB linked into a program) share the types. The real v2 extension is
+  `zig build ext-v2`; `zig build v2-poc` is a proof of concept that exercises the comptime frameworks over many types.
+
+On top of v2 sits the **cookbook**, `zig_ext_cookbook` (`zig build ext-cookbook`, sources in `src/cookbook`): one small,
+tested example per capability of the API, each file with a header that says what it shows and why.
+
+| Recipe | Shows |
+|---|---|
+| `config_options`, `scalar_callbacks`, `aggregate_callbacks`, `table_callbacks` | settings through the context; every callback of a scalar, aggregate and parallel table function, in the order they run |
+| `copy_format` | a custom `COPY` format, both directions |
+| `custom_type` | a custom logical type |
+| `arrow_ipc` | an Arrow IPC `COPY` format and a reader table function, over a vendored pure-Zig library (`third_party/gld-arrow-zig`, MIT, with a [patch note](third_party/gld-arrow-zig/PATCHES.md)) |
+| `arrow_c_data` | the Arrow C Data Interface: an exporter and an importer, and the rules for producing `ArrowSchema` and `ArrowArray` structs |
+| `file_system` | files through DuckDB's file system instead of libc (`file:` URLs, remote file systems) |
+| `logging` | `context_log`, and what the log configuration does with an entry |
+| `names` | identifiers, qualified names and UTF-8 validation, which work on text alone |
+| `embed_sql` | a program that **hosts** DuckDB: SQL, prepared statements, Arrow results, the tokenizer and the parser |
+
+Some calls take a connection, which an extension is never given; those are only in `embed_sql`. The capability matrix
+in [docs/cookbook.md](docs/cookbook.md) lists, per capability, the file that shows it for v1 and for v2, and
+[docs/api-v2-coverage.md](docs/api-v2-coverage.md) is a generated report of the v2 functions that no code references yet
+(`task coverage:api-v2`; `task check:all` fails when it is stale).
+
+```sql
+LOAD 'zig-out/lib/zig_ext_cookbook.duckdb_extension';
+
+SELECT * FROM zig_cookbook_qname_parts('main."a.b".select');
+COPY (SELECT 42 AS id, 'duck' AS name) TO '/tmp/x.arrows' (FORMAT zig_cookbook_arrow_ipc);
+SELECT * FROM zig_cookbook_read_arrow('/tmp/x.arrows');
+```
+
 ## Comptime Function Framework
 
 The extension includes a `comptime` registration framework that generates
 vectorized callbacks and DuckDB registration boilerplate from simple per-row
-Zig functions. This eliminates ~40 lines of boilerplate per scalar function
+Zig functions. This eliminates about 50 lines of boilerplate per scalar function
 with zero runtime overhead.
 
 ### Scalar functions
@@ -89,7 +129,7 @@ pub fn register(conn: db.Connection) !void {
 }
 ```
 
-**20 lines** vs. 60 for the hand-written equivalent. The generated code
+**23 lines** vs. 74 for the hand-written equivalent (`ct_add_numbers.zig` and `add_numbers.zig`, both reporting overflow as a query error). The generated code
 benchmarks identically — see [ADR-0002](docs/rationale/0002_comptime-registration-vs-handwritten.md).
 
 Supported types: `i8`, `i16`, `i32`, `i64`, `f32`, `f64`, `bool`.
@@ -113,22 +153,32 @@ const MyTable = comptime_table.Function(struct {
 
 ### Benchmark Results
 
-`task bench` over 10M rows (ReleaseSafe, macOS arm64):
+`task bench` (Linux x86-64, DuckDB v1.5.6, Zig 0.17.0, ReleaseSafe; the median of 3 runs):
 
-| Function | Hand-written | Comptime | Delta |
-|---|---|---|---|
-| `add_numbers` (10M rows) | 0.024s | 0.025s | ~0% |
-| `tokenize` (500K rows) | 0.001s | 0.001s | 0% |
-| Binary size | 278K | 278K | 0% |
+| Function | Hand-written | Comptime |
+|---|---|---|
+| `add_numbers`, `sum` over 10M rows | 0.015s | 0.014s |
+| `tokenize`, one input of 1M tokens | 0.024s | 0.024s |
 
-The comptime layer compiles away completely — identical machine code, zero
-binary bloat. Details in [ADR-0002](docs/rationale/0002_comptime-registration-vs-handwritten.md).
+The comptime layer costs nothing measurable: the differences are within run-to-run variance. (The timings are not
+comparable across machines; an earlier table from macOS arm64 had 0.024s and 0.025s for `add_numbers`.) The binary
+sizes of the two versions are no longer compared, because the extension holds every v1 function in one 4 MB file.
+Details in [ADR-0002](docs/rationale/0002_comptime-registration-vs-handwritten.md), including a correction to its
+table function and size results.
+
+A table function takes constants, not a column, so the `tokenize` benchmark splits one long input.
 
 ## Prerequisites
 
-- [Zig](https://ziglang.org/download/) 0.15.2+
+- [Zig](https://ziglang.org/download/) 0.17.0 (the version CI uses; `build.zig.zon` allows 0.16.0 as a minimum, but the code needs 0.17 syntax)
 - [DuckDB](https://duckdb.org/) CLI (for running the extension)
 - [Task](https://taskfile.dev/) (optional, for convenience commands)
+- Optional: Python with `pyarrow` (`task verify:arrow-pyarrow`), and Docker (the Windows and QEMU checks, `task verify:static-windows`)
+
+Writing your own extension: [docs/creating-an-extension.md](docs/creating-an-extension.md) has the steps (build, entry
+point, a function with real parameter names, tests, publishing) and what `duckdb_functions()` can and cannot show.
+
+The v2 SQL tests run a DuckDB CLI that the build fetches and pins; the v1 suite (`task sqllogictest`) runs the `duckdb` on your `PATH`, so it needs a v1 release (CI installs v1.5.6).
 
 ## Build
 
@@ -141,6 +191,17 @@ zig build -Doptimize=ReleaseSafe
 ```
 
 The build produces `zig-out/lib/zig_ext.duckdb_extension`.
+
+The extension name, targeted DuckDB C extension API version, and recorded
+extension version are configurable build options, each defaulting to the
+values above:
+
+```sh
+zig build -Dname=my_ext -Dapi-version=v1.3.0 -Dextension-version=v0.2.0
+```
+
+produces `zig-out/lib/my_ext.duckdb_extension`, loadable via `LOAD
+'zig-out/lib/my_ext.duckdb_extension';`.
 
 With Task:
 
@@ -172,10 +233,17 @@ SELECT * FROM zig_tokenize('hello world', ' ');
 # Unit tests
 task test:unit
 
-# End-to-end SQL smoke tests (builds the extension first)
-task test:e2e
+# End-to-end SQL tests (sqllogictest format), one suite per extension
+task sqllogictest              # v1
+task sqllogictest:v2           # v2
+task sqllogictest:v2:poc       # v2 proof of concept (comptime frameworks)
+task sqllogictest:cookbook     # the cookbook
 
-# All quality gates (format + build + unit tests)
+# A failing registration must fail the load with its reason
+task test:load-failure
+
+# Quality gates: format + build + unit tests + a current API coverage report.
+# This does NOT run the SQL suites above; CI (.github/workflows/ci.yml) runs both.
 task check:all
 
 # Benchmark hand-written vs comptime (release build)
@@ -186,14 +254,20 @@ task bench
 
 ```
 src/
-  ext/                Extension entry point and function registration
+  ext/                Extension entry points and function registration (v1, v2, PoC, cookbook)
   functions/          Function implementations (hand-written and comptime)
-  lib/                DuckDB C API bindings + comptime frameworks
+  cookbook/           One recipe per capability of the v2 API
+  lib/                DuckDB C API bindings (v1 and generated v2) + comptime frameworks
+third_party/          Vendored libraries (gld-arrow-zig, with its patch note)
+tools/                Binding generator, coverage report, Arrow fixture generator and PyArrow check
 build.zig             Build configuration
-build.zig.zon         Package manifest
-duckdb_capi/          Vendored DuckDB C headers (v1.2.0)
-test/sql/             End-to-end SQL test scripts
+build.zig.zon         Package manifest — also pins the DuckDB C headers (v1.5.6), fetched at build time rather than committed locally
+test/sql/             End-to-end SQL tests (sqllogictest .test format)
+test/data/            Fixtures for the tests (Arrow files written by PyArrow)
+docs/cookbook.md      Capability matrix: where each part of the C API is shown
+docs/api-v2-coverage.md  Generated: v2 functions that no code references yet
 docs/rationale/       Architecture decision records
+.github/workflows/   ci.yml (every push and pull request), ci-extended.yml (weekly), release.yml (tags)
 ```
 
 ## Platform Support
@@ -201,7 +275,8 @@ docs/rationale/       Architecture decision records
 | Platform       | Architecture |
 |----------------|--------------|
 | macOS          | arm64, amd64 |
-| Linux          | arm64, amd64 |
+| Linux (glibc)  | arm64, amd64 |
+| Linux (musl)   | arm64, amd64 |
 | Windows        | amd64        |
 
 ## Available Tasks
@@ -211,8 +286,16 @@ docs/rationale/       Architecture decision records
 | `task build`         | Compile the extension (debug)       |
 | `task build:release` | Compile the extension (release)     |
 | `task test:unit`     | Run unit tests                      |
-| `task test:e2e`      | Run end-to-end SQL tests            |
-| `task check:all`     | Run all quality gates               |
+| `task sqllogictest`  | Run end-to-end SQL tests (v1)       |
+| `task sqllogictest:v2` | Run end-to-end SQL tests (v2)     |
+| `task sqllogictest:v2:poc` | SQL tests of the v2 comptime frameworks |
+| `task sqllogictest:cookbook` | SQL tests of the cookbook extension |
+| `task test:load-failure` | A failing registration fails the load with its reason |
+| `task test:arrow-vendor` | Tests of the vendored Arrow library |
+| `task verify:arrow-pyarrow` | Read the cookbook's Arrow files with PyArrow (needs `pyarrow`; run `sqllogictest:cookbook` first) |
+| `task coverage:api-v2` | Rewrite the v2 API coverage report |
+| `task verify:static-windows` | Windows static embedding under Wine, in a container |
+| `task check:all`     | Format, build, unit tests, coverage report is current (not the SQL suites) |
 | `task bench`         | Benchmark hand-written vs comptime  |
 | `task format`        | Format Zig source files             |
 | `task demo:hello`    | Demo the zig_hello function         |
@@ -224,8 +307,9 @@ docs/rationale/       Architecture decision records
 
 ## Design Decisions
 
-- **Zig over C++**: Direct C header consumption via `@cImport`, no ABI
-  coupling to DuckDB's C++ internals. See
+- **Zig over C++**: no ABI coupling to DuckDB's C++ internals. The v1
+  extension consumes the C headers via `@cImport`; the v2 one uses Zig
+  declarations generated from DuckDB's API specification. See
   [ADR-0001](docs/rationale/0001_zig-over-cpp-for-duckdb-ext.md).
 - **Comptime registration**: Zero-cost `comptime` generics generate
   vectorized callbacks from per-row functions — same performance as
@@ -233,7 +317,11 @@ docs/rationale/       Architecture decision records
   [ADR-0002](docs/rationale/0002_comptime-registration-vs-handwritten.md).
 - **Vectorized execution**: All functions process entire DataChunks rather
   than row-at-a-time, matching DuckDB's execution model.
-- **No external dependencies**: Only the Zig standard library and vendored
-  DuckDB C headers.
+- **Few dependencies**: the v1 extension needs only the Zig standard library
+  and the DuckDB C headers, which `build.zig.zon` pins and the build fetches
+  (they are not committed). The cookbook adds one vendored library, the
+  pure-Zig `gld-arrow-zig` in `third_party/` (MIT, with a patch note). The
+  v2 tests fetch a pinned DuckDB CLI, and the embedding recipe fetches DuckDB's
+  static libraries.
 - **Explicit memory management**: Allocators are passed explicitly; `defer`
   and `errdefer` ensure cleanup on all paths.

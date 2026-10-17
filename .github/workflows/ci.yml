@@ -1,0 +1,76 @@
+name: CI
+
+# The gates a change has to pass: what `task check:all` runs (format, build, unit tests, a fresh API coverage report)
+# and every SQL suite. `check:all` does not run the SQL suites, so they are listed here. The steps call `zig build`
+# directly, so the runner needs no Task binary; the format step checks (`zig fmt --check`), where the `format` task
+# rewrites. The slower or optional checks (the embedding recipe against DuckDB's static libraries, PyArrow reading the
+# Arrow files) are in ci-extended.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The same version as release.yml; build.zig.zon's minimum is lower, but the code needs 0.17.
+  ZIG_VERSION: "0.17.0"
+  # The v1 extension's SQL tests run the `duckdb` on the PATH (the v2 suites use a CLI that the build fetches), and
+  # it is the version release.yml publishes for.
+  DUCKDB_V1_VERSION: "v1.5.6"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      # The v1 suite needs a v1 CLI on the PATH: a tagged release, so the download never changes.
+      - name: Install the DuckDB v1 CLI
+        run: |
+          curl -fsSL -o duckdb_cli.zip "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_V1_VERSION}/duckdb_cli-linux-amd64.zip"
+          unzip -q duckdb_cli.zip -d "$RUNNER_TEMP/duckdb-v1"
+          echo "$RUNNER_TEMP/duckdb-v1" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/duckdb-v1/duckdb" --version
+
+      # The v2 suites run the pinned alpha CLI, which the build fetches (build.zig.zon), so they need the network.
+      - name: Format
+        run: zig fmt --check src/
+
+      - name: Build
+        run: zig build
+
+      - name: Unit tests
+        run: zig build test
+
+      - name: The API coverage report is current
+        run: zig build coverage-api-v2-check
+
+      - name: SQL tests, v1 extension
+        run: zig build sqllogictest
+
+      - name: SQL tests, v2 extension
+        run: zig build sqllogictest-v2
+
+      - name: SQL tests, v2 proof of concept (comptime frameworks)
+        run: zig build sqllogictest-v2-poc
+
+      - name: SQL tests, v2 cookbook extension
+        run: zig build sqllogictest-cookbook
+
+      - name: A failing registration fails the load with its reason
+        run: zig build load-failure-v2
+
+      - name: Tests of the vendored Arrow library
+        run: zig build test-arrow-vendor

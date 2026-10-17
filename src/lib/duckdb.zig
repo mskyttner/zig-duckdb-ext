@@ -6,13 +6,10 @@
 ///! C header's opaque handle types and the `duckdb_ext_api_v1` function pointer struct
 ///! into idiomatic Zig types.
 const std = @import("std");
-pub const c = @cImport({
-    // We define DUCKDB_API_EXCLUDE_FUNCTIONS to prevent the header from declaring
-    // direct function prototypes — extensions call through function pointers, not linked symbols.
-    @cDefine("DUCKDB_API_EXCLUDE_FUNCTIONS", "1");
-    @cInclude("duckdb.h");
-    @cInclude("duckdb_extension.h");
-});
+// Translated ahead of time by build.zig (zig fetch'd `translate-c` package)
+// rather than via an inline @cImport — removed in Zig 0.17.0. See build.zig
+// for the DUCKDB_API_EXCLUDE_FUNCTIONS define this used to set inline.
+pub const c = @import("duckdb_c");
 
 // ─── Re-export opaque handle types ───────────────────────────────────────────
 
@@ -75,6 +72,20 @@ pub const Uhugeint = c.duckdb_uhugeint;
 pub const Decimal = c.duckdb_decimal;
 pub const StringT = c.duckdb_string_t;
 pub const String = c.duckdb_string;
+
+/// Decode a DuckDB string value to a Zig slice without copying.
+/// The returned slice points into DuckDB-owned memory; valid for the duration
+/// of the current vector execution callback.
+pub fn stringSlice(s: *const StringT) []const u8 {
+    const len = s.value.inlined.length;
+    // SAFETY: duckdb_string_t is a union: when length ≤ 12 the bytes are inlined in
+    // `inlined.inlined`; when length > 12 `pointer.ptr` is guaranteed non-null by DuckDB.
+    const ptr: [*]const u8 = if (len <= 12)
+        &s.value.inlined.inlined
+    else
+        @ptrCast(s.value.pointer.ptr.?);
+    return ptr[0..len];
+}
 pub const Blob = c.duckdb_blob;
 pub const ListEntry = c.duckdb_list_entry;
 pub const QueryProgress = c.duckdb_query_progress_type;
@@ -225,6 +236,14 @@ pub fn vectorGetValidity(vector: Vector) ?[*]u64 {
 
 pub fn vectorEnsureValidityWritable(vector: Vector) void {
     getApi().duckdb_vector_ensure_validity_writable.?(vector);
+}
+
+pub fn listVectorGetChild(vector: Vector) Vector {
+    return getApi().duckdb_list_vector_get_child.?(vector);
+}
+
+pub fn listVectorGetSize(vector: Vector) idx_t {
+    return getApi().duckdb_list_vector_get_size.?(vector);
 }
 
 pub fn vectorAssignStringElement(vector: Vector, index: idx_t, str: [*:0]const u8) void {

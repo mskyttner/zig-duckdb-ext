@@ -1,8 +1,14 @@
 ///! Standalone tool that appends DuckDB extension metadata to a shared library.
 ///!
-///! Usage: append_metadata <input_lib> <ext_name> <duckdb_version> <ext_version> <abi_type> <output_file>
+///! Usage: append_metadata <input_lib> <ext_name> <duckdb_version> <ext_version> <abi_type> <platform> <output_file>
 ///!
-///! This is invoked as a build step by build.zig.
+///! This is invoked as a build step by build.zig. `platform` is passed in
+///! explicitly by the caller rather than self-detected from this tool's
+///! own compile target: this tool always runs on the build host (it has
+///! to — the build needs its output immediately), but the library it's
+///! stamping may be cross-compiled for a different target entirely, so
+///! the host's own platform would be wrong for anything but a native
+///! build.
 const std = @import("std");
 const Io = std.Io;
 const Dir = Io.Dir;
@@ -20,10 +26,8 @@ pub fn main(init: std.process.Init) !void {
     const duckdb_version = args.next() orelse return error.MissingArgument;
     const ext_version = args.next() orelse return error.MissingArgument;
     const abi_type = args.next() orelse return error.MissingArgument;
+    const platform = args.next() orelse return error.MissingArgument;
     const output_path = args.next() orelse return error.MissingArgument;
-
-    // Detect platform
-    const platform = detectPlatform();
 
     // Copy input to output
     const cwd = Dir.cwd();
@@ -77,43 +81,16 @@ pub fn main(init: std.process.Init) !void {
     try writePaddedField(&writer, "4"); // FIELD1 (magic value)
 
     // Write 256 bytes for digital signature placeholder
-    const zeroes = [_]u8{0} ** 256;
+    const zeroes: [256]u8 = @splat(0);
     try writer.interface.writeAll(&zeroes);
 
     try writer.flush();
-
-    // Log to stderr
-    const stderr = File.stderr();
-    var stderr_buf: [512]u8 = undefined;
-    var stderr_writer = stderr.writer(io, &stderr_buf);
-    try stderr_writer.interface.print("Created DuckDB extension: {s}\n  Platform: {s}\n  DuckDB version: {s}\n  Extension version: {s}\n  ABI type: {s}\n", .{ output_path, platform, duckdb_version, ext_version, abi_type });
-    try stderr_writer.flush();
 }
 
 /// Write a 32-byte zero-padded field to the output.
 fn writePaddedField(writer: *File.Writer, value: []const u8) !void {
-    var field: [32]u8 = [_]u8{0} ** 32;
+    var field: [32]u8 = @splat(0);
     const len = @min(value.len, 32);
     @memcpy(field[0..len], value[0..len]);
     try writer.interface.writeAll(&field);
-}
-
-/// Detect the current platform for the DuckDB extension metadata.
-fn detectPlatform() []const u8 {
-    const builtin = @import("builtin");
-    const os = builtin.target.os.tag;
-    const arch = builtin.target.cpu.arch;
-
-    if (os == .macos) {
-        if (arch == .aarch64) return "osx_arm64";
-        if (arch == .x86_64) return "osx_amd64";
-    }
-    if (os == .linux) {
-        if (arch == .aarch64) return "linux_arm64";
-        if (arch == .x86_64) return "linux_amd64";
-    }
-    if (os == .windows) {
-        if (arch == .x86_64) return "windows_amd64";
-    }
-    return "unknown";
 }

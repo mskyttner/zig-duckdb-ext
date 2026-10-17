@@ -1,0 +1,19 @@
+.{
+    .name = .treemap,
+    .version = "0.0.0",
+    .fingerprint = 0xf2670b296b7a63f2,
+    .minimum_zig_version = "0.16.0",
+
+    .dependencies = .{
+        .zigtui = .{
+            .url = "git+https://github.com/adxdits/zigtui.git#efe36746b88efa4df14d35b1a6d27c309d2c6c9e",
+            .hash = "zigtui-0.1.0-U55PSKGWBADndJTK1rEbJcV-JIl0KmEY0bBmV7b46n58",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

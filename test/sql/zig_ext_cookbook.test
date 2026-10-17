@@ -1,0 +1,1927 @@
+# name: test/sql/zig_ext_cookbook.test
+# description: The v2 cookbook extension, one section per example (see docs/cookbook.md)
+# group: [zig_ext_cookbook]
+
+statement ok
+SET allow_extensions_metadata_mismatch=true
+
+require zig_ext_cookbook
+
+# ── Reading configuration: zig_cookbook_option / zig_cookbook_options (src/cookbook/config_options.zig) ──
+# DuckDB's own current_setting() and duckdb_settings() are the oracle.
+
+query T
+SELECT zig_cookbook_option('threads') = current_setting('threads')::VARCHAR
+----
+true
+
+# The connection's SET is what a function sees (a context reads the session's value).
+statement ok
+SET threads = 3
+
+query T
+SELECT zig_cookbook_option('threads')
+----
+3
+
+statement ok
+SET threads = 2
+
+query T
+SELECT zig_cookbook_option('threads')
+----
+2
+
+# A string option, in the form DuckDB stores it.
+statement ok
+SET default_null_order = 'nulls_first'
+
+query T
+SELECT zig_cookbook_option('default_null_order')
+----
+NULLS_FIRST
+
+# Names are case-insensitive, and an alias resolves to the option it stands for.
+query T
+SELECT zig_cookbook_option('DEFAULT_NULL_ORDER')
+----
+NULLS_FIRST
+
+query T
+SELECT zig_cookbook_option('wal_autocheckpoint') = zig_cookbook_option('checkpoint_threshold')
+----
+true
+
+# Settings of other types, in the form current_setting() gives them (it needs a constant name, so one each).
+query TT
+SELECT zig_cookbook_option('memory_limit') = current_setting('memory_limit')::VARCHAR, zig_cookbook_option('enable_progress_bar') = current_setting('enable_progress_bar')::VARCHAR
+----
+true
+true
+
+# A NULL name gives NULL, on some rows of a column or on all.
+query T
+SELECT zig_cookbook_option(NULL) IS NULL
+----
+true
+
+query I
+SELECT count(zig_cookbook_option(CASE WHEN i % 3 = 0 THEN NULL ELSE 'threads' END)) FROM generate_series(1, 200) t(i)
+----
+134
+
+# An unknown option is an error of the query, with DuckDB's reason.
+statement error
+SELECT zig_cookbook_option('no_such_option')
+----
+unknown configuration option: no_such_option
+
+statement error
+SELECT zig_cookbook_option(CASE WHEN i = 150 THEN 'no_such_option' ELSE 'threads' END) FROM generate_series(1, 200) t(i)
+----
+unknown configuration option: no_such_option
+
+# The listing: aliases are not listed, each option once.
+query T
+SELECT count(*) > 100 AND count(DISTINCT name) = count(*) FROM zig_cookbook_options()
+----
+true
+
+# Every listed option that duckdb_settings() also knows has the same description, and its setting is the
+# one a function reads by name.
+query I
+SELECT count(*) FROM zig_cookbook_options() o JOIN duckdb_settings() s ON o.name = s.name WHERE o.description <> s.description
+----
+0
+
+query T
+SELECT count(*) > 100 FROM zig_cookbook_options() o JOIN duckdb_settings() s ON o.name = s.name
+----
+true
+
+query T
+SELECT bool_and(o.setting = zig_cookbook_option(o.name)) FROM zig_cookbook_options() o
+----
+true
+
+# Nothing is dropped: the only names of duckdb_settings() missing from the listing are aliases of listed
+# options, which the listing leaves out and zig_cookbook_option() resolves. The total is that of the pinned
+# DuckDB build; update it when the pin moves.
+query T
+SELECT string_agg(s.name, ',' ORDER BY s.name) FROM duckdb_settings() s WHERE s.name NOT IN (SELECT name FROM zig_cookbook_options())
+----
+memory_limit,null_order,profile_output,streaming_buffer_size,user,wal_autocheckpoint,worker_threads
+
+query I
+SELECT count(*) FROM zig_cookbook_options()
+----
+201
+
+# Aliases: those the listing reports that duckdb_settings() knows are exactly the names it lists but the
+# listing does not (hidden options have aliases of their own, which duckdb_settings() does not show). No
+# option of the pinned build has two aliases, so the comma between aliases is not exercised by real data.
+query T
+SELECT string_agg(a, ',' ORDER BY a) FROM (SELECT unnest(string_split(aliases, ',')) a FROM zig_cookbook_options() WHERE aliases <> '') WHERE a IN (SELECT name FROM duckdb_settings())
+----
+memory_limit,null_order,profile_output,streaming_buffer_size,user,wal_autocheckpoint,worker_threads
+
+query TT
+SELECT name, aliases FROM zig_cookbook_options() WHERE aliases LIKE '%wal_autocheckpoint%' OR aliases LIKE '%worker_threads%' ORDER BY name
+----
+checkpoint_threshold
+wal_autocheckpoint
+threads
+worker_threads
+
+# The listing is a snapshot taken at bind, of this session's settings; the default stays the default.
+query TT
+SELECT setting, default_setting FROM zig_cookbook_options() WHERE name = 'default_null_order'
+----
+NULLS_FIRST
+NULLS_LAST
+
+query T
+SELECT setting FROM zig_cookbook_options() WHERE name = 'threads'
+----
+2
+
+# The default scope is reported by name: where a bare `SET name = value` writes it. (Before alpha48730 this column was
+# the target scope: GLOBAL_DEFAULT, GLOBAL_ONLY, LOCAL_DEFAULT or UNKNOWN.)
+query T
+SELECT string_agg(DISTINCT scope, ',' ORDER BY scope) FROM zig_cookbook_options()
+----
+GLOBAL,SESSION
+
+query T
+SELECT scope FROM zig_cookbook_options() WHERE name = 'default_null_order'
+----
+GLOBAL
+
+# The table function is usable like any other: filter, join, repeat.
+query I
+SELECT count(*) FROM zig_cookbook_options() a, zig_cookbook_options() b WHERE a.name = 'threads' AND b.name = 'threads'
+----
+1
+
+# ── The callbacks of a scalar call site (src/cookbook/scalar_callbacks.zig) ───────────────────────────
+# DuckDB's own operators and round() are the oracle.
+
+# Resolve types: the result type follows the argument, per call site.
+query TTTTT
+SELECT typeof(zig_cookbook_negate(5::TINYINT)), typeof(zig_cookbook_negate(5::SMALLINT)), typeof(zig_cookbook_negate(5)), typeof(zig_cookbook_negate(5::BIGINT)), typeof(zig_cookbook_negate(2.5::FLOAT))
+----
+TINYINT
+SMALLINT
+INTEGER
+BIGINT
+FLOAT
+
+query T
+SELECT typeof(zig_cookbook_negate(2.5::DOUBLE))
+----
+DOUBLE
+
+query TTT
+SELECT zig_cookbook_negate(5::TINYINT), zig_cookbook_negate(-2.5::DOUBLE), zig_cookbook_negate(NULL::INTEGER)
+----
+-5
+2.5
+NULL
+
+# Over a column, with NULLs, in every supported type.
+query TTTTTT
+SELECT bool_and(zig_cookbook_negate(x::TINYINT) = -(x::TINYINT)), bool_and(zig_cookbook_negate(x::SMALLINT) = -(x::SMALLINT)), bool_and(zig_cookbook_negate(x::INTEGER) = -(x::INTEGER)), bool_and(zig_cookbook_negate(x::BIGINT) = -(x::BIGINT)), bool_and(zig_cookbook_negate(x::FLOAT) = -(x::FLOAT)), bool_and(zig_cookbook_negate(x::DOUBLE) = -(x::DOUBLE)) FROM range(-100, 100) t(x)
+----
+true
+true
+true
+true
+true
+true
+
+query II
+SELECT sum(zig_cookbook_negate(i::BIGINT)), count(zig_cookbook_negate(CASE WHEN i % 7 = 0 THEN NULL ELSE i::BIGINT END)) FROM range(1, 201) t(i)
+----
+-20100
+172
+
+query T
+SELECT sum(zig_cookbook_negate(i::DOUBLE)) FROM range(1, 4001) t(i)
+----
+-8002000.0
+
+# Bind: a type that cannot be negated fails while the query is planned, with a message of our own;
+# so does an overflow, while the data is read.
+statement error
+SELECT zig_cookbook_negate('text')
+----
+zig_cookbook_negate: cannot negate a value of type VARCHAR
+
+statement error
+SELECT zig_cookbook_negate(DATE '2020-01-01')
+----
+zig_cookbook_negate: cannot negate a value of type DATE
+
+statement error
+SELECT zig_cookbook_negate(-127::TINYINT - 1::TINYINT)
+----
+Overflow in negation of TINYINT (-128)
+
+statement error
+SELECT zig_cookbook_negate(CASE WHEN i = 150 THEN -9223372036854775807 - 1 ELSE i END) FROM range(1, 200) t(i)
+----
+Overflow in negation of BIGINT (-9223372036854775808)
+
+# Bind: the constant argument is read once. DuckDB's round() is the oracle, on halves and on thirds.
+query TTTT
+SELECT zig_cookbook_round_to(3.14159::DOUBLE, 2), zig_cookbook_round_to(2.5::DOUBLE, 0), zig_cookbook_round_to(-2.5::DOUBLE, 0), zig_cookbook_round_to(1234.5678::DOUBLE, 1)
+----
+3.14
+3.0
+-3.0
+1234.6
+
+query TT
+SELECT bool_and(zig_cookbook_round_to(x / 8.0, 2) = round(x / 8.0, 2)), bool_and(zig_cookbook_round_to(x / 7.0, 3) = round(x / 7.0, 3)) FROM range(-4000, 4000) t(x)
+----
+true
+true
+
+query I
+SELECT count(zig_cookbook_round_to(CASE WHEN i % 4 = 0 THEN NULL ELSE i / 3.0 END, 1)) FROM range(1, 201) t(i)
+----
+150
+
+query T
+SELECT zig_cookbook_round_to(1.5::DOUBLE, NULL) IS NULL
+----
+true
+
+# A digits that is not constant is refused at bind time, in our words; so is one out of range.
+statement error
+SELECT zig_cookbook_round_to(x, d) FROM (VALUES (1.5::DOUBLE, 1)) t(x, d)
+----
+zig_cookbook_round_to: digits must be a constant, not a column
+
+statement error
+SELECT zig_cookbook_round_to(1.5::DOUBLE, 99)
+----
+zig_cookbook_round_to: digits must be between 0 and 15, got 99
+
+query T
+SELECT zig_cookbook_round_to(1.25::DOUBLE, 15)
+----
+1.25
+
+statement error
+SELECT zig_cookbook_round_to(1.5::DOUBLE, 16)
+----
+zig_cookbook_round_to: digits must be between 0 and 15, got 16
+
+statement error
+SELECT zig_cookbook_round_to(1.5::DOUBLE, -1)
+----
+zig_cookbook_round_to: digits must be between 0 and 15, got -1
+
+# User data: one exec callback, three functions.
+query TTTT
+SELECT zig_cookbook_times2(21), zig_cookbook_times3(7), zig_cookbook_times10(-4), zig_cookbook_times10(NULL)
+----
+42
+21
+-40
+NULL
+
+query III
+SELECT sum(zig_cookbook_times2(i)), sum(zig_cookbook_times3(i)), sum(zig_cookbook_times10(i)) FROM range(1, 101) t(i)
+----
+10100
+15150
+50500
+
+statement error
+SELECT zig_cookbook_times10(9223372036854775807)
+----
+Overflow in multiplication of INT64 (9223372036854775807 * 10)!
+
+# Init data and a property: one counter per worker and call site, so with one thread it counts 1, 2, 3, ... over
+# all chunks of the query; VOLATILE keeps DuckDB from evaluating the argument-less call once.
+statement ok
+SET threads = 1
+
+query IIII
+SELECT min(n), max(n), count(DISTINCT n), count(*) FROM (SELECT zig_cookbook_row_number() AS n FROM range(5000))
+----
+1
+5000
+5000
+5000
+
+query T
+SELECT bool_and(n = i + 1) FROM (SELECT i, zig_cookbook_row_number() AS n FROM range(5000) t(i))
+----
+true
+
+# Two call sites in one query have a counter each.
+query III
+SELECT zig_cookbook_row_number(), zig_cookbook_row_number(), i FROM range(3) t(i)
+----
+1
+1
+0
+2
+2
+1
+3
+3
+2
+
+# The counter starts again with the next query.
+query I
+SELECT max(zig_cookbook_row_number()) FROM range(10)
+----
+10
+
+# ── An aggregate with bind, bind data, user data and properties (src/cookbook/aggregate_callbacks.zig) ──
+# DuckDB's own sum() and last() are the oracle.
+
+statement ok
+SET threads = 4
+
+# Bind: the result type follows the argument; one set of callbacks serves both functions (user data: the power).
+query TTTT
+SELECT typeof(zig_cookbook_agg_sum(x)), typeof(zig_cookbook_agg_sum(x::DOUBLE)), typeof(zig_cookbook_agg_sumsq(x)), typeof(zig_cookbook_agg_sumsq(x::DOUBLE)) FROM range(1, 5) t(x)
+----
+BIGINT
+DOUBLE
+BIGINT
+DOUBLE
+
+query TTTT
+SELECT zig_cookbook_agg_sum(x) = sum(x), zig_cookbook_agg_sumsq(x) = sum(x * x), zig_cookbook_agg_sum(x::DOUBLE) = sum(x::DOUBLE), zig_cookbook_agg_sumsq(x::DOUBLE) = sum(x::DOUBLE * x::DOUBLE) FROM range(1, 101) t(x)
+----
+true
+true
+true
+true
+
+# Several workers, many chunks, so that combine runs: 2 million rows on 4 threads. The doubles stay below 2^53,
+# where their sums are exact in any order.
+query TT
+SELECT zig_cookbook_agg_sum(x), zig_cookbook_agg_sumsq(x) FROM range(1, 2000001) t(x)
+----
+2000001000000
+2666668666667000000
+
+query TT
+SELECT zig_cookbook_agg_sum(x::DOUBLE), zig_cookbook_agg_sumsq(x::DOUBLE) FROM range(1, 100001) t(x)
+----
+5000050000.0
+333338333350000.0
+
+# Groups, with NULLs on some rows.
+query II
+SELECT count(*), bool_and(ok) FROM (SELECT zig_cookbook_agg_sum(x) IS NOT DISTINCT FROM sum(x) AS ok FROM (SELECT x % 7 AS g, CASE WHEN x % 11 = 0 THEN NULL ELSE x::BIGINT END AS x FROM range(1, 5001) t(x)) GROUP BY g)
+----
+7
+true
+
+# A sum of nothing is NULL, as SQL's SUM; so is a sum of NULLs.
+query TTT
+SELECT zig_cookbook_agg_sum(x) IS NULL, zig_cookbook_agg_sumsq(x) IS NULL, zig_cookbook_agg_sum(x::DOUBLE) IS NULL FROM (SELECT 1::BIGINT AS x WHERE false)
+----
+true
+true
+true
+
+query TT
+SELECT zig_cookbook_agg_sum(x) IS NULL, zig_cookbook_agg_sumsq(x::DOUBLE) IS NULL FROM (SELECT NULL::BIGINT AS x)
+----
+true
+true
+
+# DISTINCT is honoured (the default says the result depends on it); an ORDER BY inside the call is accepted.
+query TT
+SELECT zig_cookbook_agg_sum(DISTINCT x) = sum(DISTINCT x), zig_cookbook_agg_sum(x ORDER BY x DESC) = sum(x) FROM (VALUES (1::BIGINT), (1), (2), (5), (5), (NULL)) t(x)
+----
+true
+true
+
+# Bind: other types are refused while the query is planned, with our message.
+statement error
+SELECT zig_cookbook_agg_sum(x::INTEGER) FROM range(1, 5) t(x)
+----
+zig_cookbook_agg_sum: expected BIGINT or DOUBLE, got INTEGER
+
+statement error
+SELECT zig_cookbook_agg_sumsq('text')
+----
+zig_cookbook_agg_sum: expected BIGINT or DOUBLE, got VARCHAR
+
+statement error
+SELECT zig_cookbook_agg_sum(x) FROM (SELECT 9223372036854775807::BIGINT AS x UNION ALL SELECT 1)
+----
+Overflow in the sum of INT64
+
+statement error
+SELECT zig_cookbook_agg_sumsq(x) FROM (SELECT 4000000000::BIGINT AS x)
+----
+Overflow in the sum of INT64
+
+# An order dependent aggregate (the default): the rows are sorted first when asked. It keeps the last non-NULL
+# value (SQL's last() keeps a NULL, hence the FILTER on the oracle).
+query TTTT
+SELECT zig_cookbook_agg_last(x ORDER BY y DESC), last(x ORDER BY y DESC), zig_cookbook_agg_last(x ORDER BY y), last(x ORDER BY y) FROM (VALUES (1, 30), (2, 10), (3, 20)) t(x, y)
+----
+2
+2
+1
+1
+
+query T
+SELECT bool_and(ok) FROM (SELECT zig_cookbook_agg_last(x ORDER BY y) IS NOT DISTINCT FROM last(x ORDER BY y) FILTER (WHERE x IS NOT NULL) AS ok FROM (SELECT x % 5 AS g, CASE WHEN x % 13 = 0 THEN NULL ELSE x::BIGINT END AS x, (x * 7919) % 3001 AS y FROM range(1, 3001) t(x)) GROUP BY g)
+----
+true
+
+query T
+SELECT zig_cookbook_agg_last(x) IS NULL FROM (SELECT NULL::BIGINT AS x)
+----
+true
+
+# ── A parallel table function (src/cookbook/table_callbacks.zig) ───────────────────────────────────────
+# Blocks of 1000 rows (the function's user data); every row once, whichever thread produced it.
+
+statement ok
+SET threads = 8
+
+query IIIII
+SELECT count(*), min(value), max(value), max(block), bool_and(block = value // 1000) FROM zig_cookbook_parallel_range(10500)
+----
+10500
+0
+10499
+10
+true
+
+query T
+SELECT bool_and(c = 1000 OR block = 10) FROM (SELECT block, count(*) AS c FROM zig_cookbook_parallel_range(10500) GROUP BY block)
+----
+true
+
+query III
+SELECT count(*), count(DISTINCT value), sum(value) FROM zig_cookbook_parallel_range(1000000)
+----
+1000000
+1000000
+499999500000
+
+query II
+SELECT count(*), sum(value) FROM zig_cookbook_parallel_range(1)
+----
+1
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_parallel_range(0)
+----
+0
+
+query II
+SELECT value, block FROM zig_cookbook_parallel_range(3) ORDER BY value
+----
+0
+0
+1
+0
+2
+0
+
+# max_threads is an upper bound on the local states: workers are numbered from 0 as init_local runs.
+query T
+SELECT max(worker) < 1 FROM zig_cookbook_parallel_range(1000000, max_threads := 1)
+----
+true
+
+query T
+SELECT max(worker) < 2 FROM zig_cookbook_parallel_range(1000000, max_threads := 2)
+----
+true
+
+query T
+SELECT max(worker) < 4 FROM zig_cookbook_parallel_range(1000000)
+----
+true
+
+# Insertion order is kept even when threads scan in parallel, because each chunk reports its batch index.
+statement ok
+CREATE TABLE cookbook_parallel AS SELECT value FROM zig_cookbook_parallel_range(300000)
+
+query II
+SELECT count(*), bool_and(value = rowid) FROM cookbook_parallel
+----
+300000
+true
+
+statement ok
+INSERT INTO cookbook_parallel SELECT value FROM zig_cookbook_parallel_range(300000)
+
+query II
+SELECT count(*), bool_and(value = (rowid % 300000)) FROM cookbook_parallel
+----
+600000
+true
+
+# The partition data callback is what lets that INSERT run in parallel: without it the rows are still in order, but a
+# single worker produces them. 5 million rows are 5000 blocks, enough for every thread to get some; this observes the
+# scheduler, so it is the one test here that could in principle fail on a machine that cannot run threads in parallel.
+statement ok
+CREATE TABLE cookbook_workers AS SELECT value, worker FROM zig_cookbook_parallel_range(5000000, 8)
+
+query II
+SELECT count(DISTINCT worker) > 1, bool_and(value = rowid) FROM cookbook_workers
+----
+true
+true
+
+query T
+SELECT bool_and(value = rn - 1) FROM (SELECT value, row_number() OVER () AS rn FROM zig_cookbook_parallel_range(300000))
+----
+true
+
+# Bind: bad arguments are refused while the query is planned.
+statement error
+SELECT * FROM zig_cookbook_parallel_range(-1)
+----
+zig_cookbook_parallel_range: n must not be negative, got -1
+
+statement error
+SELECT * FROM zig_cookbook_parallel_range(10, max_threads := 0)
+----
+zig_cookbook_parallel_range: max_threads must be between 1 and 64, got 0
+
+statement error
+SELECT * FROM zig_cookbook_parallel_range(10, max_threads := 65)
+----
+zig_cookbook_parallel_range: max_threads must be between 1 and 64, got 65
+
+# ── A custom COPY format (src/cookbook/copy_format.zig) ───────────────────────────────────────────────
+# DuckDB's read_text() and its own CSV writer are the oracles for the file; COPY ... FROM reads it back.
+
+statement ok
+SET threads = 4
+
+statement ok
+COPY (SELECT i, 'name' || i AS s, i * 1.5 AS d, i % 3 = 0 AS b FROM range(1, 6) t(i)) TO '/tmp/zig_ext_cookbook_copy_a.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT replace(content, chr(10), '<NL>') FROM read_text('/tmp/zig_ext_cookbook_copy_a.txt')
+----
+1|name1|1.5|false<NL>2|name2|3.0|false<NL>3|name3|4.5|true<NL>4|name4|6.0|false<NL>5|name5|7.5|false<NL>
+
+# On plain data the file is what DuckDB's CSV writer writes with the same delimiter.
+statement ok
+COPY (SELECT i, 'name' || i AS s, i * 1.5 AS d, i % 3 = 0 AS b FROM range(1, 6) t(i)) TO '/tmp/zig_ext_cookbook_copy_csv.txt' (FORMAT csv, DELIMITER '|', HEADER false)
+
+query T
+SELECT (SELECT content FROM read_text('/tmp/zig_ext_cookbook_copy_a.txt')) = (SELECT content FROM read_text('/tmp/zig_ext_cookbook_copy_csv.txt'))
+----
+true
+
+# Options: a delimiter, a header line, a NULL marker.
+statement ok
+COPY (SELECT i, CASE WHEN i % 2 = 0 THEN NULL ELSE 'v' || i END AS s FROM range(1, 5) t(i)) TO '/tmp/zig_ext_cookbook_copy_b.txt' (FORMAT zig_cookbook_lines, DELIMITER ';', HEADER, NULL_TEXT 'NULL')
+
+query T
+SELECT replace(content, chr(10), '<NL>') FROM read_text('/tmp/zig_ext_cookbook_copy_b.txt')
+----
+i;s<NL>1;v1<NL>2;NULL<NL>3;v3<NL>4;NULL<NL>
+
+# The empty NULL marker is what CSV does.
+statement ok
+COPY (SELECT i, CASE WHEN i % 2 = 0 THEN NULL ELSE 'v' || i END AS s FROM range(1, 5) t(i)) TO '/tmp/zig_ext_cookbook_copy_b2.txt' (FORMAT zig_cookbook_lines, NULL_TEXT '')
+
+statement ok
+COPY (SELECT i, CASE WHEN i % 2 = 0 THEN NULL ELSE 'v' || i END AS s FROM range(1, 5) t(i)) TO '/tmp/zig_ext_cookbook_copy_b3.txt' (FORMAT csv, DELIMITER '|', HEADER false)
+
+query T
+SELECT (SELECT content FROM read_text('/tmp/zig_ext_cookbook_copy_b2.txt')) = (SELECT content FROM read_text('/tmp/zig_ext_cookbook_copy_b3.txt'))
+----
+true
+
+# COPY FROM: the table's types decide how the text is read; the header is skipped.
+statement ok
+CREATE TABLE cookbook_copy_in (i BIGINT, s VARCHAR, d DOUBLE, b BOOLEAN)
+
+statement ok
+COPY cookbook_copy_in FROM '/tmp/zig_ext_cookbook_copy_a.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT string_agg(i || ':' || s || ':' || d || ':' || b, ',' ORDER BY i) FROM cookbook_copy_in
+----
+1:name1:1.5:false,2:name2:3.0:false,3:name3:4.5:true,4:name4:6.0:false,5:name5:7.5:false
+
+statement ok
+CREATE TABLE cookbook_copy_in2 (i BIGINT, s VARCHAR)
+
+statement ok
+COPY cookbook_copy_in2 FROM '/tmp/zig_ext_cookbook_copy_b.txt' (FORMAT zig_cookbook_lines, DELIMITER ';', HEADER, NULL_TEXT 'NULL')
+
+query T
+SELECT string_agg(i || ':' || coalesce(s, '<null>'), ',' ORDER BY i) FROM cookbook_copy_in2
+----
+1:v1,2:<null>,3:v3,4:<null>
+
+# Text that needs escaping survives a round trip: the delimiter, a backslash, a line break, the NULL marker as text.
+statement ok
+CREATE TABLE cookbook_copy_tricky AS SELECT * FROM (VALUES (1, 'a|b', E'line\nbreak', '\N'), (2, 'back\slash', E'cr\rlf', ''), (3, NULL, '|', '||')) t(id, x, y, z)
+
+statement ok
+COPY cookbook_copy_tricky TO '/tmp/zig_ext_cookbook_copy_tricky.txt' (FORMAT zig_cookbook_lines)
+
+statement ok
+CREATE TABLE cookbook_copy_tricky_in (id INTEGER, x VARCHAR, y VARCHAR, z VARCHAR)
+
+statement ok
+COPY cookbook_copy_tricky_in FROM '/tmp/zig_ext_cookbook_copy_tricky.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT count(*) FROM (SELECT * FROM cookbook_copy_tricky EXCEPT SELECT * FROM cookbook_copy_tricky_in) UNION ALL SELECT count(*) FROM (SELECT * FROM cookbook_copy_tricky_in EXCEPT SELECT * FROM cookbook_copy_tricky)
+----
+0
+0
+
+# Every type travels as text: dates, decimals, nested values, blobs.
+statement ok
+CREATE TABLE cookbook_copy_types AS SELECT DATE '2024-02-29' AS d, TIMESTAMP '2024-02-29 12:34:56.789' AS ts, 12345.678::DECIMAL(10, 3) AS dec, [1, 2, 3] AS l, {'a': 1, 'b': 'x'} AS s, 'AB'::BLOB AS bl, 170141183460469231731687303715884105727::HUGEINT AS h
+
+statement ok
+COPY cookbook_copy_types TO '/tmp/zig_ext_cookbook_copy_types.txt' (FORMAT zig_cookbook_lines)
+
+statement ok
+CREATE TABLE cookbook_copy_types_in (d DATE, ts TIMESTAMP, dec DECIMAL(10, 3), l INTEGER[], s STRUCT(a INTEGER, b VARCHAR), bl BLOB, h HUGEINT)
+
+statement ok
+COPY cookbook_copy_types_in FROM '/tmp/zig_ext_cookbook_copy_types.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT count(*) FROM (SELECT * FROM cookbook_copy_types EXCEPT SELECT * FROM cookbook_copy_types_in)
+----
+0
+
+# Many rows: several batches prepared on several threads, flushed in order; read back in chunks of 2048.
+statement ok
+COPY (SELECT i AS id, 'row ' || i AS s, i % 7 = 0 AS b FROM range(200000) t(i)) TO '/tmp/zig_ext_cookbook_copy_big.txt' (FORMAT zig_cookbook_lines)
+
+statement ok
+CREATE TABLE cookbook_copy_big (id BIGINT, s VARCHAR, b BOOLEAN)
+
+statement ok
+COPY cookbook_copy_big FROM '/tmp/zig_ext_cookbook_copy_big.txt' (FORMAT zig_cookbook_lines)
+
+query IIT
+SELECT count(*), sum(id), bool_and(id = rowid) FROM cookbook_copy_big
+----
+200000
+19999900000
+true
+
+query T
+SELECT count(*) FROM (SELECT * FROM cookbook_copy_big EXCEPT SELECT i, 'row ' || i, i % 7 = 0 FROM range(200000) t(i))
+----
+0
+
+# BATCH_SIZE of the statement decides the batches; the file is the same.
+statement ok
+COPY (SELECT i AS id, 'row ' || i AS s, i % 7 = 0 AS b FROM range(200000) t(i)) TO '/tmp/zig_ext_cookbook_copy_big2.txt' (FORMAT zig_cookbook_lines, BATCH_SIZE 333)
+
+query T
+SELECT (SELECT md5(content) FROM read_text('/tmp/zig_ext_cookbook_copy_big.txt')) = (SELECT md5(content) FROM read_text('/tmp/zig_ext_cookbook_copy_big2.txt'))
+----
+true
+
+# A file with Windows line ends reads the same.
+statement ok
+COPY (SELECT 'x|1' || chr(13) AS l UNION ALL SELECT 'y|2' || chr(13)) TO '/tmp/zig_ext_cookbook_copy_crlf.txt' (FORMAT csv, QUOTE '', ESCAPE '', HEADER false)
+
+statement ok
+CREATE TABLE cookbook_copy_crlf (a VARCHAR, b VARCHAR)
+
+statement ok
+COPY cookbook_copy_crlf FROM '/tmp/zig_ext_cookbook_copy_crlf.txt' (FORMAT zig_cookbook_lines)
+
+query T
+SELECT string_agg(a || ':' || b || ':' || length(b), ',' ORDER BY a) FROM cookbook_copy_crlf
+----
+x:1:1,y:2:1
+
+# An empty source writes an empty file (with HEADER, only the header), and an empty file reads as no rows.
+statement ok
+COPY (SELECT 1 AS a, 2 AS b WHERE false) TO '/tmp/zig_ext_cookbook_copy_empty.txt' (FORMAT zig_cookbook_lines, HEADER)
+
+query T
+SELECT replace(content, chr(10), '<NL>') FROM read_text('/tmp/zig_ext_cookbook_copy_empty.txt')
+----
+a|b<NL>
+
+statement ok
+CREATE TABLE cookbook_copy_empty (a INTEGER, b INTEGER)
+
+statement ok
+COPY cookbook_copy_empty FROM '/tmp/zig_ext_cookbook_copy_empty.txt' (FORMAT zig_cookbook_lines, HEADER)
+
+query I
+SELECT count(*) FROM cookbook_copy_empty
+----
+0
+
+# Errors: options and delimiters are checked at bind time, a missing file too, and a row that does not fit the table
+# fails the statement with the line number.
+statement error
+COPY (SELECT 1) TO '/tmp/zig_ext_cookbook_copy_err.txt' (FORMAT zig_cookbook_lines, FOO 1)
+----
+zig_cookbook_lines: unknown option foo
+
+statement error
+COPY (SELECT 1) TO '/tmp/zig_ext_cookbook_copy_err.txt' (FORMAT zig_cookbook_lines, DELIMITER 'ab')
+----
+DELIMITER must be one character
+
+statement error
+COPY (SELECT 1) TO '/tmp/zig_ext_cookbook_copy_err.txt' (FORMAT zig_cookbook_lines, DELIMITER '\')
+----
+DELIMITER must be one character
+
+statement error
+COPY cookbook_copy_in FROM '/tmp/zig_ext_cookbook_copy_missing.txt' (FORMAT zig_cookbook_lines)
+----
+zig_cookbook_lines: cannot open /tmp/zig_ext_cookbook_copy_missing.txt
+
+statement error
+COPY cookbook_copy_in2 FROM '/tmp/zig_ext_cookbook_copy_a.txt' (FORMAT zig_cookbook_lines)
+----
+zig_cookbook_lines: line 1: expected 2 fields, got 4
+
+statement error
+COPY cookbook_copy_in FROM '/tmp/zig_ext_cookbook_copy_b.txt' (FORMAT zig_cookbook_lines, DELIMITER ';')
+----
+zig_cookbook_lines: line 1: expected 4 fields, got 2
+
+# A value that does not fit the column's type is DuckDB's cast error.
+statement error
+COPY cookbook_copy_in FROM '/tmp/zig_ext_cookbook_copy_tricky.txt' (FORMAT zig_cookbook_lines)
+----
+Could not convert string
+
+# ── A custom type with casts and functions (src/cookbook/custom_type.zig) ───────────────────────────────
+# DuckDB's own DOUBLE arithmetic and casts are the oracle.
+
+# The type exists, and a value says what it is.
+query TT
+SELECT typeof('21.5C'::zig_cookbook_celsius), '21.5C'::zig_cookbook_celsius::VARCHAR
+----
+zig_cookbook_celsius
+21.5°C
+
+# VARCHAR -> celsius accepts a number with an optional C or °C, and spaces.
+query TTTTT
+SELECT '21.5'::zig_cookbook_celsius::DOUBLE, '21.5c'::zig_cookbook_celsius::DOUBLE, ' -3 °C '::zig_cookbook_celsius::DOUBLE, '1e2C'::zig_cookbook_celsius::DOUBLE, '-273.15'::zig_cookbook_celsius::DOUBLE
+----
+21.5
+21.5
+-3.0
+100.0
+-273.15
+
+# ... and refuses what it cannot read, below absolute zero, in the words of the cast; TRY_CAST gives NULL.
+statement error
+SELECT 'warm'::zig_cookbook_celsius
+----
+Could not convert string 'warm' to zig_cookbook_celsius
+
+statement error
+SELECT '-273.16C'::zig_cookbook_celsius
+----
+Could not convert string '-273.16C' to zig_cookbook_celsius
+
+statement error
+SELECT ''::zig_cookbook_celsius
+----
+Could not convert string '' to zig_cookbook_celsius
+
+query TTTTT
+SELECT TRY_CAST('warm' AS zig_cookbook_celsius) IS NULL, TRY_CAST('-300' AS zig_cookbook_celsius) IS NULL, TRY_CAST(NULL AS zig_cookbook_celsius) IS NULL, TRY_CAST('inf' AS zig_cookbook_celsius) IS NULL, TRY_CAST('20' AS zig_cookbook_celsius) IS NULL
+----
+true
+true
+true
+true
+false
+
+# DOUBLE -> celsius checks the bound too; celsius -> VARCHAR writes the value and the unit.
+query TTT
+SELECT (-5.5::DOUBLE)::zig_cookbook_celsius::VARCHAR, (0.0::DOUBLE)::zig_cookbook_celsius::VARCHAR, TRY_CAST((-500.0::DOUBLE) AS zig_cookbook_celsius) IS NULL
+----
+-5.5°C
+0°C
+true
+
+statement error
+SELECT (-500.0::DOUBLE)::zig_cookbook_celsius
+----
+below absolute zero
+
+# Over a column, with NULLs on some rows; writing a value and reading it back gives the value.
+query IIT
+SELECT count(*), count(t), bool_and(t::DOUBLE = x) FROM (SELECT x, CASE WHEN i % 5 = 0 THEN NULL ELSE x::DOUBLE::zig_cookbook_celsius END AS t FROM (SELECT i, i / 4.0 - 100 AS x FROM range(1, 2001) r(i)) s(i, x)) u WHERE t IS NOT NULL OR true
+----
+2000
+1600
+true
+
+query T
+SELECT bool_and(CAST(CAST(c AS VARCHAR) AS zig_cookbook_celsius)::DOUBLE = c::DOUBLE) FROM (SELECT (i / 8.0 - 50)::DOUBLE::zig_cookbook_celsius AS c FROM range(1, 1001) r(i))
+----
+true
+
+# Functions that take the type and return it.
+query TTTT
+SELECT zig_cookbook_to_fahrenheit('100C'), zig_cookbook_to_fahrenheit('-40C'), zig_cookbook_to_fahrenheit('0C'), zig_cookbook_to_fahrenheit(NULL)
+----
+212.0
+-40.0
+32.0
+NULL
+
+query TTT
+SELECT typeof(zig_cookbook_to_fahrenheit('1C')), typeof(zig_cookbook_from_fahrenheit(212.0)), zig_cookbook_from_fahrenheit(212.0)::VARCHAR
+----
+DOUBLE
+zig_cookbook_celsius
+100°C
+
+query TT
+SELECT bool_and(zig_cookbook_to_fahrenheit(c::DOUBLE::zig_cookbook_celsius) = c * 9.0 / 5.0 + 32.0), bool_and(abs(zig_cookbook_from_fahrenheit(zig_cookbook_to_fahrenheit(c::DOUBLE::zig_cookbook_celsius))::DOUBLE - c) < 1e-9) FROM (SELECT i / 2.0 - 100 AS c FROM range(1, 401) r(i))
+----
+true
+true
+
+# The bound is absolute zero, -459.67 degrees Fahrenheit.
+query T
+SELECT zig_cookbook_from_fahrenheit(-459.0)::DOUBLE < -272.7
+----
+true
+
+statement error
+SELECT zig_cookbook_from_fahrenheit(-460.0)
+----
+-460 degrees Fahrenheit is below absolute zero
+
+statement error
+SELECT zig_cookbook_from_fahrenheit(-1000.0)
+----
+-1000 degrees Fahrenheit is below absolute zero
+
+# One bad row of many fails the query.
+statement error
+SELECT zig_cookbook_from_fahrenheit(CASE WHEN i = 150 THEN -1000.0 ELSE 50.0 END) FROM range(1, 200) t(i)
+----
+below absolute zero
+
+# The one implicit direction: a celsius value goes where a DOUBLE is expected.
+query TT
+SELECT abs('-4.5C'::zig_cookbook_celsius), typeof('20C'::zig_cookbook_celsius + 1.5)
+----
+4.5
+DOUBLE
+
+# DOUBLE does not become a celsius value on its own: a column of the type is filled through the VARCHAR cast or an explicit one.
+statement ok
+CREATE TABLE cookbook_weather (city VARCHAR, temp zig_cookbook_celsius)
+
+statement ok
+INSERT INTO cookbook_weather VALUES ('oslo', '-3'), ('cairo', '35.5C'), ('lima', '19'), ('mars', NULL)
+
+query TTT
+SELECT city, temp::VARCHAR, typeof(temp) FROM cookbook_weather ORDER BY temp NULLS LAST
+----
+oslo
+-3°C
+zig_cookbook_celsius
+lima
+19°C
+zig_cookbook_celsius
+cairo
+35.5°C
+zig_cookbook_celsius
+mars
+NULL
+zig_cookbook_celsius
+
+query T
+SELECT max(temp)::VARCHAR || ' / ' || min(temp)::VARCHAR FROM cookbook_weather
+----
+35.5°C / -3°C
+
+statement error
+INSERT INTO cookbook_weather VALUES ('hell', '-400')
+----
+Could not convert string '-400' to zig_cookbook_celsius
+
+# ── A COPY format over a library: Arrow IPC (src/cookbook/arrow_ipc.zig, third_party/gld-arrow-zig) ──
+# Reading: files written by PyArrow (tools/gen_arrow_fixtures.py), the independent writer, compared with the values
+# they were built from. Writing: DuckDB's own values are the oracle, and the file is read back by the same recipe;
+# `task verify:arrow-pyarrow` also reads the files this section writes with PyArrow.
+
+statement ok
+CREATE TABLE arrow_expected AS SELECT b::BOOLEAN b, i8::TINYINT i8, i16::SMALLINT i16, i32::INTEGER i32, i64::BIGINT i64, u8::UTINYINT u8, u16::USMALLINT u16, u32::UINTEGER u32, u64::UBIGINT u64, f32::FLOAT f32, f64::DOUBLE f64, d::DATE d, ts::TIMESTAMP ts, s::VARCHAR s FROM (VALUES
+  (true, -128, -32768, -2147483648, -9223372036854775808, 0, 0, 0, 0, 0.5, 0.1, DATE '1970-01-01', TIMESTAMP '1970-01-01 00:00:00', ''),
+  (false, 0, 0, 0, 0, 1, 1, 1, 1, -1.25, -2.5, DATE '1969-12-31', TIMESTAMP '1969-12-31 23:59:59.999999', 'héllo wörld'),
+  (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+  (true, 127, 32767, 2147483647, 9223372036854775807, 255, 65535, 4294967295, 18446744073709551615, 1e30, 1e300, DATE '2024-02-29', TIMESTAMP '2024-02-29 12:30:45.123456', 'a string that is longer than twelve bytes'),
+  (false, 5, 5, 5, 5, 5, 5, 5, 5, 3.0, 3.0, DATE '9999-12-31', TIMESTAMP '2000-01-01 00:00:00', E'tab\there')
+) v(b, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, d, ts, s)
+
+statement ok
+CREATE TABLE arrow_in AS SELECT * FROM arrow_expected LIMIT 0
+
+# A stream and a file (the footer layout) of the same table, both from PyArrow.
+statement ok
+COPY arrow_in FROM 'test/data/arrow/types.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM arrow_in
+----
+5
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_in EXCEPT SELECT * FROM arrow_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_expected EXCEPT SELECT * FROM arrow_in)
+----
+0
+
+# Row order is the file's.
+query T
+SELECT s FROM arrow_in ORDER BY rowid
+----
+(empty)
+héllo wörld
+NULL
+a string that is longer than twelve bytes
+tab\there
+
+statement ok
+DELETE FROM arrow_in
+
+statement ok
+COPY arrow_in FROM 'test/data/arrow/types.arrow' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_in EXCEPT SELECT * FROM arrow_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_in
+----
+5
+
+# Record batches larger than a vector (5000 rows in one batch: chunks of 2048), several batches, and both compressions.
+statement ok
+CREATE TABLE arrow_big_expected AS SELECT i::BIGINT id, CASE WHEN i % 7 = 0 THEN NULL ELSE 'row-' || i END s, CASE WHEN i % 5 = 0 THEN NULL ELSE i * 0.5 END::DOUBLE x FROM range(5000) t(i)
+
+statement ok
+CREATE TABLE arrow_big AS SELECT * FROM arrow_big_expected LIMIT 0
+
+statement ok
+COPY arrow_big FROM 'test/data/arrow/big_one_batch.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM arrow_big
+----
+5000
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_big EXCEPT SELECT * FROM arrow_big_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_big_expected EXCEPT SELECT * FROM arrow_big)
+----
+0
+
+# The order across chunks and batches is the file's (id counts up).
+query I
+SELECT count(*) FROM (SELECT id, row_number() OVER (ORDER BY rowid) - 1 AS n FROM arrow_big) WHERE id <> n
+----
+0
+
+statement ok
+DELETE FROM arrow_big
+
+statement ok
+COPY arrow_big FROM 'test/data/arrow/big_batches.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_big EXCEPT SELECT * FROM arrow_big_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT id, row_number() OVER (ORDER BY rowid) - 1 AS n FROM arrow_big) WHERE id <> n
+----
+0
+
+query I
+SELECT count(*) FROM arrow_big
+----
+5000
+
+statement ok
+DELETE FROM arrow_big
+
+statement ok
+COPY arrow_big FROM 'test/data/arrow/big_lz4.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_big EXCEPT SELECT * FROM arrow_big_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_big
+----
+5000
+
+# A file with no rows is a table with no rows.
+statement ok
+CREATE TABLE arrow_empty (id BIGINT, s VARCHAR)
+
+statement ok
+COPY arrow_empty FROM 'test/data/arrow/no_rows.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM arrow_empty
+----
+0
+
+# What the recipe will not read says why, naming the column.
+statement error
+COPY arrow_empty FROM 'test/data/arrow/dictionary.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+the file has 1 columns, the table 2
+
+statement ok
+CREATE TABLE arrow_one_text (s VARCHAR)
+
+statement error
+COPY arrow_one_text FROM 'test/data/arrow/dictionary.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (s) is utf8 (dictionary-encoded) in the file; the table expects VARCHAR
+
+statement error
+COPY arrow_one_text FROM 'test/data/arrow/large_string.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (s) is large_utf8 in the file; the table expects VARCHAR
+
+statement ok
+CREATE TABLE arrow_one_ts (ts TIMESTAMP)
+
+statement error
+COPY arrow_one_ts FROM 'test/data/arrow/timezone.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (ts) is timestamp[us, with a time zone] in the file; the table expects TIMESTAMP
+
+statement error
+COPY arrow_one_ts FROM 'test/data/arrow/millis.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (ts) is timestamp[ms] in the file; the table expects TIMESTAMP
+
+statement ok
+CREATE TABLE arrow_one_date (d DATE)
+
+statement error
+COPY arrow_one_date FROM 'test/data/arrow/date64.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (d) is date64 in the file; the table expects DATE
+
+statement ok
+CREATE TABLE arrow_one_id (id BIGINT)
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/int32.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (id) is int32 in the file; the table expects BIGINT
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/uint64.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (id) is uint64 in the file; the table expects BIGINT
+
+statement error
+COPY arrow_one_text FROM 'test/data/arrow/bad_utf8.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+a string in the file is not valid UTF-8
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/list.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 (l) is list in the file; the table expects BIGINT
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/garbage.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+is not a readable Arrow IPC stream or file
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/does_not_exist.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+cannot open test/data/arrow/does_not_exist.arrows
+
+statement error
+COPY arrow_one_id FROM 'test/data/arrow/int32.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'zstd')
+----
+unknown option codec (there are none)
+
+# The table's own types: a column the recipe does not move fails at planning, before the file is opened.
+statement ok
+CREATE TABLE arrow_hugeint (h HUGEINT)
+
+statement error
+COPY arrow_hugeint FROM 'test/data/arrow/int32.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column 1 has a type that is not supported
+
+# Writing. The values are DuckDB's; the recipe's reader gives them back.
+statement ok
+COPY arrow_expected TO '/tmp/zig_ext_cookbook_arrow_types.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+statement ok
+DELETE FROM arrow_in
+
+statement ok
+COPY arrow_in FROM '/tmp/zig_ext_cookbook_arrow_types.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_in EXCEPT SELECT * FROM arrow_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_expected EXCEPT SELECT * FROM arrow_in)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_in
+----
+5
+
+# Many batches (BATCH_SIZE), prepared on several threads: nothing lost, nothing doubled, the order kept.
+statement ok
+COPY (SELECT * FROM range(100000) t(i)) TO '/tmp/zig_ext_cookbook_arrow_range.arrows' (FORMAT zig_cookbook_arrow_ipc, BATCH_SIZE 3000)
+
+statement ok
+CREATE TABLE arrow_range (i BIGINT)
+
+statement ok
+COPY arrow_range FROM '/tmp/zig_ext_cookbook_arrow_range.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query III
+SELECT count(*), sum(i), count(DISTINCT i) FROM arrow_range
+----
+100000
+4999950000
+100000
+
+query I
+SELECT count(*) FROM (SELECT i, row_number() OVER (ORDER BY rowid) - 1 AS n FROM arrow_range) WHERE i <> n
+----
+0
+
+# Strings of every size across a batch boundary: inline (up to 12 bytes), longer, empty and NULL.
+statement ok
+COPY (SELECT CASE WHEN i % 11 = 0 THEN NULL ELSE repeat('é', i % 40) END AS s FROM range(30000) t(i)) TO '/tmp/zig_ext_cookbook_arrow_strings.arrows' (FORMAT zig_cookbook_arrow_ipc, BATCH_SIZE 1111)
+
+statement ok
+CREATE TABLE arrow_strings (s VARCHAR)
+
+statement ok
+COPY arrow_strings FROM '/tmp/zig_ext_cookbook_arrow_strings.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT s FROM arrow_strings EXCEPT SELECT CASE WHEN i % 11 = 0 THEN NULL ELSE repeat('é', i % 40) END FROM range(30000) t(i))
+----
+0
+
+query T
+SELECT count(*) = 30000 AND count(s) = (SELECT count(*) FROM range(30000) t(i) WHERE i % 11 <> 0) AND sum(length(s)) = (SELECT sum(i % 40) FROM range(30000) t(i) WHERE i % 11 <> 0) FROM arrow_strings
+----
+true
+
+# The codecs of the writer: the same table back, whichever way it was stored (and a different size on disk).
+statement ok
+CREATE TABLE arrow_codec_expected AS SELECT i::BIGINT id, 'row-' || (i % 100) AS s, ((i % 17) * 0.25)::DOUBLE AS x FROM range(60000) t(i)
+
+statement ok
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_none.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'none', BATCH_SIZE 8000)
+
+statement ok
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_lz4.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'lz4', BATCH_SIZE 8000)
+
+statement ok
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_zstd.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'ZSTD', BATCH_SIZE 8000)
+
+statement ok
+CREATE TABLE arrow_codec (id BIGINT, s VARCHAR, x DOUBLE)
+
+statement ok
+COPY arrow_codec FROM '/tmp/zig_ext_cookbook_arrow_none.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_codec EXCEPT SELECT * FROM arrow_codec_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_codec
+----
+60000
+
+statement ok
+DELETE FROM arrow_codec
+
+statement ok
+COPY arrow_codec FROM '/tmp/zig_ext_cookbook_arrow_lz4.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_codec EXCEPT SELECT * FROM arrow_codec_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_codec
+----
+60000
+
+statement ok
+DELETE FROM arrow_codec
+
+statement ok
+COPY arrow_codec FROM '/tmp/zig_ext_cookbook_arrow_zstd.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_codec EXCEPT SELECT * FROM arrow_codec_expected)
+----
+0
+
+query I
+SELECT count(*) FROM arrow_codec
+----
+60000
+
+# The codec really ran. LZ4 shrinks the repeating data to under half; the library's Zstd writer stores its blocks
+# uncompressed (a valid frame, which PyArrow reads, but no smaller), so only the frame overhead tells it apart.
+query T
+SELECT (SELECT size FROM read_blob('/tmp/zig_ext_cookbook_arrow_lz4.arrows')) < (SELECT size FROM read_blob('/tmp/zig_ext_cookbook_arrow_none.arrows')) / 2 AND (SELECT size FROM read_blob('/tmp/zig_ext_cookbook_arrow_zstd.arrows')) > (SELECT size FROM read_blob('/tmp/zig_ext_cookbook_arrow_none.arrows'))
+----
+true
+
+statement error
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_bad.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'gzip')
+----
+CODEC must be 'none', 'lz4' or 'zstd', not 'gzip'
+
+statement error
+COPY arrow_codec_expected TO '/tmp/zig_ext_cookbook_arrow_bad.arrows' (FORMAT zig_cookbook_arrow_ipc, COMPRESSION 'zstd')
+----
+unknown option compression (CODEC exists)
+
+# A column the recipe does not move fails the statement at planning, naming the column; no file is written.
+statement error
+COPY (SELECT 1 AS id, [1, 2] AS l) TO '/tmp/zig_ext_cookbook_arrow_bad2.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column l has a type that is not supported
+
+statement error
+COPY (SELECT 1.5::DECIMAL(9, 2) AS price) TO '/tmp/zig_ext_cookbook_arrow_bad2.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+column price has a type that is not supported
+
+# Nothing to write is a valid stream: the schema, no batches.
+statement ok
+COPY (SELECT 1::BIGINT AS id, 'x' AS s WHERE false) TO '/tmp/zig_ext_cookbook_arrow_nothing.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+statement ok
+COPY arrow_empty FROM '/tmp/zig_ext_cookbook_arrow_nothing.arrows' (FORMAT zig_cookbook_arrow_ipc)
+
+query I
+SELECT count(*) FROM arrow_empty
+----
+0
+
+# A path that cannot be written.
+statement error
+COPY arrow_expected TO '/nonexistent_dir/x.arrows' (FORMAT zig_cookbook_arrow_ipc)
+----
+cannot open /nonexistent_dir/x.arrows for writing
+
+# zig_cookbook_read_arrow(path): the same decoder as COPY FROM, with the file's own schema.
+query T
+SELECT column_name || ' ' || column_type FROM (DESCRIBE SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/types.arrows'))
+----
+b BOOLEAN
+i8 TINYINT
+i16 SMALLINT
+i32 INTEGER
+i64 BIGINT
+u8 UTINYINT
+u16 USMALLINT
+u32 UINTEGER
+u64 UBIGINT
+f32 FLOAT
+f64 DOUBLE
+d DATE
+ts TIMESTAMP
+s VARCHAR
+
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/types.arrows') EXCEPT SELECT * FROM arrow_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_expected EXCEPT SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/types.arrow'))
+----
+0
+
+query T
+SELECT s FROM zig_cookbook_read_arrow('test/data/arrow/types.arrows') ORDER BY i64 NULLS LAST, s NULLS LAST LIMIT 1
+----
+(empty)
+
+# Several batches, LZ4, a filter and a projection over the scan.
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/big_batches.arrows') EXCEPT SELECT * FROM arrow_big_expected)
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_read_arrow('test/data/arrow/big_lz4.arrows') WHERE id % 2 = 0
+----
+2500
+
+query I
+SELECT count(*) FROM zig_cookbook_read_arrow('test/data/arrow/no_rows.arrows')
+----
+0
+
+# Joined with itself, so the function is bound and run twice in one statement.
+query I
+SELECT count(*) FROM zig_cookbook_read_arrow('test/data/arrow/types.arrows') a JOIN zig_cookbook_read_arrow('test/data/arrow/types.arrow') b USING (i64)
+----
+4
+
+# Files the decoder or the type mapping rejects, while the statement is planned.
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/dictionary.arrows')
+----
+column 1 (s) is utf8 (dictionary-encoded) in the file, which is not supported
+
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/timezone.arrows')
+----
+timestamp[us, with a time zone]
+
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/garbage.arrows')
+----
+is not a readable Arrow IPC stream or file
+
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/does_not_exist.arrows')
+----
+cannot open test/data/arrow/does_not_exist.arrows
+
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/bad_utf8.arrows')
+----
+not valid UTF-8
+
+# The Arrow C Data Interface. zig_cookbook_arrow_export feeds DuckDB chunks to an exporter and reports the ArrowArrays
+# that come out: what the structs say, and checksums that Zig computes from the raw Arrow buffers. The oracle is SQL.
+query I
+SELECT count(*) FROM zig_cookbook_arrow_export(2500)
+----
+9
+
+query T
+SELECT DISTINCT col || ':' || format || ':' || n_buffers FROM zig_cookbook_arrow_export(2500) ORDER BY 1
+----
+even:b:2
+id:l:2
+label:u:3
+
+# 2500 rows in chunks of 2048 come out as arrays of 1000, 1000 and 500: the exporter holds rows back across chunks
+# and the final flush finishes the last array.
+query T
+SELECT string_agg(length::VARCHAR, ',' ORDER BY batch) FROM zig_cookbook_arrow_export(2500) WHERE col = 'id'
+----
+1000,1000,500
+
+# Per array: the sum of the ids, the bytes of the non-NULL labels (the offsets), the true booleans, and the NULLs.
+query I
+SELECT count(*) FROM (
+    SELECT batch, col, length, null_count, checksum FROM zig_cookbook_arrow_export(2500)
+    EXCEPT
+    SELECT * FROM (
+    SELECT i // 1000, 'id', count(*), 0, sum(i) FROM range(2500) t(i) GROUP BY 1
+    UNION ALL
+    SELECT i // 1000, 'label', count(*), count(*) FILTER (WHERE i % 3 = 0), sum(length('row-' || i)) FILTER (WHERE i % 3 <> 0) FROM range(2500) t(i) GROUP BY 1
+    UNION ALL
+    SELECT i // 1000, 'even', count(*), 0, count(*) FILTER (WHERE i % 2 = 0) FROM range(2500) t(i) GROUP BY 1
+    )
+)
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_arrow_export(0)
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_arrow_export(1)
+----
+3
+
+statement error
+SELECT * FROM zig_cookbook_arrow_export(-1)
+----
+n must be between 0 and 10000000, got -1
+
+# zig_cookbook_arrow_import builds an ArrowSchema and ArrowArray by hand and gives them to an importer.
+query T
+SELECT column_name || ' ' || column_type FROM (DESCRIBE SELECT * FROM zig_cookbook_arrow_import(3))
+----
+id BIGINT
+label VARCHAR
+day DATE
+
+statement ok
+CREATE TABLE arrow_c_expected AS
+SELECT (10 * i)::BIGINT AS id, CASE WHEN i % 4 = 3 THEN NULL ELSE 'item-' || i END AS label, DATE '1970-01-01' + i::INTEGER AS day
+FROM range(2500) t(i)
+
+# Zero-copy (the array is consumed) and copied, across chunk boundaries (batches of 1000 rows).
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_arrow_import(2500) EXCEPT SELECT * FROM arrow_c_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_c_expected EXCEPT SELECT * FROM zig_cookbook_arrow_import(2500))
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_arrow_import(2500, copy := true) EXCEPT SELECT * FROM arrow_c_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_c_expected EXCEPT SELECT * FROM zig_cookbook_arrow_import(2500, copy := true))
+----
+0
+
+query III
+SELECT count(*), count(label), max(id) FROM zig_cookbook_arrow_import(1001)
+----
+1001
+751
+10000
+
+query T
+SELECT label FROM zig_cookbook_arrow_import(8) ORDER BY id
+----
+item-0
+item-1
+item-2
+NULL
+item-4
+item-5
+item-6
+NULL
+
+query I
+SELECT count(*) FROM zig_cookbook_arrow_import(0)
+----
+0
+
+# Twice in one statement: two importers, two arrays, each released once.
+query I
+SELECT count(*) FROM zig_cookbook_arrow_import(3000) a JOIN zig_cookbook_arrow_import(3000, copy := true) b USING (id, label, day)
+----
+2250
+
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_arrow_import(2000) UNION ALL SELECT * FROM zig_cookbook_arrow_import(2000, copy := true))
+----
+4000
+
+statement error
+SELECT * FROM zig_cookbook_arrow_import(10000001)
+----
+n must be between 0 and 10000000, got 10000001
+
+# Every hand-built array was released exactly once, in both modes: none is left, and none was freed twice (a crash).
+query I
+SELECT live_arrays FROM zig_cookbook_arrow_live_arrays()
+----
+0
+
+# While a statement still holds the chunks of a consumed array, the array is alive.
+query I
+SELECT max(live_arrays) FROM (SELECT live_arrays FROM zig_cookbook_arrow_live_arrays(), zig_cookbook_arrow_import(10) LIMIT 1)
+----
+1
+
+# DuckDB's file system: zig_cookbook_fs_write and zig_cookbook_fs_read. The oracle is DuckDB's own read_blob.
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'hello world')
+----
+11
+11
+11
+
+query I
+SELECT count(*) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt') a, read_blob('/tmp/zig_ext_cookbook_fs.txt') b WHERE a.content = b.content AND a.size = b.size AND a.content = 'hello world'::BLOB
+----
+1
+
+# create empties an existing file; append adds at the end.
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'hello', mode := 'create')
+----
+5
+5
+5
+
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', ' world', mode := 'append')
+----
+6
+11
+11
+
+query IT
+SELECT size, content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt')
+----
+11
+hello world
+
+# A range is read at its offset: all of it, or an error.
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', 6, 5)
+----
+world
+
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', 6)
+----
+world
+
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', length := 5)
+----
+hello
+
+query I
+SELECT octet_length(content) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', 3, 0)
+----
+0
+
+statement error
+SELECT * FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', 6, 100)
+----
+Could not read enough bytes
+
+# The path goes through DuckDB's file system, not libc's: a file: URL is understood.
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('file:///tmp/zig_ext_cookbook_fs.txt', 0, 5)
+----
+hello
+
+# at: written at an offset, past the end if need be (the gap is zeros); the position does not move.
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'XY', mode := 'at', start := 14)
+----
+2
+16
+0
+
+query T
+SELECT hex(content) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt')
+----
+68656C6C6F20776F726C640000005859
+
+# exclusive: a new file only. The path is new on every run.
+query I
+SELECT bytes FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs_' || strftime(now(), '%Y%m%d%H%M%S%f') || '.txt', 'fresh', mode := 'exclusive')
+----
+5
+
+statement error
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'again', mode := 'exclusive')
+----
+File exists
+
+# Empty content, and a file bigger than any buffer: written, then read back by the sequential loop.
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs_empty.txt', '')
+----
+0
+0
+0
+
+query II
+SELECT size, octet_length(content) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs_empty.txt')
+----
+0
+0
+
+query III
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs_big.txt', repeat('0123456789abcdef', 200000))
+----
+3200000
+3200000
+3200000
+
+query I
+SELECT count(*) FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs_big.txt') a, read_blob('/tmp/zig_ext_cookbook_fs_big.txt') b WHERE a.content = b.content AND a.size = 3200000
+----
+1
+
+query T
+SELECT content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs_big.txt', 1600000 + 10, 12)
+----
+abcdef012345
+
+# Errors are DuckDB's own.
+statement error
+SELECT * FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs_does_not_exist')
+----
+No such file or directory
+
+statement error
+SELECT * FROM zig_cookbook_fs_write('/nonexistent_dir/x', 'x')
+----
+No such file or directory
+
+statement error
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'x', mode := 'truncate')
+----
+unknown mode 'truncate'
+
+statement error
+SELECT * FROM zig_cookbook_fs_write('/tmp/zig_ext_cookbook_fs.txt', 'x', mode := 'at', start := -1)
+----
+start must not be negative, got -1
+
+statement error
+SELECT * FROM zig_cookbook_fs_read('/tmp/zig_ext_cookbook_fs.txt', length := -2)
+----
+length must be -1 (to the end) or more, got -2
+
+# Logging: zig_cookbook_log writes through context_log and returns its message. Whether an entry is recorded is up to
+# the log configuration; the call itself always succeeds. The log is read back with duckdb_logs.
+query T
+SELECT zig_cookbook_log('info', 'zl_a', 'zl-not recorded: logging is off')
+----
+zl-not recorded: logging is off
+
+# SET rather than CALL enable_logging: the CLI prints a warning when the call changes the log storage.
+statement ok
+SET logging_storage = 'memory'
+
+statement ok
+SET logging_level = 'debug'
+
+statement ok
+SET enable_logging = true
+
+query T
+SELECT string_agg(zig_cookbook_log(l, t, 'zl-' || l), ',' ORDER BY l) FROM (VALUES ('trace', 'zl_a'), ('debug', 'zl_a'), ('INFO', 'zl_b'), ('warning', ''), ('error', 'zl_a'), ('fatal', 'zl_a')) v(l, t)
+----
+zl-INFO,zl-debug,zl-error,zl-fatal,zl-trace,zl-warning
+
+# Each entry carries its level, its type (empty is the default type) and the connection's ids. TRACE is below the
+# threshold: the call succeeded and nothing was written.
+query T
+SELECT log_level || ':' || type || ':' || message FROM duckdb_logs WHERE message LIKE 'zl-%' ORDER BY message
+----
+INFO:zl_b:zl-INFO
+DEBUG:zl_a:zl-debug
+ERROR:zl_a:zl-error
+FATAL:zl_a:zl-fatal
+WARNING::zl-warning
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'zl-not recorded: logging is off' OR message = 'zl-trace'
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message LIKE 'zl-%' AND (scope <> 'CONNECTION' OR connection_id IS NULL OR query_id IS NULL OR thread_id IS NOT NULL)
+----
+0
+
+# Raising the threshold drops what is below it.
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SET logging_level = 'warning'
+
+query T
+SELECT string_agg(zig_cookbook_log(l, 'zl_a', 'zl2-' || l), ',' ORDER BY l) FROM (VALUES ('debug'), ('info'), ('warning'), ('error')) v(l)
+----
+zl2-debug,zl2-error,zl2-info,zl2-warning
+
+query T
+SELECT string_agg(log_level, ',' ORDER BY log_level) FROM duckdb_logs WHERE message LIKE 'zl2-%'
+----
+ERROR,WARNING
+
+# Not constant folded: a thousand equal calls are a thousand entries, all of one query.
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+SET logging_level = 'info'
+
+query I
+SELECT count(zig_cookbook_log('info', 'zl_a', 'zl3-same')) FROM range(1000)
+----
+1000
+
+query II
+SELECT count(*), count(DISTINCT query_id) FROM duckdb_logs WHERE message = 'zl3-same'
+----
+1000
+1
+
+# NULL in, NULL out, nothing logged.
+query T
+SELECT zig_cookbook_log('info', 'zl_a', NULL)
+----
+NULL
+
+query T
+SELECT zig_cookbook_log(NULL, 'zl_a', 'zl5-x')
+----
+NULL
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'zl5-x'
+----
+0
+
+statement error
+SELECT zig_cookbook_log('loud', 'zl_a', 'zl6-x')
+----
+unknown level 'loud'
+
+statement ok
+SET enable_logging = false
+
+query T
+SELECT zig_cookbook_log('error', 'zl_a', 'zl7-off')
+----
+zl7-off
+
+statement ok
+SET enable_logging = true
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message = 'zl7-off'
+----
+0
+
+statement ok
+SET enable_logging = false
+
+# Identifiers and qualified names: the engine's own rules, from text alone. (The tokenizer and the parser need a
+# connection: see the embedding recipe.)
+query T
+SELECT replace(zig_cookbook_quote_ident(x), '"', '#') FROM (VALUES (1, 'abc'), (2, 'select'), (3, 'a b'), (4, 'a"b'), (5, 'Abc'), (6, ''), (7, '1abc'), (8, 'héllo'), (9, 'a.b')) v(o, x) ORDER BY o
+----
+abc
+#select#
+#a b#
+#a##b#
+Abc
+##
+#1abc#
+#héllo#
+#a.b#
+
+# Quoted text parses back to the same name.
+query I
+SELECT count(*) FROM (VALUES ('abc'), ('select'), ('a b'), ('a"b'), ('1abc'), ('a.b')) v(x)
+WHERE zig_cookbook_qname_equals(zig_cookbook_quote_ident(x), zig_cookbook_quote_ident(x)) AND zig_cookbook_qname_render(zig_cookbook_quote_ident(x)) = zig_cookbook_quote_ident(x)
+----
+6
+
+query T
+SELECT replace(zig_cookbook_qname_render(x), '"', '#') FROM (VALUES (1, 'a.b'), (2, '"My Schema"."t.x"'), (3, 'Select.x.y'), (4, '"plain"'), (5, '  a  '), (6, 'a."b""c"')) v(o, x) ORDER BY o
+----
+a.b
+#My Schema#.#t.x#
+#Select#.x.y
+plain
+#  a  #
+a.#b##c#
+
+query IT
+SELECT position, replace(part || ' => ' || quoted, '"', '#') FROM zig_cookbook_qname_parts('main."a.b".select')
+----
+0
+main => main
+1
+a.b => #a.b#
+2
+select => #select#
+
+query I
+SELECT count(*) FROM zig_cookbook_qname_parts('t')
+----
+1
+
+# Equality is case-insensitive in every part; the hash agrees; a different number of parts differs.
+query IIII
+SELECT zig_cookbook_qname_equals('A.B', 'a."b"'), zig_cookbook_qname_equals('A.B', 'a.c'), zig_cookbook_qname_equals('a.b', 'x.a.b'), zig_cookbook_qname_hash('A.B') = zig_cookbook_qname_hash('a.b')
+----
+true
+false
+false
+true
+
+query I
+SELECT zig_cookbook_qname_hash('a.b') = zig_cookbook_qname_hash('a.c')
+----
+false
+
+# NULL in, NULL out.
+query T
+SELECT zig_cookbook_quote_ident(NULL)
+----
+NULL
+
+query T
+SELECT zig_cookbook_qname_equals('a', NULL)
+----
+NULL
+
+# The parser's own errors.
+statement error
+SELECT zig_cookbook_qname_render('a.b.c.d')
+----
+between one and three parts
+
+statement error
+SELECT zig_cookbook_qname_render('"abc')
+----
+Unterminated quote
+
+statement error
+SELECT zig_cookbook_qname_render('')
+----
+Zero-length identifier
+
+# An empty identifier is rendered as "", which does not parse back as a name.
+statement error
+SELECT zig_cookbook_qname_render(zig_cookbook_quote_ident(''))
+----
+Zero-length delimited identifier
+
+statement error
+SELECT * FROM zig_cookbook_qname_parts('a.b.c.d')
+----
+between one and three parts
+
+# validate_utf8 sees bytes: a BLOB can hold what a VARCHAR cannot.
+query T
+SELECT zig_cookbook_is_utf8(x) FROM (VALUES (1, 'h\xc3\xa9llo'::BLOB), (2, '\xc3\x28'::BLOB), (3, '\xff'::BLOB), (4, ''::BLOB), (5, 'a\x00b'::BLOB), (6, '\xf0\x9f\xa6\x86'::BLOB), (7, '\xed\xa0\x80'::BLOB)) v(o, x) ORDER BY o
+----
+true
+false
+false
+true
+true
+true
+false

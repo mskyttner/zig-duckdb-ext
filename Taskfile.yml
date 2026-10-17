@@ -12,7 +12,7 @@ version: "3"
 tasks:
   check:all:
     desc: "Run all quality gates"
-    deps: [format, build, test:unit]
+    deps: [format, build, test:unit, coverage:api-v2:check]
     cmds:
       - echo "All checks passed!"
 
@@ -36,32 +36,30 @@ tasks:
     cmds:
       - zig build test
 
-  test:e2e:
-    desc: "End-to-end tests: build, load into DuckDB, run all SQL test files"
-    deps: [build]
+  sqllogictest:
+    desc: "End-to-end SQL tests against the real v1 extension (test/sql/zig_ext.test)"
     cmds:
-      - |
-        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
-        if [ -z "$EXT_PATH" ]; then
-          echo "ERROR: No .duckdb_extension found in zig-out/lib/"
-          exit 1
-        fi
-        echo "=== Loading extension from $EXT_PATH ==="
-        FAILED=0
-        for sql_file in test/sql/*.sql; do
-          echo "--- Running $sql_file ---"
-          if duckdb -unsigned -c "LOAD '${EXT_PATH}';" < "$sql_file"; then
-            echo "    PASS"
-          else
-            echo "    FAIL"
-            FAILED=1
-          fi
-        done
-        if [ "$FAILED" -ne 0 ]; then
-          echo "=== Some e2e tests FAILED ==="
-          exit 1
-        fi
-        echo "=== All e2e tests passed ==="
+      - zig build sqllogictest
+
+  sqllogictest:v2:
+    desc: "End-to-end SQL tests against the real v2 extension (test/sql/zig_ext_v2.test)"
+    cmds:
+      - zig build sqllogictest-v2
+
+  test:load-failure:
+    desc: "An extension whose registration fails must fail the load with its reason, not crash DuckDB"
+    cmds:
+      - zig build load-failure-v2
+
+  sqllogictest:cookbook:
+    desc: "SQL tests of the v2 cookbook extension (test/sql/zig_ext_cookbook.test)"
+    cmds:
+      - zig build sqllogictest-cookbook
+
+  sqllogictest:v2:poc:
+    desc: "SQL tests of the comptime scalar/table frameworks, through the v2 proof-of-concept extension (test/sql/zig_ext_v2_poc.test)"
+    cmds:
+      - zig build sqllogictest-v2-poc
 
   demo:hello:
     desc: "Demo zig_hello scalar function"
@@ -102,23 +100,30 @@ tasks:
             WHERE length(t.token) > 3;
         "
 
+  demo:stipple:
+    desc: "Demo the v2-poc weighted-Voronoi-stippling extension (override with -- -Dstipple-url=... -Dstipple-width=... -Dstipple-height=... -Dstipple-points=... -Dstipple-iterations=...)"
+    cmds:
+      - zig build demo-stipple {{.CLI_ARGS}}
+
   bench:
-    desc: "Benchmark scalar/table functions over 10M rows (ADR-0002)"
+    desc: "Benchmark scalar/table functions: hand-written vs comptime (ADR-0002)"
     deps: [build:release]
     cmds:
       - |
-        EXT_PATH=$(find zig-out/lib -name '*.duckdb_extension' 2>/dev/null | head -1)
-        if [ -z "$EXT_PATH" ]; then
-          echo "ERROR: No .duckdb_extension found in zig-out/lib/"
+        # The v1 extension, by name: zig-out/lib also holds the v2 and cookbook extensions, which this CLI cannot load.
+        EXT_PATH=zig-out/lib/zig_ext.duckdb_extension
+        if [ ! -f "$EXT_PATH" ]; then
+          echo "ERROR: $EXT_PATH not found"
           exit 1
         fi
         echo "=== Benchmarking with $EXT_PATH ==="
-        echo "    (SUM forces evaluation; 3 runs each for stability)"
+        duckdb -unsigned -no-init -csv -c "SELECT 'DuckDB ' || version()" | tail -1
+        echo "    (SUM and COUNT force evaluation; 3 runs each for stability)"
 
         echo ""
         echo "--- zig_add_numbers: 10M rows (hand-written) ---"
         for run in 1 2 3; do
-          duckdb -unsigned -cmd ".timer on" -c "
+          duckdb -unsigned -no-init -cmd ".timer on" -c "
             LOAD '${EXT_PATH}';
             SELECT sum(zig_add_numbers(i, i)) FROM generate_series(0, 9999999) t(i);
           " 2>&1 | grep "Run Time"
@@ -127,44 +132,138 @@ tasks:
         echo ""
         echo "--- ct_add_numbers: 10M rows (comptime) ---"
         for run in 1 2 3; do
-          duckdb -unsigned -cmd ".timer on" -c "
+          duckdb -unsigned -no-init -cmd ".timer on" -c "
             LOAD '${EXT_PATH}';
             SELECT sum(ct_add_numbers(i, i)) FROM generate_series(0, 9999999) t(i);
           " 2>&1 | grep "Run Time"
         done
 
+        # One long input split into 1M tokens. A table function here takes constants (not a column of a lateral
+        # join), so the work has to be in one call.
         echo ""
-        echo "--- zig_tokenize: 100K rows (hand-written) ---"
+        echo "--- zig_tokenize: 1M tokens (hand-written) ---"
         for run in 1 2 3; do
-          duckdb -unsigned -cmd ".timer on" -c "
+          duckdb -unsigned -no-init -cmd ".timer on" -c "
             LOAD '${EXT_PATH}';
-            SELECT count(*) FROM (
-              SELECT t.token FROM generate_series(0, 99999) s(i),
-              LATERAL (SELECT * FROM zig_tokenize('a,b,c,d,e', ',')) t
-            );
+            SELECT count(*), sum(length(token)) FROM zig_tokenize(repeat('abc,', 1000000), ',');
           " 2>&1 | grep "Run Time"
         done
 
         echo ""
-        echo "--- ct_tokenize: 100K rows (comptime) ---"
+        echo "--- ct_tokenize: 1M tokens (comptime) ---"
         for run in 1 2 3; do
-          duckdb -unsigned -cmd ".timer on" -c "
+          duckdb -unsigned -no-init -cmd ".timer on" -c "
             LOAD '${EXT_PATH}';
-            SELECT count(*) FROM (
-              SELECT t.token FROM generate_series(0, 99999) s(i),
-              LATERAL (SELECT * FROM ct_tokenize('a,b,c,d,e', ',')) t
-            );
+            SELECT count(*), sum(length(token)) FROM ct_tokenize(repeat('abc,', 1000000), ',');
           " 2>&1 | grep "Run Time"
         done
 
         echo ""
-        echo "--- Extension binary size ---"
+        echo "--- Extension binary size (all of the v1 functions) ---"
         ls -lh "$EXT_PATH"
 
   audit:
     desc: "Check for compiler warnings and deprecated patterns"
     cmds:
       - zig build -Doptimize=Debug 2>&1 | grep -i "deprecat\|warning" || echo "No warnings found."
+
+  cross:
+    desc: "Cross-compile the real v1 extension for every target in build.zig's cross_targets"
+    cmds:
+      - zig build cross
+
+  verify:cross-arm64:
+    desc: "Load the cross-compiled linux_arm64 extension under QEMU (via Docker/binfmt) and run real SQL against it"
+    deps: [cross]
+    cmds:
+      - |
+        set -e
+        EXT_PATH="$(pwd)/zig-out/lib/linux_arm64/zig_ext.duckdb_extension"
+        if [ ! -f "$EXT_PATH" ]; then
+          echo "missing $EXT_PATH — did 'zig build cross' run?"
+          exit 1
+        fi
+
+        if [ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+          echo "qemu-aarch64 isn't registered in binfmt_misc. One-time setup (needs real root, not"
+          echo "rootless podman/docker — a plain --privileged container can't write the host's"
+          echo "binfmt_misc from inside a user namespace):"
+          echo ""
+          echo "    sudo docker run --rm --privileged docker.io/tonistiigi/binfmt --install arm64"
+          echo ""
+          exit 1
+        fi
+
+        WORKDIR="$(mktemp -d)"
+        trap 'rm -rf "$WORKDIR"' EXIT
+        cp "$EXT_PATH" "$WORKDIR/zig_ext.duckdb_extension"
+
+        DUCKDB_CLI_VERSION="v1.5.6"
+        if [ ! -f "$HOME/.cache/duckdb-cli-arm64-${DUCKDB_CLI_VERSION}" ]; then
+          mkdir -p "$HOME/.cache"
+          curl -sL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_CLI_VERSION}/duckdb_cli-linux-arm64.gz" \
+            | gunzip > "$HOME/.cache/duckdb-cli-arm64-${DUCKDB_CLI_VERSION}"
+          chmod +x "$HOME/.cache/duckdb-cli-arm64-${DUCKDB_CLI_VERSION}"
+        fi
+        cp "$HOME/.cache/duckdb-cli-arm64-${DUCKDB_CLI_VERSION}" "$WORKDIR/duckdb"
+
+        OUTPUT="$(sudo docker run --rm --platform linux/arm64 -v "$WORKDIR:/work" docker.io/library/ubuntu:24.04 \
+          bash -c "/work/duckdb -unsigned -csv -c \"LOAD '/work/zig_ext.duckdb_extension'; SELECT zig_add_numbers(2,3); SELECT tp_bar(0.5, \\\"on\\\" := 'X', \\\"off\\\" := '.', width := 10);\"")"
+
+        echo "$OUTPUT"
+        echo "$OUTPUT" | grep -qx "5" || { echo "FAILED: zig_add_numbers(2,3) did not return 5"; exit 1; }
+        echo "$OUTPUT" | grep -qx "XXXXX....." || { echo "FAILED: tp_bar(...) did not return the expected bar"; exit 1; }
+        echo "verify:cross-arm64 PASSED — linux_arm64 cross build loads and runs correctly under QEMU"
+
+  verify:static-windows:
+    desc: "Build the Windows static embedding (real extension + DuckDB's MinGW static libs) and run it under Wine in a container"
+    cmds:
+      - |
+        set -e
+        # podman needs no root for this (unlike verify:cross-arm64, there is no binfmt to register);
+        # CONTAINER_RUNTIME=docker works too. The image is pinned to linux/amd64: a cached arm64
+        # ubuntu from verify:cross-arm64 would otherwise be picked.
+        RT="${CONTAINER_RUNTIME:-podman}"
+        IMAGE=zig-duckdb-ext-windows-verify
+        $RT build --platform linux/amd64 -t "$IMAGE" -f containers/windows-verify/Containerfile containers/windows-verify
+
+        # The MinGW C++ runtime the Windows static libraries link against comes out of the image.
+        RUNTIME="$(pwd)/.zig-cache/mingw-runtime"
+        rm -rf "$RUNTIME" && mkdir -p "$RUNTIME"
+        $RT run --rm --platform linux/amd64 -v "$RUNTIME:/out" "$IMAGE" sh -c 'cp /mingw-runtime/*.a /out/'
+
+        zig build v2-static-embed-poc v2-static-embed-poc-extensions \
+          -Dtarget=x86_64-windows-gnu \
+          -Dlibstdcxx-path="$RUNTIME/libstdc++.a" \
+          -Dlibgcc-eh-path="$RUNTIME/libgcc_eh.a" \
+          -Dlibgcc-path="$RUNTIME/libgcc.a"
+
+        for exe in v2_static_embed_poc v2_static_embed_poc_extensions; do
+          OUTPUT="$($RT run --rm --platform linux/amd64 -v "$(pwd)/zig-out/bin:/w:ro" "$IMAGE" wine "/w/$exe.exe" 2>&1)"
+          echo "$OUTPUT" | grep -v -i "freetype\|truetype\|libEGL\|pci id"
+          echo "$OUTPUT" | grep -q "all static-extension queries returned the expected result" || { echo "FAILED: $exe.exe under Wine"; exit 1; }
+        done
+        echo "verify:static-windows PASSED — the Windows static embedding runs under Wine with six extension archives linked"
+
+  verify:arrow-pyarrow:
+    desc: "Read the Arrow IPC files written by the cookbook suite with PyArrow (run sqllogictest:cookbook first; skips without pyarrow)"
+    cmds:
+      - python3 tools/verify_arrow_output.py
+
+  test:arrow-vendor:
+    desc: "Tests of the vendored gld-arrow-zig library (third_party/gld-arrow-zig)"
+    cmds:
+      - zig build test-arrow-vendor
+
+  coverage:api-v2:
+    desc: "Rewrite docs/api-v2-coverage.md: which v2 C API functions the hand-written code references"
+    cmds:
+      - zig build coverage-api-v2
+
+  coverage:api-v2:check:
+    desc: "Fail if docs/api-v2-coverage.md is stale (run by check:all)"
+    cmds:
+      - zig build coverage-api-v2-check
 
   clean:
     desc: "Remove build artifacts"

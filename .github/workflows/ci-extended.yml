@@ -1,0 +1,60 @@
+name: CI (extended)
+
+# Checks that are slower or need more than Zig: kept apart so that they do not block a pull request. They run weekly,
+# on demand, and when the files they cover change.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/cookbook/embed_sql.zig"
+      - "src/cookbook/arrow_*.zig"
+      - "third_party/**"
+      - "tools/**"
+      - "test/data/arrow/**"
+      - ".github/workflows/ci-extended.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-extended-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZIG_VERSION: "0.17.0"
+
+jobs:
+  # The embedding recipe is a program that hosts DuckDB: it links DuckDB's static libraries (a large download that the
+  # build fetches) and runs SQL, prepared statements, Arrow results, the tokenizer and the parser through the v2 API.
+  cookbook-embed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - run: zig build cookbook-embed
+
+  # The Arrow IPC files that the cookbook suite writes are read back by PyArrow, an independent implementation.
+  # `tools/verify_arrow_output.py` skips when PyArrow is missing, so it is installed here: a skip would prove nothing.
+  # setup-python gives a Python whose pip may install (the runner's system Python refuses, PEP 668).
+  arrow-pyarrow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyarrow
+      - name: Write the Arrow files (the cookbook suite)
+        run: zig build sqllogictest-cookbook
+      - name: Read them with PyArrow
+        run: |
+          python3 -c "import pyarrow; print('pyarrow', pyarrow.__version__)"
+          python3 tools/verify_arrow_output.py

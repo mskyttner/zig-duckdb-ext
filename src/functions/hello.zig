@@ -33,14 +33,8 @@ pub fn zigHello(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) c
 
 /// Build "Hello, <name>!" from a duckdb_string_t and assign it to the output vector.
 fn writeHelloResult(name_data: [*]db.StringT, row: usize, output: db.Vector) void {
-    const str_t = &name_data[row];
-    const len = str_t.value.inlined.length;
-
-    // SAFETY: duckdb_string_t union — if length <= 12, data is inlined; otherwise it has a pointer.
-    const src: [*]const u8 = if (len <= 12)
-        &str_t.value.inlined.inlined
-    else
-        @ptrCast(str_t.value.pointer.ptr.?);
+    const src = db.stringSlice(&name_data[row]);
+    const len = src.len;
 
     // Build "Hello, <name>!" using a stack buffer
     var buf: [1024]u8 = undefined;

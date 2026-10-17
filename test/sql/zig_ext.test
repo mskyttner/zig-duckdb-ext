@@ -1,0 +1,430 @@
+# name: test/sql/zig_ext.test
+# description: Parity test for zig_ext scalar functions
+# group: [zig_ext]
+
+statement ok
+SET allow_extensions_metadata_mismatch=true
+
+statement error
+SELECT zig_add_numbers(1, 2)
+----
+Catalog Error: Scalar Function with name zig_add_numbers does not exist!
+
+require zig_ext
+
+query I
+SELECT zig_add_numbers(1, 2)
+----
+3
+
+query I
+SELECT zig_add_numbers(NULL, 2)
+----
+NULL
+
+query I
+SELECT tp_bar(0.5, "on" := 'X', "off" := '.', width := 10)
+----
+XXXXX.....
+
+# ── Ported from the former test:e2e/smoke.sql (task test:e2e) ──────────────
+# That task only checked exit code (did the query error?), never the actual
+# output — these blocks are a strictly stronger replacement, verifying exact
+# values via the native sqllogictest runner. Multi-column table-function
+# results are split into one single-column query per column for
+# readability (the runner itself supports true multi-column rows, flattened
+# value-by-value in column order). An expected empty string is written as
+# the literal token `(empty)`, DuckDB's own sqllogictest convention — a
+# blank line would be read as the end of the expected-output block instead
+# (see src/sqllogictest_main.zig's doc comment).
+
+# ── zig_hello ────────────────────────────────────────────────────────────
+
+query T
+SELECT zig_hello('Zig')
+----
+Hello, Zig!
+
+query T
+SELECT zig_hello('')
+----
+Hello, !
+
+query T
+SELECT zig_hello(NULL)
+----
+NULL
+
+# ── zig_add_numbers (additional cases) ──────────────────────────────────
+
+query I
+SELECT zig_add_numbers(100, -50)
+----
+50
+
+# Overflow is an error of the query, as for DuckDB's own +, not the end of the process.
+statement error
+SELECT zig_add_numbers(9223372036854775807, 1)
+----
+Overflow in addition of INT64 (9223372036854775807 + 1)!
+
+statement error
+SELECT zig_add_numbers(-9223372036854775807 - 1, -1)
+----
+Overflow in addition of INT64 (-9223372036854775808 + -1)!
+
+query I
+SELECT zig_add_numbers(9223372036854775806, 1)
+----
+9223372036854775807
+
+# One overflowing row of a column, with and without NULLs in the column.
+statement error
+SELECT sum(zig_add_numbers(i, CASE WHEN i = 150 THEN 9223372036854775807 ELSE 1 END)) FROM generate_series(1, 200) t(i)
+----
+Overflow in addition of INT64 (150 + 9223372036854775807)!
+
+statement error
+SELECT sum(zig_add_numbers(CASE WHEN i % 7 = 0 THEN NULL ELSE i END, CASE WHEN i = 150 THEN 9223372036854775807 ELSE 1 END)) FROM generate_series(1, 200) t(i)
+----
+Overflow in addition of INT64 (150 + 9223372036854775807)!
+
+# A NULL operand is NULL, not an overflow.
+query I
+SELECT zig_add_numbers(9223372036854775807, NULL)
+----
+NULL
+
+query I
+SELECT zig_add_numbers(1, 2)
+----
+3
+
+query I
+SELECT zig_add_numbers(0, 0)
+----
+0
+
+query I
+SELECT zig_add_numbers(i, i * 10) FROM generate_series(1, 5) t(i)
+----
+11
+22
+33
+44
+55
+
+# ── zig_tokenize ─────────────────────────────────────────────────────────
+
+query I
+SELECT token_pos FROM zig_tokenize('alice,bob,charlie', ',')
+----
+0
+1
+2
+
+query T
+SELECT token FROM zig_tokenize('alice,bob,charlie', ',')
+----
+alice
+bob
+charlie
+
+query T
+SELECT token FROM zig_tokenize('one::two::three', '::')
+----
+one
+two
+three
+
+query T
+SELECT token FROM zig_tokenize('a,b,', ',')
+----
+a
+b
+(empty)
+
+query T
+SELECT token FROM zig_tokenize(',a,b', ',')
+----
+(empty)
+a
+b
+
+query T
+SELECT token FROM zig_tokenize('a,,b', ',')
+----
+a
+(empty)
+b
+
+query T
+SELECT token FROM zig_tokenize('hello world', ',')
+----
+hello world
+
+query T
+SELECT token FROM zig_tokenize('', ',')
+----
+(empty)
+
+query T
+SELECT token FROM zig_tokenize('hello', '')
+----
+hello
+
+query I
+SELECT token_pos FROM zig_tokenize('the,quick,brown,fox', ',') WHERE length(token) > 3
+----
+1
+2
+
+query T
+SELECT token FROM zig_tokenize('the,quick,brown,fox', ',') WHERE length(token) > 3
+----
+quick
+brown
+
+# ── ct_add_numbers (comptime scalar) ────────────────────────────────────
+
+query I
+SELECT ct_add_numbers(2, 3)
+----
+5
+
+query I
+SELECT ct_add_numbers(100, -50)
+----
+50
+
+query I
+SELECT ct_add_numbers(0, 0)
+----
+0
+
+query I
+SELECT ct_add_numbers(NULL, 5)
+----
+NULL
+
+query I
+SELECT ct_add_numbers(5, NULL)
+----
+NULL
+
+# Overflow is an error of the query, not the end of the process.
+statement error
+SELECT ct_add_numbers(9223372036854775807, 1)
+----
+ct_add_numbers: Overflow
+
+statement error
+SELECT sum(ct_add_numbers(i, CASE WHEN i = 150 THEN 9223372036854775807 ELSE 1 END)) FROM generate_series(1, 200) t(i)
+----
+ct_add_numbers: Overflow
+
+query I
+SELECT ct_add_numbers(9223372036854775806, 1)
+----
+9223372036854775807
+
+query I
+SELECT ct_add_numbers(9223372036854775807, NULL)
+----
+NULL
+
+query I
+SELECT ct_add_numbers(1, 2)
+----
+3
+
+query I
+SELECT ct_add_numbers(i, i * 10) FROM generate_series(1, 5) t(i)
+----
+11
+22
+33
+44
+55
+
+query T
+SELECT match FROM (SELECT ct_add_numbers(i, i * 10) = zig_add_numbers(i, i * 10) AS match FROM generate_series(1, 100) t(i) GROUP BY match) x
+----
+true
+
+# ── ct_tokenize (comptime table function) ───────────────────────────────
+
+query I
+SELECT token_pos FROM ct_tokenize('alice,bob,charlie', ',')
+----
+0
+1
+2
+
+query T
+SELECT token FROM ct_tokenize('alice,bob,charlie', ',')
+----
+alice
+bob
+charlie
+
+query T
+SELECT token FROM ct_tokenize('one::two::three', '::')
+----
+one
+two
+three
+
+query T
+SELECT token FROM ct_tokenize('a,b,', ',')
+----
+a
+b
+(empty)
+
+query T
+SELECT token FROM ct_tokenize('hello world', ',')
+----
+hello world
+
+query T
+SELECT match FROM (SELECT ct.token_pos = hw.token_pos AND ct.token = hw.token AS match FROM ct_tokenize('the,quick,brown,fox', ',') ct JOIN zig_tokenize('the,quick,brown,fox', ',') hw ON ct.token_pos = hw.token_pos GROUP BY match) x
+----
+true
+
+# ── tp_bar (additional cases) ────────────────────────────────────────────
+
+query T
+SELECT tp_bar_impl(0.7, '█', '░', 15)
+----
+███████████░░░░
+
+query T
+SELECT tp_bar(0.0, "on" := 'X', "off" := '.', width := 5)
+----
+.....
+
+query T
+SELECT tp_bar(1.0, "on" := 'X', "off" := '.', width := 5)
+----
+XXXXX
+
+query T
+SELECT tp_bar(0.5)
+----
+████████░░░░░░░
+
+query T
+SELECT tp_bar(NULL, "on" := 'X', "off" := '.', width := 5)
+----
+NULL
+
+query T
+SELECT tp_bar(i * 0.1, "on" := '#', "off" := '-', width := 10) FROM generate_series(0, 10) t(i)
+----
+----------
+#---------
+##--------
+###-------
+####------
+#####-----
+######----
+#######---
+########--
+#########-
+##########
+
+# ── tp_line / tp_snakemap ────────────────────────────────────────────────
+# Both render multi-row ASCII/ANSI art (embedded newlines, ANSI escapes for
+# tp_snakemap), which this line-oriented runner can't represent directly as
+# a single expected value (see src/sqllogictest_main.zig's doc comment on
+# unsupported forms — no CSV-quote-aware multi-line field handling). Rather
+# than settle for an "at least it didn't error" check (weaker than what
+# `task test:e2e` gave, since that only means `statement ok`, which itself
+# requires NO result rows at all and so can't even be used for a `SELECT`
+# that returns a value), `md5(...)` collapses the whole rendered output to
+# one deterministic hex string on one line — a real exact-match check, not
+# a weaker substitute: any pixel of the rendered chart changing changes the
+# hash. (Switching the runner to `-json` mode, which escapes embedded
+# newlines as `\n`, would let these show the literal expected text instead
+# of an opaque hash — a readability improvement, not a coverage one; not
+# attempted here.)
+
+query T
+SELECT tp_line(NULL)
+----
+NULL
+
+query T
+SELECT tp_line([]::DOUBLE[])
+----
+(empty)
+
+query T
+SELECT tp_line([1.0, 2.0, 4.0, 3.0, 5.0, 2.0, 3.0])
+----
+ 5.00 ┤   ╭╮  \n 4.50 ┤   ││  \n 4.00 ┤ ╭╮││  \n 3.50 ┤ ││││  \n 3.00 ┤ │╰╯│╭ \n 2.50 ┤ │  ││ \n 2.00 ┤╭╯  ╰╯ \n 1.50 ┤│      \n 1.00 ┼╯      \n 0.50 ┤       \n 0.00 ┤       \n\n
+
+query T
+SELECT tp_line([0.0, 1.0, 0.0, -1.0, 0.0])
+----
+  1.00 ┤╭╮   \n  0.80 ┤││   \n  0.60 ┤││   \n  0.40 ┤││   \n  0.20 ┤││   \n  0.00 ┼╯╰╮╭ \n -0.20 ┤  ││ \n -0.40 ┤  ││ \n -0.60 ┤  ││ \n -0.80 ┤  ││ \n -1.00 ┤  ╰╯ \n\n
+
+query T
+SELECT tp_line([1.0, 3.0, 2.0, 4.0, 1.0], height := 5.0)
+----
+ 4.00 ┤  ╭╮ \n 3.20 ┤╭╮││ \n 2.40 ┤│╰╯│ \n 1.60 ┤│  │ \n 0.80 ┼╯  ╰ \n 0.00 ┤     \n\n
+
+query T
+SELECT tp_line((SELECT list(v::DOUBLE ORDER BY i) FROM (VALUES (1, 1.0), (2, 3.0), (3, 2.0), (4, 4.0), (5, 1.0)) t(i, v)))
+----
+ 4.00 ┤  ╭╮ \n 3.60 ┤  ││ \n 3.20 ┤╭╮││ \n 2.80 ┤││││ \n 2.40 ┤││││ \n 2.00 ┤│╰╯│ \n 1.60 ┤│  │ \n 1.20 ┼╯  ╰ \n 0.80 ┤     \n 0.40 ┤     \n 0.00 ┤     \n\n
+
+query T
+SELECT tp_snakemap(NULL, ['a'], ['g'], width := 40, height := 20)
+----
+NULL
+
+# These three still carry ANSI color escapes (tp_snakemap's default
+# no_color := false) — as literal JSON escapes (`\u001b[38;5;7m`, ...) that
+# would be a wall of noise nobody could usefully read in a diff, not a
+# readability win. md5(...) stays the right call for exactly these three;
+# the no_color case right after this needs no such treatment, since
+# without ANSI codes its literal text is perfectly readable.
+
+query T
+SELECT md5(tp_snakemap([10.0, 20.0, 30.0, 5.0, 15.0, 25.0], ['a', 'b', 'c', 'x', 'y', 'z'], ['G1', 'G1', 'G1', 'G2', 'G2', 'G2'], width := 40, height := 20))
+----
+f881456020a2838d4a7505fd759c7a69
+
+query T
+SELECT md5(tp_snakemap([1.0, 2.0, 3.0, 4.0], ['p', 'q', 'r', 's'], ['Alpha', 'Alpha', 'Beta', 'Beta']))
+----
+fd86c25ba66e6f555690f5ee0722767e
+
+query T
+SELECT tp_snakemap([10.0, 20.0, 30.0, 5.0, 15.0, 25.0], ['a', 'b', 'c', 'x', 'y', 'z'], ['G1', 'G1', 'G1', 'G2', 'G2', 'G2'], width := 40, height := 20, no_color := true)
+----
+╔══════════════════════════════════════╗\n║┏━G1━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓║\n║┃░░░░░░░░░░░░░░░░░a░░░░░░░░░░░░░░░░░░┃║\n║┃┌──────────────────────╴░░░░░░░░░░░░┃║\n║┃│b▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒╶──────────┐┃║\n║┃└──────────────────────────────────┘┃║\n║┃┌c─────────────────────────────────┐┃║\n║┃│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│┃║\n║┃│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│┃║\n║┃└──────────────────────────────────┘┃║\n║┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛║\n║░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒║\n║┏━G2━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓║\n║┃░░░░░░░░░x░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒┃║\n║┃▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒y▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒┃║\n║┃▒▒▒▒▒▒▒▒╶──────────────────────────┐┃║\n║┃┌z─────╴▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│┃║\n║┃└──────────────────────────────────┘┃║\n║┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛║\n╚══════════════════════════════════════╝\n
+
+query T
+SELECT md5(tp_snakemap([5.0, 10.0, 15.0], ['small', 'medium', 'large'], ['only'], width := 40, height := 12))
+----
+8c884d52b5d8d0a35c61c9190fb264e3
+
+# ── a long input: the scan is linear in it ───────────────────────────────
+# Exec used to measure the whole input on every chunk (quadratic): 5M tokens took 12 seconds, 1M half a second.
+
+query III
+SELECT count(*), max(token_pos), sum(length(token)) FROM zig_tokenize(repeat('abc,', 2000000), ',')
+----
+2000001
+2000000
+6000000
+
+query III
+SELECT count(*), max(token_pos), sum(length(token)) FROM ct_tokenize(repeat('abc,', 2000000), ',')
+----
+2000001
+2000000
+6000000

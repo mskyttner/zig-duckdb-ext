@@ -1,0 +1,28 @@
+# The MinGW toolchain and the Wine that verify:static-windows needs, in one pinned image.
+#
+# - The toolchain is only the C++ runtime the Windows static libraries link against: DuckDB's MinGW
+#   archives want a libstdc++ with emulated TLS (`__emutls_v._ZSt11__once_call`), which is what
+#   MinGW's *posix* thread model gives (see build.zig's libstdcxxHasEmulatedOnceCall). Zig itself runs
+#   on the host and takes the three archives out of this image.
+# - Wine runs the resulting .exe headless; the prefix is created at build time so a run does not pay
+#   for it.
+FROM docker.io/library/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    WINEARCH=win64 \
+    WINEPREFIX=/opt/wineprefix \
+    WINEDEBUG=-all
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends g++-mingw-w64-x86-64-posix wine wine64 libfreetype6 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# The three archives the Windows embedding links, at a path that does not depend on the GCC version.
+RUN d="$(dirname "$(x86_64-w64-mingw32-g++-posix -print-file-name=libstdc++.a)")" \
+ && mkdir -p /mingw-runtime \
+ && cp "$d/libstdc++.a" "$d/libgcc.a" "$d/libgcc_eh.a" /mingw-runtime/ \
+ && x86_64-w64-mingw32-g++-posix --version | head -1 > /mingw-runtime/VERSION
+
+# Initialise the prefix once, headless (no display; the font warnings are noise), and fail the build if
+# it did not get created.
+RUN wineboot --init; wineserver --wait; test -d "$WINEPREFIX/drive_c"

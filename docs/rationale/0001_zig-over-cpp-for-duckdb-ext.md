@@ -48,3 +48,10 @@ Use **Zig** with the DuckDB C extension API.
 - Extension metadata (platform, version, ABI type) must be appended
   manually via a build-time tool, since we bypass DuckDB's CMake
   extension scaffolding.
+
+## Update (2026-10-17): the v2 API does not use `@cImport`
+
+The decision stands, but "via `@cImport`" describes the v1 extension only (`src/lib/duckdb.zig`). The v2 C API is used
+through Zig declarations that are generated from DuckDB's API specification (`src/lib/duckdb_v2_types.zig`,
+`duckdb_v2_static.zig`, `duckdb_v2_dynamic.zig`, by `zig build gen-v2-bindings`), with no C header translated at build
+time.

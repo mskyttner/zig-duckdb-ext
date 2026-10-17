@@ -32,44 +32,174 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
-        //.example = .{
-        //    // When updating this field to a new URL, be sure to delete the corresponding
-        //    // `hash`, otherwise you are communicating that you expect to find the old hash at
-        //    // the new URL. If the contents of a URL change this will result in a hash mismatch
-        //    // which will prevent zig from using it.
-        //    .url = "https://example.com/foo.tar.gz",
+        .translate_c = .{
+            .url = "git+https://codeberg.org/ziglang/translate-c#875969d3493e245e01bf5d7860f792d8f3eb9ef5",
+            .hash = "translate_c-0.0.0-Q_BUWoFOBwAhz77Zd15HCVuhTKzdUKc94kezmCeJ7IC_",
+        },
+        // Pinned, content-hashed DuckDB v2.0 alpha CLI binaries — replaces
+        // the machine-local, unpinned `DUCKDB_VERSION=alpha bash
+        // <(curl https://install.duckdb.org)` install this project's own
+        // docs (docs/v2-migration-plan.md's "Testing infrastructure gaps")
+        // previously required by hand, for the two host platforms DuckDB
+        // actually publishes a CLI for at this staged URL today (confirmed
+        // live, 2026-10-12: macOS/Windows return 404 here — only Linux
+        // amd64/arm64 exist under this path). `lazy = true` so only the
+        // one matching the build host is ever actually fetched (see
+        // `duckdbV2CliLazyPath` in build.zig); the other stays undownloaded.
         //
-        //    // This is computed from the file contents of the directory of files that is
-        //    // obtained after fetching `url` and applying the inclusion rules given by
-        //    // `paths`.
-        //    //
-        //    // This field is the source of truth; packages do not come from a `url`; they
-        //    // come from a `hash`. `url` is just one of many possible mirrors for how to
-        //    // obtain a package matching this `hash`.
-        //    //
-        //    // Uses the [multihash](https://multiformats.io/multihash/) format.
-        //    .hash = "...",
+        // CAUTION: this is a *staged*, not a tagged-release, artifact.
+        // Pinned to the immutable `duckdb-staging.duckdb.org/<commit>/
+        // <version>/...` path (`f8f3f4dcd9`/`v2.0.0-alpha48730`; the earlier pin was
+        // `b15358c371`/`v2.0.0-alpha46057`), not the
+        // floating `artifacts.duckdb.org/staged/v2.0-cyanoptera/...`
+        // alias this was originally pinned via — confirmed, 2026-10-16,
+        // by reading `duckdb/duckdb-install-scripts`' own `install.sh`
+        // (the official installer `curl install.duckdb.org | sh` runs):
+        // it hits exactly this `duckdb-staging.duckdb.org/<commit>/
+        // <version>/duckdb/duckdb/github_release/...` shape for
+        // `DUCKDB_STAGED=<commit>/<version>`, and the old
+        // `artifacts.duckdb.org/staged/v2.0-cyanoptera/...` URL turned out
+        // to be nothing but a 302 redirect to it (same `zig fetch` hash
+        // either way — verified, not assumed). The commit+version-keyed
+        // path is immutable (this exact historical build, forever), so
+        // this hash will NOT go stale as the "cyanoptera" staging channel
+        // moves forward — unlike the old alias, which would have silently
+        // started redirecting elsewhere. Will still need re-pinning to a
+        // new commit/version (or switching to the real
+        // `github.com/duckdb/duckdb/releases/download/...` pattern
+        // already used for the v1.5.6 headers) once DuckDB 2.0 ships as
+        // an actual tagged release.
+        .duckdb_cli_v2_linux_amd64 = .{
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/duckdb-cli-linux-amd64.tar.gz",
+            .hash = "N-V-__8AADBnngQczJ6co1lcRWgiSIQ9dR5YigmZhzbLOdOZ",
+            .lazy = true,
+        },
+        .duckdb_cli_v2_linux_arm64 = .{
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/duckdb-cli-linux-arm64.tar.gz",
+            .hash = "N-V-__8AAJBFfAQbm26it8PMG0_rPWCm7qaizCxFah3oIc0D",
+            .lazy = true,
+        },
+        // Version-pinned, content-hashed vendored DuckDB C API headers —
+        // replaces the plain committed `duckdb_capi/*.h` files, which had
+        // no recorded provenance (confirmed, 2026-10-13: byte-for-byte
+        // identical to neither the v1.2.0 tag their own `const
+        // target_duckdb_version` suggested, nor v1.3.0 through v1.5.6, nor
+        // `main` — origin unknown). Re-vendored from DuckDb's own
+        // `libduckdb-src.zip` release/CI artifact (small — a few hundred KB
+        // to 5MB, not a full source clone — and a format `zig fetch`
+        // recognizes; a bare `.h` file served as `text/plain` is not, so
+        // that was tried first and rejected). Full build + `task
+        // check:all` + `zig build cross` + the 53-block v1 sqllogictest
+        // suite all re-verified passing against these exact fetched files
+        // before switching to them.
         //
-        //    // When this is provided, the package is found in a directory relative to the
-        //    // build root. In this case the package's hash is irrelevant and therefore not
-        //    // computed. This field and `url` are mutually exclusive.
-        //    .path = "foo",
+        // v1: the real, tagged `v1.5.6` release — matches every other v1
+        // version reference already in this project (the GitHub Actions
+        // release workflow's `DUCKDB_VERSION`, the CLI used for manual/
+        // sqllogictest verification throughout this branch). Immutable:
+        // a tagged release's assets never change, so this hash never goes
+        // stale.
+        .duckdb_headers_v1 = .{
+            .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-src.zip",
+            .hash = "N-V-__8AANq4rwEjjrNWz619N1Pu61lS5GAi7o4Qx9cHU7aN",
+        },
+        // v2: the staged `v2.0.0-alpha48730` ("Cyanoptera"), commit
+        // `f8f3f4dcd9`, which the CLI of the same path reports via
+        // `-version`. (The previous pin, `b15358c371`/`v2.0.0-alpha46057`,
+        // was verified byte-identical to its commit by diffing against
+        // `raw.githubusercontent.com`; this one was not diffed, but the
+        // bindings generated from that commit's API spec match its headers
+        // closely enough that the whole test suite runs against it.) Pinned via the immutable `duckdb-staging.duckdb.org/
+        // <commit>/<version>/...` path, not the floating
+        // `artifacts.duckdb.org/staged/v2.0-cyanoptera/...` alias it was
+        // originally fetched through — see the `duckdb_cli_v2_*` entries
+        // above for how this was confirmed (via `duckdb-install-scripts`'
+        // own `install.sh`). Still needs re-pinning once DuckDB 2.0 ships
+        // as a real tagged release.
+        .duckdb_headers_v2 = .{
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/libduckdb-src.zip",
+            .hash = "N-V-__8AAGE3FABOFiByIikYlEjX_O105iJ4o4e1S8qNA5eC",
+        },
+        // A real, compiled `libduckdb_static.a` (+ matching full headers)
+        // for the exact same pinned `v2.0.0-alpha48730` commit — contrary
+        // to `docs/v2-migration-plan.md`'s "Static linking" section's
+        // earlier "confirmed absent" finding, which checked the wrong
+        // filename (the real v1.5.6 GitHub-release naming convention,
+        // `libduckdb-linux-amd64.zip`/`static-libs-linux-amd64.zip`, both
+        // genuinely 404 here). The staged alpha channel uses a different,
+        // `duckdb-`-prefixed naming scheme instead
+        // (`duckdb-static-libs-linux-amd64.tar.gz`), confirmed live to
+        // return 200 with a real 127MB static archive — verified it's
+        // really for this exact pinned commit by `strings`-ing the
+        // archive's `libduckdb.so` sibling for its embedded version
+        // string (`v2.0.0-alpha48730`, found in `libautocomplete_extension.a` and `libcore_functions_extension.a`), not just trusting the URL path.
+        // `lazy = true`: only the `v2-static-embed-poc` step (itself
+        // experimental, not part of any default build) ever fetches
+        // this — large and single-purpose. Pinned via the same immutable
+        // `duckdb-staging.duckdb.org/<commit>/<version>/...` path as
+        // `duckdb_cli_v2_*`/`duckdb_headers_v2` above, not the floating
+        // alias it was originally fetched through.
+        .duckdb_static_libs_v2_linux_amd64 = .{
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/duckdb-static-libs-linux-amd64.tar.gz",
+            .hash = "N-V-__8AAPJdEAvCFx12F9mllIo_uefBgR8vdbjNM1tR-iFn",
+            .lazy = true,
+        },
+        // The same static libraries for Windows, built with MinGW (GCC 10.4, libstdc++) — NOT the plain
+        // `duckdb-static-libs-windows-amd64` tarball, which is an MSVC build (`.lib`, 206 MB). Only the
+        // `v2-static-embed-poc` steps ever fetch it, when built with `-Dtarget=x86_64-windows-gnu`.
+        .duckdb_static_libs_v2_windows_mingw = .{
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/duckdb-static-libs-windows-mingw.tar.gz",
+            .hash = "N-V-__8AAPk1uwqOjXDeTyr-rVLV-U_9Ni5HzPTw4jEW6Knd",
+            .lazy = true,
+        },
+        // YAML parser, needed only by tools/gen_v2_bindings.zig, which
+        // regenerates src/lib/duckdb_v2_{types,static,dynamic}.zig from the API spec
+        // (`zig build gen-v2-bindings`). The spec uses block scalars and flow
+        // maps, which upstream zig-yaml does not parse; the sibling checkout
+        // carries those changes. `lazy = true`, so no other build ever
+        // resolves it — the generated files are committed.
+        .yaml = .{
+            .path = "../zig-yaml",
+            .lazy = true,
+        },
+        // Image decode/resize, needed only by src/lib/braille_image.zig —
+        // a speculative v2-poc-only demo (a scalar + table function, plus
+        // a replacement scan for `FROM 'https://.../*.jpg'`), never wired
+        // into the real zig_ext/zig_ext_v2 extensions. `lazy = true` so a
+        // plain `zig build`/`zig build cross` never fetches it. Same pin
+        // the sibling ../braille_image project already uses.
+        .zignal = .{
+            .url = "git+https://github.com/arrufat/zignal#56586a9ae1537661033c2475185d984da0d88b75",
+            .hash = "zignal-0.11.0-dev-OrZ3s2R2KgBB2VYMukzzVm2viQ8UBwnYIBXVbaTZ7M8M",
+            .lazy = true,
+        },
+        // OpenCV-bit-exact kernels, needed only by the weighted-Voronoi-
+        // stippling v2-poc demo (src/lib/stipple_image.zig) for its
+        // Gaussian-blur pre-smoothing step — a separate, isolated demo
+        // from the braille one above, so its own dependency stays lazy
+        // and doesn't affect anything else. `blurU8`/`blurF32` take raw
+        // slices (no zigcv-specific image type), directly compatible
+        // with a `zignal.Image(u8)`'s own `.data` field — confirmed via
+        // zigcv's own README ("decode to an 8-bit grey or RGB slice and
+        // hand it to zigcv") and `src/gauss.zig`'s actual signatures.
         //
-        //    // When this is set to `true`, a package is declared to be lazily
-        //    // fetched. This makes the dependency only get fetched if it is
-        //    // actually used.
-        //    .lazy = false,
-        //},
+        // Pinned via `git+...#<commit>` (tag v0.18.0's exact commit),
+        // NOT the `archive/refs/tags/*.tar.gz` URL this was originally
+        // pinned with — confirmed live that GitHub's auto-generated tag
+        // tarballs are not reliably byte-reproducible across separate
+        // downloads (repeated `zig fetch` of the identical tag URL
+        // produced two different content hashes, which then made
+        // `b.dependency(...).module("zigcv")` fail with "unable to find
+        // module" — the fetched package's `build()` never ran against
+        // the hash this manifest expected). `git+...#<commit>` is
+        // content-addressed by git itself and reproducible, same
+        // convention already used for `zignal` above.
+        .zigcv = .{
+            .url = "git+https://github.com/mgbilby/zigcv#44a4306dfdc061d11ba99b9f517fe1f9e5a18ebd",
+            .hash = "zigcv-0.18.0-rNqqFhl8BABuG4b4Ve8vmxxUOmy9KlXiBTVZYliWYo3v",
+            .lazy = true,
+        },
     },
-    // Specifies the set of files and directories that are included in this package.
-    // Only files and directories listed here are included in the `hash` that
-    // is computed for this package. Only files listed here will remain on disk
-    // when using the zig package manager. As a rule of thumb, one should list
-    // files required for compilation plus any license(s).
-    // Paths are relative to the build root. Use the empty string (`""`) to refer to
-    // the build root itself.
-    // A directory listed here means that all files within, recursively, are included.
     .paths = .{
         "build.zig",
         "build.zig.zon",

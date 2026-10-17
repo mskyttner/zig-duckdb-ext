@@ -1,0 +1,128 @@
+name: Release extension
+
+# Builds the real v1 extension for every target in build.zig's
+# cross_targets (zig build cross) and publishes the result as a custom
+# DuckDB extension repository via GitHub Pages, per
+# docs/rationale/0004_extension-distribution-and-signing.md.
+#
+# `INSTALL zig_ext FROM 'https://<owner>.github.io/<repo>/';` then works
+# against the published tree (after `SET allow_unsigned_extensions=true;`
+# — see that ADR for why this isn't signed).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; let an in-flight one finish rather
+# than cancelling it mid-publish.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  ZIG_VERSION: "0.17.0"
+  # The repository's version directory must match a DuckDB CLIENT's own
+  # exact running version (confirmed live, and in DuckDB's own source:
+  # ExtensionHelper::GetVersionDirectoryName() uses DuckDB::LibraryVersion()
+  # for a release build) — NOT the minimum-ABI-compatibility version the
+  # extension's own metadata footer declares (target_duckdb_version in
+  # build.zig, "v1.2.0": a separate concern). This is the latest stable
+  # release this project has actually tested against this session.
+  DUCKDB_VERSION: "v1.5.6"
+  # Forwarded into `zig build cross` as -Dname/-Dapi-version/-Dextension-version;
+  # defaults here match build.zig's own defaults.
+  EXTENSION_NAME: "zig_ext"
+  EXTENSION_API_VERSION: "v1.2.0"
+  EXTENSION_VERSION: "v0.1.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # mlugg/setup-zig's canonical home is Codeberg, but its own README
+      # says GitHub Actions can't use a non-GitHub-hosted action directly
+      # (confirmed live: `uses: https://codeberg.org/...` fails to
+      # resolve) — the github.com/mlugg/setup-zig mirror is the right
+      # reference here. The mistake wasn't the mirror, it was @v1: that
+      # tag couldn't resolve Zig 0.17.0 ("Unable to locate executable
+      # file: zig"); @v2 can.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cross-compile and package the extension for every target
+        run: |
+          zig build dist \
+            -Dname="${EXTENSION_NAME}" \
+            -Dapi-version="${EXTENSION_API_VERSION}" \
+            -Dextension-version="${EXTENSION_VERSION}" \
+            -Ddist-version="${DUCKDB_VERSION}"
+          find dist -type f
+
+      - name: Assemble the landing page and API docs alongside the extension repository
+        run: |
+          set -euo pipefail
+          cp zig-out/index.html dist/index.html
+          cp -r zig-out/docs dist/docs
+          cp -r zig-out/docs-v2 dist/docs-v2
+          find dist -maxdepth 1
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
+
+  verify-musl:
+    name: verify-musl (${{ matrix.arch }})
+    needs: deploy
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only arm64 actually needs emulation on these (x86_64) runners;
+      # registering it is a no-op for the amd64 matrix leg.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      # End-to-end: a real musl DuckDB CLI, in a real Alpine container,
+      # installing the extension from the just-deployed GitHub Pages
+      # repository — not a locally mounted build artifact — proving the
+      # whole publish pipeline for the musl cross targets, not just that
+      # they compile. See docs/rationale/0004_extension-distribution-and-signing.md
+      # for why this is unsigned (`-unsigned`) rather than a trusted install.
+      - name: Install and run the published extension (linux_${{ matrix.arch }}_musl)
+        run: |
+          docker run --rm --platform "linux/${{ matrix.arch }}" \
+            -e DUCKDB_VERSION="${DUCKDB_VERSION}" \
+            -e EXTENSION_NAME="${EXTENSION_NAME}" \
+            -e REPO_URL="${{ needs.deploy.outputs.page_url }}" \
+            -e ARCH="${{ matrix.arch }}" \
+            -v "${{ github.workspace }}/.github/scripts/verify-musl-e2e.sh:/verify.sh:ro" \
+            docker.io/library/alpine:3.20 sh /verify.sh

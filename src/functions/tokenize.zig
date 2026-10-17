@@ -29,6 +29,10 @@ const BindData = struct {
     input_raw: ?[*:0]u8,
     /// Owned by DuckDB allocator (from duckdb_get_varchar). Freed in destroy.
     delim_raw: ?[*:0]u8,
+    /// Byte lengths of the two strings, measured once in bind: exec runs once per chunk, and measuring a long input
+    /// there makes the scan quadratic in the input.
+    input_len: usize,
+    delim_len: usize,
 };
 
 /// Init data — per-thread execution state tracking position in the input.
@@ -84,9 +88,13 @@ pub fn tokenizeBind(info: db.BindInfo) callconv(.c) void {
     };
     // SAFETY: raw_ptr is freshly allocated with sufficient size and default alignment.
     const data: *BindData = @ptrCast(@alignCast(raw_ptr));
+    const input_raw = db.getVarchar(param_input);
+    const delim_raw = db.getVarchar(param_delim);
     data.* = .{
-        .input_raw = db.getVarchar(param_input),
-        .delim_raw = db.getVarchar(param_delim),
+        .input_raw = input_raw,
+        .delim_raw = delim_raw,
+        .input_len = if (input_raw) |raw| std.mem.len(raw) else 0,
+        .delim_len = if (delim_raw) |raw| std.mem.len(raw) else 0,
     };
 
     db.bindSetBindData(info, raw_ptr, &destroyBindData);
@@ -124,8 +132,8 @@ pub fn tokenizeExec(info: db.FunctionInfo, output: db.DataChunk) callconv(.c) vo
         return;
     }
 
-    const input: []const u8 = if (bind_data.input_raw) |raw| std.mem.span(raw) else "";
-    const delim: []const u8 = if (bind_data.delim_raw) |raw| std.mem.span(raw) else "";
+    const input: []const u8 = if (bind_data.input_raw) |raw| raw[0..bind_data.input_len] else "";
+    const delim: []const u8 = if (bind_data.delim_raw) |raw| raw[0..bind_data.delim_len] else "";
 
     // SAFETY: DuckDB guarantees output vectors match the schema defined in bind.
     const pos_vec = db.dataChunkGetVector(output, 0);
