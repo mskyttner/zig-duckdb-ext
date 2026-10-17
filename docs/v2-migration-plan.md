@@ -2061,10 +2061,18 @@ static one for the static embedding (below).
   backend is.
 - **Not done:** a CI step for `v2-static-embed-poc` (it needs `libduckdb_static.a`
   and a GNU libstdc++ on the host); porting the PoC extensions to the static
-  graph (not needed). `ct_add_numbers` (v1 and v2) and v1's `zig_add_numbers` still
-  trap on overflow, now for the comptime framework as a design question: the
-  framework calls a user function that returns a plain `i64`, so it has no way
-  to report an error.
+  graph (not needed). v1's hand-written `zig_add_numbers` still traps on i64 overflow.
+- **`ct_add_numbers` overflow (`e9c10e3`, v1 in the next commit).** The framework
+  now accepts an `implFn` returning `E!T` on the leaf, VARCHAR, BLOB, DECIMAL and
+  ENUM paths (a nested type or VARIANT with an error union is a compile error):
+  an error fails the query with `<function>: <error name>`, as out-of-range input
+  for `error.Overflow` and invalid input otherwise (v1 has no error codes, only
+  the text). `ct_add_numbers` is `std.math.add`; the blocks were written first and
+  crashed the CLI at the first overflow. Two PoC functions
+  (`zig_v2_checked_div_ct`, `zig_v2_first_word_ct`) pin the numeric and VARCHAR
+  paths and both error codes. Mutations of the code mapping, the message and the
+  early return are killed; the unobservable one (continuing after an error) is
+  not worth a test.
 
 ### Follow-up: building `libduckdb.a` from source with `zig c++` instead of the official prebuilt archive (done, 2026-10-14, recorded — not pursued further yet)
 

@@ -37,7 +37,10 @@ fn duckdbTypeId(comptime T: type) db.c.DUCKDB_TYPE {
 pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
     const fn_info = @typeInfo(@TypeOf(implFn)).@"fn";
     const param_types = fn_info.param_types;
-    const ReturnType = fn_info.return_type.?;
+    // `implFn` may return `E!T`: an error ends the query with "<function name>: <error name>".
+    const RawReturnType = fn_info.return_type.?;
+    const returns_error = @typeInfo(RawReturnType) == .error_union;
+    const ReturnType = if (returns_error) @typeInfo(RawReturnType).error_union.payload else RawReturnType;
 
     // Validate all parameter and return types at comptime.
     inline for (param_types) |t| {
@@ -72,7 +75,6 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
 
         /// Vectorized callback invoked by DuckDB for each DataChunk.
         fn execute(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) callconv(.c) void {
-            _ = info;
             const chunk_size = db.dataChunkGetSize(input);
 
             // Cache raw data pointers and validity masks before the loop (one vtable
@@ -104,7 +106,7 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
                 const out_validity = db.vectorGetValidity(output).?;
                 for (0..chunk_size) |row| {
                     if (rowIsValid(&valids, row)) {
-                        result[row] = invoke(&raw_data, row);
+                        result[row] = call(info, &raw_data, row) orelse return;
                     } else {
                         db.validitySetRowInvalid(out_validity, row);
                     }
@@ -112,7 +114,7 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
             } else {
                 // Fast path: no NULLs, skip validity checks.
                 for (0..chunk_size) |row| {
-                    result[row] = invoke(&raw_data, row);
+                    result[row] = call(info, &raw_data, row) orelse return;
                 }
             }
         }
@@ -125,8 +127,23 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
             return true;
         }
 
+        /// `invoke`, with an error of `implFn` reported as the error of the query: null means the
+        /// caller must stop (DuckDB fails the query, whatever else is written).
+        inline fn call(info: db.FunctionInfo, raw_data: *const [param_types.len]?*anyopaque, row: usize) ?ReturnType {
+            const produced = invoke(raw_data, row);
+            if (comptime !returns_error) return produced;
+            return produced catch |e| {
+                var buf: [160]u8 = undefined;
+                const msg = std.fmt.bufPrint(buf[0 .. buf.len - 1], "{s}: {s}", .{ name, @errorName(e) }) catch buf[0..0];
+                buf[msg.len] = 0;
+                // SAFETY: `buf[msg.len]` is the terminating NUL written above.
+                db.scalarFunctionSetError(info, @ptrCast(&buf));
+                return null;
+            };
+        }
+
         /// Extract typed values from raw data pointers and call the user function.
-        inline fn invoke(raw_data: *const [param_types.len]?*anyopaque, row: usize) ReturnType {
+        inline fn invoke(raw_data: *const [param_types.len]?*anyopaque, row: usize) RawReturnType {
             return @call(.auto, implFn, makeArgs(raw_data, row));
         }
 
