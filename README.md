@@ -158,7 +158,7 @@ const MyTable = comptime_table.Function(struct {
 | Function | Hand-written | Comptime |
 |---|---|---|
 | `add_numbers`, `sum` over 10M rows | 0.015s | 0.014s |
-| `tokenize`, one input of 200K tokens | 0.023s | 0.023s |
+| `tokenize`, one input of 1M tokens | 0.024s | 0.024s |
 
 The comptime layer costs nothing measurable: the differences are within run-to-run variance. (The timings are not
 comparable across machines; an earlier table from macOS arm64 had 0.024s and 0.025s for `add_numbers`.) The binary
@@ -166,9 +166,7 @@ sizes of the two versions are no longer compared, because the extension holds ev
 Details in [ADR-0002](docs/rationale/0002_comptime-registration-vs-handwritten.md), including a correction to its
 table function and size results.
 
-A table function takes constants, not a column, so the `tokenize` benchmark splits one long input. Much longer inputs
-get slow, because `zig_tokenize` and `ct_tokenize` measure the whole input again on every chunk (quadratic in the
-input).
+A table function takes constants, not a column, so the `tokenize` benchmark splits one long input.
 
 ## Prerequisites
 

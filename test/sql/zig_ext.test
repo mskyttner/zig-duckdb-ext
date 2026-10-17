@@ -411,3 +411,20 @@ query T
 SELECT md5(tp_snakemap([5.0, 10.0, 15.0], ['small', 'medium', 'large'], ['only'], width := 40, height := 12))
 ----
 8c884d52b5d8d0a35c61c9190fb264e3
+
+# ── a long input: the scan is linear in it ───────────────────────────────
+# Exec used to measure the whole input on every chunk (quadratic): 5M tokens took 12 seconds, 1M half a second.
+
+query III
+SELECT count(*), max(token_pos), sum(length(token)) FROM zig_tokenize(repeat('abc,', 2000000), ',')
+----
+2000001
+2000000
+6000000
+
+query III
+SELECT count(*), max(token_pos), sum(length(token)) FROM ct_tokenize(repeat('abc,', 2000000), ',')
+----
+2000001
+2000000
+6000000

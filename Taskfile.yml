@@ -138,24 +138,23 @@ tasks:
           " 2>&1 | grep "Run Time"
         done
 
-        # One long input split into 200K tokens. A table function here takes constants (not a column of a lateral
-        # join), so the work has to be in one call. Much more than this is dominated by zig_tokenize and ct_tokenize
-        # re-measuring the whole input on every chunk (std.mem.span in tokenizeExec), which is quadratic in the input.
+        # One long input split into 1M tokens. A table function here takes constants (not a column of a lateral
+        # join), so the work has to be in one call.
         echo ""
-        echo "--- zig_tokenize: 200K tokens (hand-written) ---"
+        echo "--- zig_tokenize: 1M tokens (hand-written) ---"
         for run in 1 2 3; do
           duckdb -unsigned -no-init -cmd ".timer on" -c "
             LOAD '${EXT_PATH}';
-            SELECT count(*), sum(length(token)) FROM zig_tokenize(repeat('abc,', 200000), ',');
+            SELECT count(*), sum(length(token)) FROM zig_tokenize(repeat('abc,', 1000000), ',');
           " 2>&1 | grep "Run Time"
         done
 
         echo ""
-        echo "--- ct_tokenize: 200K tokens (comptime) ---"
+        echo "--- ct_tokenize: 1M tokens (comptime) ---"
         for run in 1 2 3; do
           duckdb -unsigned -no-init -cmd ".timer on" -c "
             LOAD '${EXT_PATH}';
-            SELECT count(*), sum(length(token)) FROM ct_tokenize(repeat('abc,', 200000), ',');
+            SELECT count(*), sum(length(token)) FROM ct_tokenize(repeat('abc,', 1000000), ',');
           " 2>&1 | grep "Run Time"
         done
 
