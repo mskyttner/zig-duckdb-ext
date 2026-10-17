@@ -175,7 +175,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
             var err = (input.err orelse return error.MissingErrorSlot).*;
 
             var function: v2.duckdb_v2_table_function_handle = undefined;
-            if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, &err) != .ERROR_NONE) {
+            if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, &err) orelse return error.FailedToGetFactory, &function, &err) != .ERROR_NONE) {
                 return error.FailedToCreateFunction;
             }
             defer _ = v2.duckdb_v2_table_function_destroy(&function);
@@ -234,7 +234,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
                 }
             }
 
-            if (v2.duckdb_v2_table_function_register(function, &err) != .ERROR_NONE) {
+            if (v2.duckdb_v2_extension_register_table_function(input.extension, function, &err) != .ERROR_NONE) {
                 return error.FailedToRegisterFunction;
             }
         }

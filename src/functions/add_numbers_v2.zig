@@ -82,7 +82,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     const err = input.err;
 
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) {
         return error.FailedToCreateFunction;
     }
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
@@ -93,7 +93,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     }
 
     var bigint_type: v2.duckdb_v2_logical_type_handle = undefined;
-    if (v2.duckdb_v2_context_create_type_from_id(input.context, .LOGICAL_TYPE_ID_BIGINT, null, null, 0, &bigint_type, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_factory_create_type_from_id(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, .LOGICAL_TYPE_ID_BIGINT, null, null, 0, &bigint_type, err) != .ERROR_NONE) {
         return error.FailedToCreateType;
     }
     defer _ = v2.duckdb_v2_logical_type_destroy(&bigint_type);
@@ -119,7 +119,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
         return error.FailedToSetExecCallback;
     }
 
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }
 }

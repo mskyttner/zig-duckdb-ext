@@ -38,7 +38,7 @@ fn fail(err: Err, code: v2.DUCKDB_V2_ERROR, comptime fmt: []const u8, args: anyt
 
 fn registerType(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     var custom: v2.duckdb_v2_custom_type_handle = undefined;
-    if (v2.duckdb_v2_custom_type_create_with_extension(input.extension, &custom, err) != .ERROR_NONE) return error.FailedToCreateType;
+    if (v2.duckdb_v2_custom_type_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &custom, err) != .ERROR_NONE) return error.FailedToCreateType;
     defer _ = v2.duckdb_v2_custom_type_destroy(&custom);
     const name = helpers.str(type_name);
     if (v2.duckdb_v2_custom_type_set_name(custom, &name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -49,7 +49,7 @@ fn registerType(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     // A fully defined concrete type: ANY, a wildcard of function signatures, cannot be a base.
     if (v2.duckdb_v2_custom_type_set_base_type(custom, base, err) != .ERROR_NONE) return error.FailedToSetBaseType;
     // Registered on the extension being loaded. The handle stays ours, to destroy; the registration does not need it.
-    if (v2.duckdb_v2_custom_type_register(custom, err) != .ERROR_NONE) return error.FailedToRegisterType;
+    if (v2.duckdb_v2_extension_register_custom_type(input.extension, custom, err) != .ERROR_NONE) return error.FailedToRegisterType;
 }
 
 /// The custom type as a logical type, by looking it up in the catalog: what a user's `::zig_cookbook_celsius` resolves to.
@@ -59,7 +59,10 @@ fn celsiusByName(ctx: v2.duckdb_v2_context_handle, out: *v2.duckdb_v2_logical_ty
     const created = v2.duckdb_v2_qname_create(&parts, parts.len, &qname, err);
     if (created != .ERROR_NONE) return created;
     defer _ = v2.duckdb_v2_qname_destroy(&qname);
-    return v2.duckdb_v2_context_create_type_from_name(ctx, qname, null, null, 0, out, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_factory_create_type_from_name(f, qname, null, null, 0, out, err);
 }
 
 /// The same type made from its base type and its name: no lookup, so it also works where the catalog is out of reach
@@ -70,7 +73,10 @@ fn celsiusByAlias(ctx: v2.duckdb_v2_context_handle, out: *v2.duckdb_v2_logical_t
     if (created != .ERROR_NONE) return created;
     defer _ = v2.duckdb_v2_logical_type_destroy(&base);
     const alias = helpers.str(type_name);
-    return v2.duckdb_v2_context_create_type_with_alias(ctx, base, &alias, out, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_factory_create_type_with_alias(f, base, &alias, out, err);
 }
 
 // --- casts --------------------------------------------------------------------------------------------------------------
@@ -208,7 +214,7 @@ fn sideType(side: Side, input: *const v2.duckdb_v2_extension_input, out: *v2.duc
 
 fn registerCast(input: *const v2.duckdb_v2_extension_input, err: Err, from: Side, to: Side, exec: v2.duckdb_v2_cast_function_exec_callback_fn, implicit_cost: ?i64) !void {
     var function: v2.duckdb_v2_cast_function_handle = undefined;
-    if (v2.duckdb_v2_cast_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_cast_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_cast_function_destroy(&function);
 
     var source: v2.duckdb_v2_logical_type_handle = undefined;
@@ -223,7 +229,7 @@ fn registerCast(input: *const v2.duckdb_v2_extension_input, err: Err, from: Side
         if (v2.duckdb_v2_cast_function_set_implicit_cast_cost(function, cost, err) != .ERROR_NONE) return error.FailedToSetCost;
     }
     if (v2.duckdb_v2_cast_function_set_exec_callback(function, exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_cast_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterCast;
+    if (v2.duckdb_v2_extension_register_cast_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterCast;
 }
 
 // --- functions that take and return the type -------------------------------------------------------------------------------
@@ -267,7 +273,7 @@ fn convertExec(comptime to_fahrenheit: bool) fn (v2.duckdb_v2_scalar_function_ex
 
 fn registerConversion(input: *const v2.duckdb_v2_extension_input, err: Err, name: []const u8, comptime to_fahrenheit: bool) !void {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
     const fn_name = helpers.str(name);
     if (v2.duckdb_v2_scalar_function_set_name(function, &fn_name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -285,7 +291,7 @@ fn registerConversion(input: *const v2.duckdb_v2_extension_input, err: Err, name
     if (v2.duckdb_v2_function_signature_add_parameter(sig, &param, if (to_fahrenheit) celsius else double, null, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
     if (v2.duckdb_v2_function_signature_set_return_type(sig, if (to_fahrenheit) double else celsius, err) != .ERROR_NONE) return error.FailedToSetReturnType;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &convertExec(to_fahrenheit), err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the type, then what needs it: the casts and the functions. A failure leaves DuckDB's error info in the

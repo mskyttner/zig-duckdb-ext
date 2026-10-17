@@ -270,7 +270,7 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
             var err = (input.err orelse return error.MissingErrorSlot).*;
 
             var function: v2.duckdb_v2_cast_function_handle = undefined;
-            if (v2.duckdb_v2_cast_function_create_with_extension(input.extension, &function, &err) != .ERROR_NONE) {
+            if (v2.duckdb_v2_cast_function_create(helpers.factory(input.context, &err) orelse return error.FailedToGetFactory, &function, &err) != .ERROR_NONE) {
                 return error.FailedToCreateFunction;
             }
             defer _ = v2.duckdb_v2_cast_function_destroy(&function);
@@ -297,7 +297,7 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                 return error.FailedToSetExecCallback;
             }
 
-            if (v2.duckdb_v2_cast_function_register(function, &err) != .ERROR_NONE) {
+            if (v2.duckdb_v2_extension_register_cast_function(input.extension, function, &err) != .ERROR_NONE) {
                 return error.FailedToRegisterFunction;
             }
         }

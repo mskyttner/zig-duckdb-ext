@@ -414,7 +414,7 @@ fn createLogicalType(ctx: v2.duckdb_v2_context_handle, comptime T: type, out_typ
 /// an optional argument here, since Zig has no default-parameter-value
 /// syntax to keep this call site unchanged for every existing caller.
 pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
-    return FunctionImpl(name, implFn, null);
+    return FunctionImpl(name, implFn, null, null);
 }
 
 /// Like `Function`, but `param_names` supplies the SQL parameter names in
@@ -425,10 +425,16 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
 /// counting a leading VARIANT `context` parameter, which isn't a SQL
 /// parameter at all).
 pub fn FunctionNamed(comptime name: [:0]const u8, comptime implFn: anytype, comptime param_names: []const [:0]const u8) type {
-    return FunctionImpl(name, implFn, param_names);
+    return FunctionImpl(name, implFn, param_names, null);
 }
 
-fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime param_names: ?[]const [:0]const u8) type {
+/// Like `FunctionNamed`, and the function also gets a description, examples and categories, which
+/// `duckdb_functions()` reports. Needs an API with the function docs calls (`v2.0.0-alpha48730` and later).
+pub fn FunctionDocumented(comptime name: [:0]const u8, comptime implFn: anytype, comptime param_names: []const [:0]const u8, comptime docs: helpers.Docs) type {
+    return FunctionImpl(name, implFn, param_names, docs);
+}
+
+fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime param_names: ?[]const [:0]const u8, comptime docs: ?helpers.Docs) type {
     const fn_info = @typeInfo(@TypeOf(implFn)).@"fn";
     const raw_param_types = fn_info.param_types;
     // `implFn` may return `E!T`: on an error the query fails (see `reportError`). Only the paths
@@ -524,7 +530,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             var err = (input.err orelse return error.MissingErrorSlot).*;
 
             var function: v2.duckdb_v2_scalar_function_handle = undefined;
-            if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, &err) != .ERROR_NONE) {
+            if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, &err) orelse return error.FailedToGetFactory, &function, &err) != .ERROR_NONE) {
                 return error.FailedToCreateFunction;
             }
             defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
@@ -584,7 +590,13 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 }
             }
 
-            if (v2.duckdb_v2_scalar_function_register(function, &err) != .ERROR_NONE) {
+            if (docs) |d| {
+                var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+                if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, &err) != .ERROR_NONE) return error.FailedToGetDocs;
+                helpers.setDocs(function_docs, d, &err) catch return error.FailedToSetDocs;
+            }
+
+            if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, &err) != .ERROR_NONE) {
                 return error.FailedToRegisterFunction;
             }
         }
@@ -680,7 +692,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                     if (helpers.createVarcharValue(context, @tagName(produced), &text_value, err) != .ERROR_NONE) return;
                     defer _ = v2.duckdb_v2_value_destroy(&text_value);
                     var value: v2.duckdb_v2_value_handle = undefined;
-                    if (v2.duckdb_v2_value_cast_with_context(context, text_value, result_type, &value, err) != .ERROR_NONE) return;
+                    if (v2.duckdb_v2_value_cast(helpers.factory(context, err) orelse return, text_value, result_type, &value, err) != .ERROR_NONE) return;
                     defer _ = v2.duckdb_v2_value_destroy(&value);
                     if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
                 }
@@ -1101,13 +1113,13 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
         inline fn boxLeafValue(ctx: v2.duckdb_v2_context_handle, comptime T: type, v: T, out: *v2.duckdb_v2_value_handle, err: *v2.duckdb_v2_error_info_handle) bool {
             const rc = switch (T) {
-                i8 => v2.duckdb_v2_value_create_tinyint_with_context(ctx, v, out, err),
-                i16 => v2.duckdb_v2_value_create_smallint_with_context(ctx, v, out, err),
-                i32 => v2.duckdb_v2_value_create_int_with_context(ctx, v, out, err),
-                i64 => v2.duckdb_v2_value_create_bigint_with_context(ctx, v, out, err),
-                f32 => v2.duckdb_v2_value_create_float_with_context(ctx, v, out, err),
-                f64 => v2.duckdb_v2_value_create_double_with_context(ctx, v, out, err),
-                bool => v2.duckdb_v2_value_create_bool_with_context(ctx, v, out, err),
+                i8 => v2.duckdb_v2_value_create_tinyint(helpers.factory(ctx, err) orelse return false, v, out, err),
+                i16 => v2.duckdb_v2_value_create_smallint(helpers.factory(ctx, err) orelse return false, v, out, err),
+                i32 => v2.duckdb_v2_value_create_int(helpers.factory(ctx, err) orelse return false, v, out, err),
+                i64 => v2.duckdb_v2_value_create_bigint(helpers.factory(ctx, err) orelse return false, v, out, err),
+                f32 => v2.duckdb_v2_value_create_float(helpers.factory(ctx, err) orelse return false, v, out, err),
+                f64 => v2.duckdb_v2_value_create_double(helpers.factory(ctx, err) orelse return false, v, out, err),
+                bool => v2.duckdb_v2_value_create_bool(helpers.factory(ctx, err) orelse return false, v, out, err),
                 else => @compileError("unsupported LIST/ARRAY element type for boxing: " ++ @typeName(T)),
             };
             return rc == .ERROR_NONE;

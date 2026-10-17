@@ -23,10 +23,14 @@ fn exec(
 
     const str: v2.duckdb_v2_str = .{ .ptr = message.ptr, .len = message.len };
 
+    // Values, types and functions are made through a factory, which a context hands out.
+    var factory: v2.duckdb_v2_factory_handle = undefined;
+    if (v2.duckdb_v2_context_get_factory(context, &factory, err) != .ERROR_NONE) return;
+
     var row: u64 = 0;
     while (row < row_count) : (row += 1) {
         var value: v2.duckdb_v2_value_handle = undefined;
-        if (v2.duckdb_v2_value_create_varchar_with_context(context, &str, &value, err) != .ERROR_NONE) return;
+        if (v2.duckdb_v2_value_create_varchar(factory, &str, &value, err) != .ERROR_NONE) return;
         defer _ = v2.duckdb_v2_value_destroy(&value);
         if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
     }
@@ -39,8 +43,10 @@ pub fn register(
     context: v2.duckdb_v2_context_handle,
     err: ?*v2.duckdb_v2_error_info_handle,
 ) void {
+    var factory: v2.duckdb_v2_factory_handle = undefined;
+    if (v2.duckdb_v2_context_get_factory(context, &factory, err) != .ERROR_NONE) return;
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_scalar_function_create(factory, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
     const name: v2.duckdb_v2_str = .{ .ptr = "gen_hello", .len = "gen_hello".len };
@@ -50,10 +56,10 @@ pub fn register(
     if (v2.duckdb_v2_scalar_function_get_signature(function, &signature, err) != .ERROR_NONE) return;
 
     var varchar_type: v2.duckdb_v2_logical_type_handle = undefined;
-    if (v2.duckdb_v2_context_create_type_from_id(context, .LOGICAL_TYPE_ID_VARCHAR, null, null, 0, &varchar_type, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_factory_create_type_from_id(factory, .LOGICAL_TYPE_ID_VARCHAR, null, null, 0, &varchar_type, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_logical_type_destroy(&varchar_type);
     if (v2.duckdb_v2_function_signature_set_return_type(signature, varchar_type, err) != .ERROR_NONE) return;
 
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) return;
-    _ = v2.duckdb_v2_scalar_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_scalar_function(extension, function, err);
 }

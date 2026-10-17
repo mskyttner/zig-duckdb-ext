@@ -108,7 +108,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     const err = input.err orelse return error.MissingErrorSlot;
 
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) {
         return error.FailedToCreateFunction;
     }
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
@@ -137,7 +137,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     if (v2.duckdb_v2_function_signature_add_parameter(sig, &data_name, list_type, null, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
 
     var height_default: v2.duckdb_v2_value_handle = undefined;
-    if (v2.duckdb_v2_value_create_double_with_context(input.context, 10.0, &height_default, err) != .ERROR_NONE) return error.FailedToCreateDefault;
+    if (v2.duckdb_v2_value_create_double(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, 10.0, &height_default, err) != .ERROR_NONE) return error.FailedToCreateDefault;
     defer _ = v2.duckdb_v2_value_destroy(&height_default);
     const height_name = helpers.str("height");
     if (v2.duckdb_v2_function_signature_add_parameter(sig, &height_name, double_type, height_default, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
@@ -150,7 +150,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
         return error.FailedToSetExecCallback;
     }
 
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }
 }

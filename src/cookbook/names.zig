@@ -195,7 +195,7 @@ fn registerScalar(
     exec: anytype,
 ) !void {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
     const fn_name = helpers.str(name);
     if (v2.duckdb_v2_scalar_function_set_name(function, &fn_name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -214,7 +214,7 @@ fn registerScalar(
     defer _ = v2.duckdb_v2_logical_type_destroy(&ret);
     if (v2.duckdb_v2_function_signature_set_return_type(sig, ret, err) != .ERROR_NONE) return error.FailedToSetReturnType;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 // --- zig_cookbook_qname_parts(text) --------------------------------------------------------------------------------
@@ -338,7 +338,7 @@ fn partsExec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duc
 
 fn registerParts(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     var function: v2.duckdb_v2_table_function_handle = undefined;
-    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
     const name = helpers.str("zig_cookbook_qname_parts");
     if (v2.duckdb_v2_table_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -352,7 +352,7 @@ fn registerParts(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_table_function_set_bind_callback(function, &partsBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &partsInitGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &partsExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_table_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the functions. A failure leaves DuckDB's error info in the entrypoint's error slot.

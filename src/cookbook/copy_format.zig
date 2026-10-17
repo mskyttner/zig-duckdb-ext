@@ -280,7 +280,7 @@ fn toBatch(info: v2.duckdb_v2_copy_to_batch_info_handle, context: v2.duckdb_v2_c
                 }
                 // Any type to its text, by DuckDB's own cast.
                 var text_value: v2.duckdb_v2_value_handle = undefined;
-                if (v2.duckdb_v2_value_cast_with_context(context, value, varchar, &text_value, err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_value_cast(helpers.factory(context, err) orelse return, value, varchar, &text_value, err) != .ERROR_NONE) return;
                 defer _ = v2.duckdb_v2_value_destroy(&text_value);
                 var text: v2.duckdb_v2_str = undefined;
                 if (v2.duckdb_v2_value_get_varchar(text_value, &text, err) != .ERROR_NONE) return;
@@ -518,7 +518,7 @@ fn fromExec(info: v2.duckdb_v2_copy_from_exec_info_handle, context: v2.duckdb_v2
             if (helpers.createVarcharValue(context, cells.items[k], &text, err) != .ERROR_NONE) return;
             defer _ = v2.duckdb_v2_value_destroy(&text);
             var value: v2.duckdb_v2_value_handle = undefined;
-            if (v2.duckdb_v2_value_cast_with_context(context, text, bound.types[c], &value, err) != .ERROR_NONE) return;
+            if (v2.duckdb_v2_value_cast(helpers.factory(context, err) orelse return, text, bound.types[c], &value, err) != .ERROR_NONE) return;
             defer _ = v2.duckdb_v2_value_destroy(&value);
             if (v2.duckdb_v2_vector_set_value(vec, row, value, err) != .ERROR_NONE) return;
         }
@@ -539,7 +539,7 @@ fn fromProgress(info: v2.duckdb_v2_copy_from_progress_info_handle, context: v2.d
 
 fn registerCopy(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     var function: v2.duckdb_v2_copy_function_handle = undefined;
-    if (v2.duckdb_v2_copy_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_copy_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_copy_function_destroy(&function);
     const name = helpers.str(format_name);
     if (v2.duckdb_v2_copy_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -556,7 +556,7 @@ fn registerCopy(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_copy_from_set_exec_callback(function, &fromExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_copy_from_set_progress_callback(function, &fromProgress, err) != .ERROR_NONE) return error.FailedToSetCallback;
 
-    if (v2.duckdb_v2_copy_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_copy_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the format. A failure leaves DuckDB's error info in the entrypoint's error slot.

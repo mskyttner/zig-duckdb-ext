@@ -58,7 +58,7 @@ fn resultData(info: v2.duckdb_v2_scalar_function_exec_info_handle, row_count: u6
 
 fn begin(function_name: []const u8, input: *const v2.duckdb_v2_extension_input, err: Err) !v2.duckdb_v2_scalar_function_handle {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     const name = helpers.str(function_name);
     if (v2.duckdb_v2_scalar_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
     return function;
@@ -189,7 +189,7 @@ fn registerNegate(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_scalar_function_set_resolve_types_callback(function, &negateResolve, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_scalar_function_set_bind_callback(function, &negateBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &negateExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 // --- zig_cookbook_round_to(x DOUBLE, digits INTEGER) -> DOUBLE ----------------------------------------
@@ -274,7 +274,7 @@ fn registerRoundTo(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     try setReturn(sig, .LOGICAL_TYPE_ID_DOUBLE, input, err);
     if (v2.duckdb_v2_scalar_function_set_bind_callback(function, &roundBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &roundExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 // --- zig_cookbook_times2 / _times3 / _times10 (x BIGINT) -> BIGINT: user data ------------------------
@@ -327,7 +327,7 @@ fn registerTimes(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
         var boxed: v2.duckdb_v2_opaque = .{ .ptr = @constCast(&factors[i]), .destroy = null, .equals = null };
         if (v2.duckdb_v2_scalar_function_set_user_data(function, &boxed, err) != .ERROR_NONE) return error.FailedToSetUserData;
         if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &timesExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-        if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+        if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
     }
 }
 
@@ -387,7 +387,7 @@ fn registerRowNumber(input: *const v2.duckdb_v2_extension_input, err: Err) !void
     if (v2.duckdb_v2_scalar_function_set_property(function, .FUNCTION_PROPERTY_STABILITY, .FUNCTION_PROPERTY_STABILITY_VOLATILE, err) != .ERROR_NONE) return error.FailedToSetProperty;
     if (v2.duckdb_v2_scalar_function_set_init_callback(function, &rowNumberInit, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &rowNumberExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the four examples. A failure leaves DuckDB's error info in the entrypoint's error slot.

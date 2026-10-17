@@ -38,6 +38,46 @@ pub fn setNullHandlingSpecial(function: v2.duckdb_v2_scalar_function_handle, err
     return v2.duckdb_v2_scalar_function_set_property(function, .FUNCTION_PROPERTY_NULL_HANDLING, .FUNCTION_PROPERTY_NULL_HANDLING_SPECIAL, err);
 }
 
+/// The factory of a context: the handle that the API's `create` calls (types, values, chunks, functions) take. It is
+/// borrowed and valid as long as the context is. Null after failing, with the reason in `err`.
+pub fn factory(ctx: v2.duckdb_v2_context_handle, err: ?*v2.duckdb_v2_error_info_handle) ?v2.duckdb_v2_factory_handle {
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    if (v2.duckdb_v2_context_get_factory(ctx, &f, err) != .ERROR_NONE) return null;
+    return f;
+}
+
+/// What `duckdb_functions()` shows about a function besides its signature.
+pub const Docs = struct {
+    description: ?[]const u8 = null,
+    examples: []const Example = &.{},
+    categories: []const []const u8 = &.{},
+
+    pub const Example = struct {
+        /// Optional; DuckDB keeps it, but `duckdb_functions().examples` lists only the `sql`.
+        title: ?[]const u8 = null,
+        sql: []const u8,
+    };
+};
+
+/// Fills a function's docs (from `<kind>_function_get_docs`). The texts are copied.
+pub fn setDocs(docs: v2.duckdb_v2_function_docs_handle, d: Docs, err: ?*v2.duckdb_v2_error_info_handle) !void {
+    if (d.description) |text| {
+        const view = str(text);
+        if (v2.duckdb_v2_function_docs_set_description(docs, &view, err) != .ERROR_NONE) return error.DuckDbError;
+    }
+    for (d.examples) |example| {
+        const sql = str(example.sql);
+        if (example.title) |t| {
+            const title = str(t);
+            if (v2.duckdb_v2_function_docs_add_example(docs, &title, &sql, err) != .ERROR_NONE) return error.DuckDbError;
+        } else if (v2.duckdb_v2_function_docs_add_example(docs, null, &sql, err) != .ERROR_NONE) return error.DuckDbError;
+    }
+    for (d.categories) |c| {
+        const category = str(c);
+        if (v2.duckdb_v2_function_docs_add_category(docs, &category, err) != .ERROR_NONE) return error.DuckDbError;
+    }
+}
+
 // --- Slice forms of calls that take a pointer and a count, or a `str` ----------------------------
 
 /// A logical type that needs no parameters, by id.
@@ -47,7 +87,10 @@ pub fn createTypeFromId(
     out_type: *v2.duckdb_v2_logical_type_handle,
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
-    return v2.duckdb_v2_context_create_type_from_id(ctx, type_id, null, null, 0, out_type, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_factory_create_type_from_id(f, type_id, null, null, 0, out_type, err);
 }
 
 /// A logical type from its SQL text, e.g. "VARIANT" or "ENUM('a', 'b')".
@@ -58,7 +101,10 @@ pub fn createTypeFromText(
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
     const view = str(text);
-    return v2.duckdb_v2_context_create_type_from_text(ctx, &view, out_type, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_factory_create_type_from_text(f, &view, out_type, err);
 }
 
 /// A VARCHAR value; the text is copied.
@@ -69,7 +115,10 @@ pub fn createVarcharValue(
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
     const view = str(text);
-    return v2.duckdb_v2_value_create_varchar_with_context(ctx, &view, out_value, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_value_create_varchar(f, &view, out_value, err);
 }
 
 /// A BLOB value; the bytes are copied.
@@ -80,7 +129,10 @@ pub fn createBlobValue(
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
     const view = str(bytes);
-    return v2.duckdb_v2_value_create_blob_with_context(ctx, &view, out_value, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_value_create_blob(f, &view, out_value, err);
 }
 
 /// A LIST value of `children`, which are copied.
@@ -91,7 +143,10 @@ pub fn createListValue(
     out_value: *v2.duckdb_v2_value_handle,
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
-    return v2.duckdb_v2_value_create_list_with_context(ctx, child_type, children.ptr, children.len, out_value, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_value_create_list(f, child_type, children.ptr, children.len, out_value, err);
 }
 
 /// An ARRAY value of `children`, which are copied.
@@ -102,7 +157,10 @@ pub fn createArrayValue(
     out_value: *v2.duckdb_v2_value_handle,
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
-    return v2.duckdb_v2_value_create_array_with_context(ctx, child_type, children.ptr, children.len, out_value, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_value_create_array(f, child_type, children.ptr, children.len, out_value, err);
 }
 
 /// A MAP value of `keys[i]` -> `values[i]`, which are copied.
@@ -116,7 +174,10 @@ pub fn createMapValue(
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
     std.debug.assert(keys.len == values.len);
-    return v2.duckdb_v2_value_create_map_with_context(ctx, key_type, value_type, keys.ptr, values.ptr, keys.len, out_value, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_value_create_map(f, key_type, value_type, keys.ptr, values.ptr, keys.len, out_value, err);
 }
 
 /// A STRUCT value of `children`, named `names`; both are copied.
@@ -128,7 +189,10 @@ pub fn createStructValue(
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
     std.debug.assert(names.len == children.len);
-    return v2.duckdb_v2_value_create_struct_with_context(ctx, names.ptr, children.ptr, names.len, out_value, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_value_create_struct(f, names.ptr, children.ptr, names.len, out_value, err);
 }
 
 /// A column data collection with one column per entry of `types`.
@@ -138,7 +202,10 @@ pub fn createColumnDataCollection(
     out_collection: *v2.duckdb_v2_column_data_collection_handle,
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
-    return v2.duckdb_v2_column_data_collection_create_with_context(ctx, types.ptr, types.len, out_collection, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_column_data_collection_create(f, types.ptr, types.len, out_collection, err);
 }
 
 /// A data chunk with one column per entry of `types`.
@@ -148,7 +215,10 @@ pub fn createDataChunk(
     out_chunk: *v2.duckdb_v2_data_chunk_handle,
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
-    return v2.duckdb_v2_data_chunk_create_with_context(ctx, types.ptr, types.len, out_chunk, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_data_chunk_create(f, types.ptr, types.len, out_chunk, err);
 }
 
 // --- Parametrised logical types -----------------------------------------------------------------
@@ -159,7 +229,7 @@ pub fn createDataChunk(
 // the details in `err`.
 
 fn boxType(ctx: v2.duckdb_v2_context_handle, ty: v2.duckdb_v2_logical_type_handle, out: *v2.duckdb_v2_value_handle, err: *v2.duckdb_v2_error_info_handle) bool {
-    return v2.duckdb_v2_value_create_type_with_context(ctx, ty, out, err) == .ERROR_NONE;
+    return v2.duckdb_v2_value_create_type(factory(ctx, err) orelse return false, ty, out, err) == .ERROR_NONE;
 }
 
 /// LIST(child_type).
@@ -173,7 +243,10 @@ pub fn createListType(
     if (!boxType(ctx, child_type, &child_value, err)) return .ERROR_API;
     defer _ = v2.duckdb_v2_value_destroy(&child_value);
     const params = [_]v2.duckdb_v2_value_handle{child_value};
-    return v2.duckdb_v2_context_create_type_from_id(ctx, .LOGICAL_TYPE_ID_LIST, null, &params, params.len, out_type, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_factory_create_type_from_id(f, .LOGICAL_TYPE_ID_LIST, null, &params, params.len, out_type, err);
 }
 
 /// ARRAY(child_type, size).
@@ -188,10 +261,13 @@ pub fn createArrayType(
     if (!boxType(ctx, child_type, &child_value, err)) return .ERROR_API;
     defer _ = v2.duckdb_v2_value_destroy(&child_value);
     var size_value: v2.duckdb_v2_value_handle = undefined;
-    if (v2.duckdb_v2_value_create_bigint_with_context(ctx, size, &size_value, err) != .ERROR_NONE) return .ERROR_API;
+    if (v2.duckdb_v2_value_create_bigint(factory(ctx, err) orelse return .ERROR_API, size, &size_value, err) != .ERROR_NONE) return .ERROR_API;
     defer _ = v2.duckdb_v2_value_destroy(&size_value);
     const params = [_]v2.duckdb_v2_value_handle{ child_value, size_value };
-    return v2.duckdb_v2_context_create_type_from_id(ctx, .LOGICAL_TYPE_ID_ARRAY, null, &params, params.len, out_type, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_factory_create_type_from_id(f, .LOGICAL_TYPE_ID_ARRAY, null, &params, params.len, out_type, err);
 }
 
 /// MAP(key_type, value_type).
@@ -209,7 +285,10 @@ pub fn createMapType(
     if (!boxType(ctx, value_type, &value_value, err)) return .ERROR_API;
     defer _ = v2.duckdb_v2_value_destroy(&value_value);
     const params = [_]v2.duckdb_v2_value_handle{ key_value, value_value };
-    return v2.duckdb_v2_context_create_type_from_id(ctx, .LOGICAL_TYPE_ID_MAP, null, &params, params.len, out_type, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_factory_create_type_from_id(f, .LOGICAL_TYPE_ID_MAP, null, &params, params.len, out_type, err);
 }
 
 /// DECIMAL(width, scale).
@@ -221,13 +300,16 @@ pub fn createDecimalType(
     err: *v2.duckdb_v2_error_info_handle,
 ) v2.DUCKDB_V2_ERROR {
     var width_value: v2.duckdb_v2_value_handle = undefined;
-    if (v2.duckdb_v2_value_create_utinyint_with_context(ctx, width, &width_value, err) != .ERROR_NONE) return .ERROR_API;
+    if (v2.duckdb_v2_value_create_utinyint(factory(ctx, err) orelse return .ERROR_API, width, &width_value, err) != .ERROR_NONE) return .ERROR_API;
     defer _ = v2.duckdb_v2_value_destroy(&width_value);
     var scale_value: v2.duckdb_v2_value_handle = undefined;
-    if (v2.duckdb_v2_value_create_utinyint_with_context(ctx, scale, &scale_value, err) != .ERROR_NONE) return .ERROR_API;
+    if (v2.duckdb_v2_value_create_utinyint(factory(ctx, err) orelse return .ERROR_API, scale, &scale_value, err) != .ERROR_NONE) return .ERROR_API;
     defer _ = v2.duckdb_v2_value_destroy(&scale_value);
     const params = [_]v2.duckdb_v2_value_handle{ width_value, scale_value };
-    return v2.duckdb_v2_context_create_type_from_id(ctx, .LOGICAL_TYPE_ID_DECIMAL, null, &params, params.len, out_type, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_factory_create_type_from_id(f, .LOGICAL_TYPE_ID_DECIMAL, null, &params, params.len, out_type, err);
 }
 
 /// STRUCT(names[i] field_types[i], ...). The field types are boxed into `field_type_values`, which
@@ -267,7 +349,10 @@ fn createNamedType(
     for (types, 0..) |ty, i| {
         if (!boxType(ctx, ty, &type_values[i], err)) return .ERROR_API;
     }
-    return v2.duckdb_v2_context_create_type_from_id(ctx, type_id, names.ptr, type_values.ptr, names.len, out_type, err);
+    var f: v2.duckdb_v2_factory_handle = undefined;
+    const got = v2.duckdb_v2_context_get_factory(ctx, &f, err);
+    if (got != .ERROR_NONE) return got;
+    return v2.duckdb_v2_factory_create_type_from_id(f, type_id, names.ptr, type_values.ptr, names.len, out_type, err);
 }
 
 test "str views the bytes it is given" {

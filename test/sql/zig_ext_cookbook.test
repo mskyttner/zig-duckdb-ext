@@ -145,16 +145,17 @@ SELECT setting FROM zig_cookbook_options() WHERE name = 'threads'
 ----
 2
 
-# The target scope is reported by name; UNKNOWN is what an option without an explicit scope gets.
+# The default scope is reported by name: where a bare `SET name = value` writes it. (Before alpha48730 this column was
+# the target scope: GLOBAL_DEFAULT, GLOBAL_ONLY, LOCAL_DEFAULT or UNKNOWN.)
 query T
 SELECT string_agg(DISTINCT scope, ',' ORDER BY scope) FROM zig_cookbook_options()
 ----
-GLOBAL_DEFAULT,GLOBAL_ONLY,LOCAL_DEFAULT,UNKNOWN
+GLOBAL,SESSION
 
 query T
 SELECT scope FROM zig_cookbook_options() WHERE name = 'default_null_order'
 ----
-GLOBAL_DEFAULT
+GLOBAL
 
 # The table function is usable like any other: filter, join, repeat.
 query I
@@ -1900,7 +1901,7 @@ Unterminated quote
 statement error
 SELECT zig_cookbook_qname_render('')
 ----
-between one and three parts
+Zero-length identifier
 
 # An empty identifier is rendered as "", which does not parse back as a name.
 statement error

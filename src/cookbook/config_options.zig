@@ -5,20 +5,44 @@
 ///!
 ///! What the API gives you, and what it does not:
 ///!
-///!   * A function receives a **context**, and `context_get_option_by_name` / `context_get_option_by_index` read an
-///!     option through it: the connection's `SET` override if it has one, otherwise the global value, otherwise the
-///!     default; aliases resolve. An unknown name is an error of the query.
-///!   * An option handle **borrows** its strings (name, setting, default, description) until it is destroyed, so
-///!     anything kept past that is copied: the table function copies every row while it binds.
-///!   * The context is a **read** scope. Options are written through an instance or a connection (`SET` in SQL).
-///!   * There is **no call to register an option of your own** in the v2 C API: extension options exist only for
-///!     C++ extensions, and `context_get_option_count` counts them when present.
+///!   * A function receives a **context**, and `context_get_config` gives the **config** through which options are read:
+///!     `config_get_option_value` returns the value as the option's own type (and the scope it came from): the
+///!     connection's `SET` override if it has one, otherwise the global value, otherwise the default; aliases resolve.
+///!     `config_get_option_by_name` / `_by_index` / `_count` give option handles. An unknown name is an error of the query.
+///!   * An option handle **borrows** its strings (name, description) until it is destroyed, so anything kept past that is
+///!     copied: the table function copies every row while it binds. Values are owned by the caller, and typed: to show
+///!     one as text, cast it to VARCHAR (`value_cast`, which takes a factory).
+///!   * `config_set_option_value` writes through a config; `SET` in SQL does the same.
+///!   * This API (alpha48730) has `custom_option_*`, a way to register an option of your own; this recipe only reads.
 ///!
 ///! Scalar functions get the context in `exec`; table functions get it in `bind` (and `init_global`), which is why
 ///! the table function below snapshots at bind time instead of reading while it emits rows.
 const std = @import("std");
 const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
+
+/// `value` cast to VARCHAR, owned by the caller; null after failing.
+fn castToVarchar(factory: v2.duckdb_v2_factory_handle, context: v2.duckdb_v2_context_handle, value: v2.duckdb_v2_value_handle, err: *v2.duckdb_v2_error_info_handle) ?v2.duckdb_v2_value_handle {
+    var varchar_type: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createTypeFromId(context, .LOGICAL_TYPE_ID_VARCHAR, &varchar_type, err) != .ERROR_NONE) return null;
+    defer _ = v2.duckdb_v2_logical_type_destroy(&varchar_type);
+    var out: v2.duckdb_v2_value_handle = undefined;
+    if (v2.duckdb_v2_value_cast(factory, value, varchar_type, &out, err) != .ERROR_NONE) return null;
+    return out;
+}
+
+/// The text of a value of any type, copied into `arena`.
+fn valueText(arena: std.mem.Allocator, context: v2.duckdb_v2_context_handle, value: v2.duckdb_v2_value_handle, err: *v2.duckdb_v2_error_info_handle) ![]const u8 {
+    var is_null = false;
+    if (v2.duckdb_v2_value_is_null(value, &is_null, err) != .ERROR_NONE) return error.DuckDbError;
+    if (is_null) return "";
+    const factory = helpers.factory(context, err) orelse return error.DuckDbError;
+    var text_value = castToVarchar(factory, context, value, err) orelse return error.DuckDbError;
+    defer _ = v2.duckdb_v2_value_destroy(&text_value);
+    var text: v2.duckdb_v2_str = undefined;
+    if (v2.duckdb_v2_value_get_varchar(text_value, &text, err) != .ERROR_NONE) return error.DuckDbError;
+    return copyStr(arena, text);
+}
 
 // --- zig_cookbook_option(name) ---------------------------------------------------------------------
 
@@ -51,16 +75,16 @@ fn optionExec(
             continue;
         }
         const name = helpers.str(helpers.bytesSlice(&names[row]));
-        var option: v2.duckdb_v2_option_handle = undefined;
-        // An unknown option leaves its reason in `err`, which fails the query.
-        if (v2.duckdb_v2_context_get_option_by_name(context, &name, &option, err) != .ERROR_NONE) return;
-        defer _ = v2.duckdb_v2_option_destroy(&option);
-
-        var setting: v2.duckdb_v2_str = undefined;
-        if (v2.duckdb_v2_option_get_setting(option, &setting, err) != .ERROR_NONE) return;
-        // `setting` is borrowed from `option`: box it into a Value before the option is destroyed.
-        var value: v2.duckdb_v2_value_handle = undefined;
-        if (v2.duckdb_v2_value_create_varchar_with_context(context, &setting, &value, err) != .ERROR_NONE) return;
+        var config: v2.duckdb_v2_config_handle = undefined;
+        if (v2.duckdb_v2_context_get_config(context, &config, err) != .ERROR_NONE) return;
+        // The value is typed as the option is (a BIGINT for `threads`); an unknown name leaves its reason in `err`,
+        // which fails the query.
+        var typed: v2.duckdb_v2_value_handle = undefined;
+        var scope: v2.DUCKDB_V2_SETTING_SCOPE = undefined;
+        if (v2.duckdb_v2_config_get_option_value(config, &name, &typed, &scope, err) != .ERROR_NONE) return;
+        defer _ = v2.duckdb_v2_value_destroy(&typed);
+        const factory = helpers.factory(context, err) orelse return;
+        var value = castToVarchar(factory, context, typed, err) orelse return;
         defer _ = v2.duckdb_v2_value_destroy(&value);
         if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
     }
@@ -68,7 +92,7 @@ fn optionExec(
 
 fn registerOption(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) !void {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
     const fn_name = helpers.str("zig_cookbook_option");
@@ -85,7 +109,7 @@ fn registerOption(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2
     if (v2.duckdb_v2_function_signature_set_return_type(sig, varchar_type, err) != .ERROR_NONE) return error.FailedToSetReturnType;
 
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &optionExec, err) != .ERROR_NONE) return error.FailedToSetExecCallback;
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 // --- zig_cookbook_options() ------------------------------------------------------------------------
@@ -122,20 +146,27 @@ fn copyStr(arena: std.mem.Allocator, s: v2.duckdb_v2_str) ![]const u8 {
 
 /// Reads the option at `index` into `row`; the strings live in `arena`.
 fn readOption(arena: std.mem.Allocator, context: v2.duckdb_v2_context_handle, index: u64, row: *Row, err: *v2.duckdb_v2_error_info_handle) !void {
+    var config: v2.duckdb_v2_config_handle = undefined;
+    if (v2.duckdb_v2_context_get_config(context, &config, err) != .ERROR_NONE) return error.DuckDbError;
     var option: v2.duckdb_v2_option_handle = undefined;
-    if (v2.duckdb_v2_context_get_option_by_index(context, index, &option, err) != .ERROR_NONE) return error.DuckDbError;
+    if (v2.duckdb_v2_config_get_option_by_index(config, index, &option, err) != .ERROR_NONE) return error.DuckDbError;
     defer _ = v2.duckdb_v2_option_destroy(&option);
 
     var name: v2.duckdb_v2_identifier_t = undefined;
-    var setting: v2.duckdb_v2_str = undefined;
-    var default_setting: v2.duckdb_v2_str = undefined;
     var description: v2.duckdb_v2_str = undefined;
-    var scope: v2.DUCKDB_V2_OPTION_TARGET_SCOPE = undefined;
+    var scope: v2.DUCKDB_V2_SETTING_SCOPE = undefined;
     if (v2.duckdb_v2_option_get_name(option, &name, err) != .ERROR_NONE) return error.DuckDbError;
-    if (v2.duckdb_v2_option_get_setting(option, &setting, err) != .ERROR_NONE) return error.DuckDbError;
-    if (v2.duckdb_v2_option_get_default_setting(option, &default_setting, err) != .ERROR_NONE) return error.DuckDbError;
     if (v2.duckdb_v2_option_get_description(option, &description, err) != .ERROR_NONE) return error.DuckDbError;
-    if (v2.duckdb_v2_option_get_target_scope(option, &scope, err) != .ERROR_NONE) return error.DuckDbError;
+    if (v2.duckdb_v2_option_get_default_scope(option, &scope, err) != .ERROR_NONE) return error.DuckDbError;
+
+    // The current value (as the connection sees it) and the default, both typed: shown as text.
+    var current: v2.duckdb_v2_value_handle = undefined;
+    var current_scope: v2.DUCKDB_V2_SETTING_SCOPE = undefined;
+    if (v2.duckdb_v2_config_get_option_value(config, &name, &current, &current_scope, err) != .ERROR_NONE) return error.DuckDbError;
+    defer _ = v2.duckdb_v2_value_destroy(&current);
+    var default_value: v2.duckdb_v2_value_handle = undefined;
+    if (v2.duckdb_v2_option_get_default_value(option, &default_value, err) != .ERROR_NONE) return error.DuckDbError;
+    defer _ = v2.duckdb_v2_value_destroy(&default_value);
 
     // The other names the option answers to, comma-separated (none for an extension option).
     var alias_count: u64 = 0;
@@ -151,10 +182,10 @@ fn readOption(arena: std.mem.Allocator, context: v2.duckdb_v2_context_handle, in
 
     row.* = .{
         try copyStr(arena, name),
-        try copyStr(arena, setting),
-        try copyStr(arena, default_setting),
+        try valueText(arena, context, current, err),
+        try valueText(arena, context, default_value, err),
         try copyStr(arena, description),
-        @tagName(scope)["OPTION_TARGET_SCOPE_".len..],
+        @tagName(scope)["SETTING_SCOPE_".len..],
         aliases.items,
     };
 }
@@ -175,8 +206,10 @@ fn bind(
 
     // Snapshot every option now: the context is only guaranteed to be readable during bind and exec,
     // and the option handles borrow their strings.
+    var config: v2.duckdb_v2_config_handle = undefined;
+    if (v2.duckdb_v2_context_get_config(context, &config, err) != .ERROR_NONE) return;
     var count: u64 = 0;
-    if (v2.duckdb_v2_context_get_option_count(context, &count, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_config_get_option_count(config, &count, err) != .ERROR_NONE) return;
 
     const data = std.heap.c_allocator.create(BindData) catch return;
     data.arena = .init(std.heap.c_allocator);
@@ -241,7 +274,7 @@ fn exec(
 
 fn registerOptions(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) !void {
     var function: v2.duckdb_v2_table_function_handle = undefined;
-    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
 
     const fn_name = helpers.str("zig_cookbook_options");
@@ -249,7 +282,7 @@ fn registerOptions(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v
     if (v2.duckdb_v2_table_function_set_bind_callback(function, &bind, err) != .ERROR_NONE) return error.FailedToSetBindCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) return error.FailedToSetInitGlobalCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) return error.FailedToSetExecCallback;
-    if (v2.duckdb_v2_table_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers both functions. A failure leaves DuckDB's error info in the entrypoint's error slot.

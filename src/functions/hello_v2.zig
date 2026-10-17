@@ -57,7 +57,7 @@ fn exec(
 
         const text: v2.duckdb_v2_str = .{ .ptr = greeting.ptr, .len = greeting.len };
         var value: v2.duckdb_v2_value_handle = undefined;
-        if (v2.duckdb_v2_value_create_varchar_with_context(context, &text, &value, err) != .ERROR_NONE) return;
+        if (v2.duckdb_v2_value_create_varchar(helpers.factory(context, err) orelse return, &text, &value, err) != .ERROR_NONE) return;
         defer _ = v2.duckdb_v2_value_destroy(&value);
         if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
     }
@@ -69,7 +69,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     const err = input.err;
 
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) {
         return error.FailedToCreateFunction;
     }
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
@@ -80,7 +80,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     }
 
     var varchar_type: v2.duckdb_v2_logical_type_handle = undefined;
-    if (v2.duckdb_v2_context_create_type_from_id(input.context, .LOGICAL_TYPE_ID_VARCHAR, null, null, 0, &varchar_type, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_factory_create_type_from_id(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, .LOGICAL_TYPE_ID_VARCHAR, null, null, 0, &varchar_type, err) != .ERROR_NONE) {
         return error.FailedToCreateType;
     }
     defer _ = v2.duckdb_v2_logical_type_destroy(&varchar_type);
@@ -98,11 +98,20 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
         return error.FailedToSetReturnType;
     }
 
+    // What duckdb_functions() shows besides the signature (an API with function docs: alpha48730 and later).
+    var docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(docs, .{
+        .description = "Returns a greeting for the name; NULL for NULL.",
+        .examples = &.{.{ .sql = "SELECT zig_hello('world');" }},
+        .categories = &.{"string"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) {
         return error.FailedToSetExecCallback;
     }
 
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }
 }

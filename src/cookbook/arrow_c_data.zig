@@ -191,7 +191,7 @@ fn reportArray(arena: std.mem.Allocator, lines: *std.ArrayList(Line), batch: i64
 /// n rows of (id BIGINT, label VARCHAR, even BOOLEAN) from row `start`, as a chunk the caller owns.
 fn makeChunk(context: v2.duckdb_v2_context_handle, types: []const v2.duckdb_v2_logical_type_handle, start: usize, rows: usize, err: Err) ?v2.duckdb_v2_data_chunk_handle {
     var chunk: v2.duckdb_v2_data_chunk_handle = undefined;
-    if (v2.duckdb_v2_data_chunk_create_with_context(context, types.ptr, types.len, &chunk, err) != .ERROR_NONE) return null;
+    if (v2.duckdb_v2_data_chunk_create(helpers.factory(context, err) orelse return null, types.ptr, types.len, &chunk, err) != .ERROR_NONE) return null;
     errdefer _ = v2.duckdb_v2_data_chunk_destroy(&chunk);
 
     var vecs: [3]v2.duckdb_v2_vector_handle = undefined;
@@ -622,14 +622,14 @@ fn liveExec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duck
 
 fn registerLive(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     var function: v2.duckdb_v2_table_function_handle = undefined;
-    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
     const name = helpers.str("zig_cookbook_arrow_live_arrays");
     if (v2.duckdb_v2_table_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
     if (v2.duckdb_v2_table_function_set_bind_callback(function, &liveBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &liveExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_table_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 fn registerFunction(
@@ -641,7 +641,7 @@ fn registerFunction(
     exec: anytype,
 ) !void {
     var function: v2.duckdb_v2_table_function_handle = undefined;
-    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
     const fn_name = helpers.str(name);
     if (v2.duckdb_v2_table_function_set_name(function, &fn_name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -656,7 +656,7 @@ fn registerFunction(
         var boolean = createType(input.context, .LOGICAL_TYPE_ID_BOOLEAN, err) orelse return error.FailedToCreateType;
         defer _ = v2.duckdb_v2_logical_type_destroy(&boolean);
         var default: v2.duckdb_v2_value_handle = undefined;
-        if (v2.duckdb_v2_value_create_bool_with_context(input.context, false, &default, err) != .ERROR_NONE) return error.FailedToCreateDefault;
+        if (v2.duckdb_v2_value_create_bool(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, false, &default, err) != .ERROR_NONE) return error.FailedToCreateDefault;
         defer _ = v2.duckdb_v2_value_destroy(&default);
         const p_name = helpers.str(p);
         if (v2.duckdb_v2_function_signature_add_parameter(sig, &p_name, boolean, default, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
@@ -665,7 +665,7 @@ fn registerFunction(
     if (v2.duckdb_v2_table_function_set_bind_callback(function, bind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_table_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the two functions. A failure leaves DuckDB's error info in the entrypoint's error slot.

@@ -69,13 +69,13 @@
         // already used for the v1.5.6 headers) once DuckDB 2.0 ships as
         // an actual tagged release.
         .duckdb_cli_v2_linux_amd64 = .{
-            .url = "https://duckdb-staging.duckdb.org/b15358c371/v2.0.0-alpha46057/duckdb/duckdb/github_release/duckdb-cli-linux-amd64.tar.gz",
-            .hash = "N-V-__8AAOgVkwSHK16ZpcdwJyoQE2HdKzvZD27NNylVyxks",
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/duckdb-cli-linux-amd64.tar.gz",
+            .hash = "N-V-__8AADBnngQczJ6co1lcRWgiSIQ9dR5YigmZhzbLOdOZ",
             .lazy = true,
         },
         .duckdb_cli_v2_linux_arm64 = .{
-            .url = "https://duckdb-staging.duckdb.org/b15358c371/v2.0.0-alpha46057/duckdb/duckdb/github_release/duckdb-cli-linux-arm64.tar.gz",
-            .hash = "N-V-__8AAIiicQTh1HPr3MiDX9aKnSfL103zk5phspO7cTtP",
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/duckdb-cli-linux-arm64.tar.gz",
+            .hash = "N-V-__8AAJBFfAQbm26it8PMG0_rPWCm7qaizCxFah3oIc0D",
             .lazy = true,
         },
         // Version-pinned, content-hashed vendored DuckDB C API headers —
@@ -114,8 +114,8 @@
         // own `install.sh`). Still needs re-pinning once DuckDB 2.0 ships
         // as a real tagged release.
         .duckdb_headers_v2 = .{
-            .url = "https://duckdb-staging.duckdb.org/b15358c371/v2.0.0-alpha46057/duckdb/duckdb/github_release/libduckdb-src.zip",
-            .hash = "N-V-__8AAL-2EwBI2NUq5ff3_vktqJo_yWCjvSZf2a-ID-p9",
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/libduckdb-src.zip",
+            .hash = "N-V-__8AAGE3FABOFiByIikYlEjX_O105iJ4o4e1S8qNA5eC",
         },
         // A real, compiled `libduckdb_static.a` (+ matching full headers)
         // for the exact same pinned `v2.0.0-alpha46057` commit — contrary
@@ -137,16 +137,16 @@
         // `duckdb_cli_v2_*`/`duckdb_headers_v2` above, not the floating
         // alias it was originally fetched through.
         .duckdb_static_libs_v2_linux_amd64 = .{
-            .url = "https://duckdb-staging.duckdb.org/b15358c371/v2.0.0-alpha46057/duckdb/duckdb/github_release/duckdb-static-libs-linux-amd64.tar.gz",
-            .hash = "N-V-__8AABK7-Ap51O97S6GR_NBvztMr80sAma26ZeRToc7f",
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/duckdb-static-libs-linux-amd64.tar.gz",
+            .hash = "N-V-__8AAPJdEAvCFx12F9mllIo_uefBgR8vdbjNM1tR-iFn",
             .lazy = true,
         },
         // The same static libraries for Windows, built with MinGW (GCC 10.4, libstdc++) — NOT the plain
         // `duckdb-static-libs-windows-amd64` tarball, which is an MSVC build (`.lib`, 206 MB). Only the
         // `v2-static-embed-poc` steps ever fetch it, when built with `-Dtarget=x86_64-windows-gnu`.
         .duckdb_static_libs_v2_windows_mingw = .{
-            .url = "https://duckdb-staging.duckdb.org/b15358c371/v2.0.0-alpha46057/duckdb/duckdb/github_release/duckdb-static-libs-windows-mingw.tar.gz",
-            .hash = "N-V-__8AAEyroQrxwDp_pcghYC3IF1IOZ33DpCJgaimqQwbw",
+            .url = "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/duckdb-static-libs-windows-mingw.tar.gz",
+            .hash = "N-V-__8AAPk1uwqOjXDeTyr-rVLV-U_9Ni5HzPTw4jEW6Knd",
             .lazy = true,
         },
         // YAML parser, needed only by tools/gen_v2_bindings.zig, which

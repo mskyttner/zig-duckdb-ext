@@ -107,7 +107,7 @@ fn addVarchar(sig: v2.duckdb_v2_function_signature_handle, name: []const u8, inp
 pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     const err = input.err orelse return error.MissingErrorSlot;
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
     const name = helpers.str("zig_cookbook_log");
     if (v2.duckdb_v2_scalar_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -124,5 +124,5 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
 
     if (v2.duckdb_v2_scalar_function_set_property(function, .FUNCTION_PROPERTY_STABILITY, .FUNCTION_PROPERTY_STABILITY_VOLATILE, err) != .ERROR_NONE) return error.FailedToSetProperty;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }

@@ -82,7 +82,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     const err = input.err orelse return error.MissingErrorSlot;
 
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) {
         return error.FailedToCreateFunction;
     }
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
@@ -139,7 +139,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     }
 
     var width_default: v2.duckdb_v2_value_handle = undefined;
-    if (v2.duckdb_v2_value_create_bigint_with_context(input.context, 15, &width_default, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_value_create_bigint(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, 15, &width_default, err) != .ERROR_NONE) {
         return error.FailedToCreateDefault;
     }
     defer _ = v2.duckdb_v2_value_destroy(&width_default);
@@ -156,7 +156,7 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
         return error.FailedToSetExecCallback;
     }
 
-    if (v2.duckdb_v2_scalar_function_register(function, err) != .ERROR_NONE) {
+    if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }
 }

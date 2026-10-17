@@ -921,7 +921,7 @@ fn readExec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duck
 
 fn registerRead(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     var function: v2.duckdb_v2_table_function_handle = undefined;
-    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
     const name = helpers.str("zig_cookbook_read_arrow");
     if (v2.duckdb_v2_table_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -937,12 +937,12 @@ fn registerRead(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_table_function_set_bind_callback(function, &readBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &readInitGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &readExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_table_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 fn registerCopy(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     var function: v2.duckdb_v2_copy_function_handle = undefined;
-    if (v2.duckdb_v2_copy_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_copy_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_copy_function_destroy(&function);
     const name = helpers.str(format_name);
     if (v2.duckdb_v2_copy_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -959,7 +959,7 @@ fn registerCopy(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_copy_from_set_exec_callback(function, &fromExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_copy_from_set_progress_callback(function, &fromProgress, err) != .ERROR_NONE) return error.FailedToSetCallback;
 
-    if (v2.duckdb_v2_copy_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_copy_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the format. A failure leaves DuckDB's error info in the entrypoint's error slot.

@@ -229,13 +229,13 @@ fn createColumnType(ctx: v2.duckdb_v2_context_handle, comptime T: type, out_type
 fn buildLeafValue(ctx: v2.duckdb_v2_context_handle, comptime T: type, value: T, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_value_handle {
     var v: v2.duckdb_v2_value_handle = undefined;
     const code = switch (T) {
-        i8 => v2.duckdb_v2_value_create_tinyint_with_context(ctx, value, &v, err),
-        i16 => v2.duckdb_v2_value_create_smallint_with_context(ctx, value, &v, err),
-        i32 => v2.duckdb_v2_value_create_int_with_context(ctx, value, &v, err),
-        i64 => v2.duckdb_v2_value_create_bigint_with_context(ctx, value, &v, err),
-        f32 => v2.duckdb_v2_value_create_float_with_context(ctx, value, &v, err),
-        f64 => v2.duckdb_v2_value_create_double_with_context(ctx, value, &v, err),
-        bool => v2.duckdb_v2_value_create_bool_with_context(ctx, value, &v, err),
+        i8 => v2.duckdb_v2_value_create_tinyint(helpers.factory(ctx, err) orelse return error.FailedToGetFactory, value, &v, err),
+        i16 => v2.duckdb_v2_value_create_smallint(helpers.factory(ctx, err) orelse return error.FailedToGetFactory, value, &v, err),
+        i32 => v2.duckdb_v2_value_create_int(helpers.factory(ctx, err) orelse return error.FailedToGetFactory, value, &v, err),
+        i64 => v2.duckdb_v2_value_create_bigint(helpers.factory(ctx, err) orelse return error.FailedToGetFactory, value, &v, err),
+        f32 => v2.duckdb_v2_value_create_float(helpers.factory(ctx, err) orelse return error.FailedToGetFactory, value, &v, err),
+        f64 => v2.duckdb_v2_value_create_double(helpers.factory(ctx, err) orelse return error.FailedToGetFactory, value, &v, err),
+        bool => v2.duckdb_v2_value_create_bool(helpers.factory(ctx, err) orelse return error.FailedToGetFactory, value, &v, err),
         []const u8 => helpers.createVarcharValue(ctx, value, &v, err),
         else => @compileError("unsupported leaf type for DuckDB v2 value boxing: " ++ @typeName(T)),
     };
@@ -456,7 +456,7 @@ pub fn Appender(comptime Row: type) type {
                     var text_value = try buildLeafValue(self.ctx, []const u8, @tagName(field_value), err);
                     defer _ = v2.duckdb_v2_value_destroy(&text_value);
                     var value: v2.duckdb_v2_value_handle = undefined;
-                    if (v2.duckdb_v2_value_cast_with_context(self.ctx, text_value, self.types[i], &value, err) != .ERROR_NONE) return error.DuckDbError;
+                    if (v2.duckdb_v2_value_cast(helpers.factory(self.ctx, err) orelse return error.FailedToGetFactory, text_value, self.types[i], &value, err) != .ERROR_NONE) return error.DuckDbError;
                     defer _ = v2.duckdb_v2_value_destroy(&value);
                     if (v2.duckdb_v2_vector_set_value(vec, self.buffered, value, err) != .ERROR_NONE) return error.DuckDbError;
                 } else {

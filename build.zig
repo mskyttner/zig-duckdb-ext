@@ -716,7 +716,7 @@ pub fn build(b: *std.Build) void {
 
     const v2_api_spec = b.option([]const u8, "v2-api-spec", "Directory with DuckDB's v2 API spec (<duckdb checkout>/api_spec/v2), for `gen-v2-bindings`");
     const v2_api_spec_ref = b.option([]const u8, "v2-api-spec-ref", "Where the spec comes from, recorded in the generated files") orelse
-        "duckdb b15358c371, v2.0.0-alpha46057";
+        "duckdb f8f3f4dcd9, v2.0.0-alpha48730";
     const gen_v2_bindings_step = b.step("gen-v2-bindings", "Regenerate src/lib/duckdb_v2_{types,static,dynamic}.zig from the DuckDB v2 API spec (needs -Dv2-api-spec=)");
     if (v2_api_spec) |spec_dir| {
         if (b.lazyDependency("yaml", .{ .target = b.graph.host, .optimize = .ReleaseSafe })) |yaml_dep| {

@@ -62,7 +62,7 @@ const File = struct {
     /// EXCLUSIVE_CREATE) is DuckDB's own error, with its text.
     fn open(context: v2.duckdb_v2_context_handle, path: []const u8, flags: []const v2.DUCKDB_V2_FILE_FLAG, err: Err) ?File {
         var fs: v2.duckdb_v2_file_system_handle = undefined; // borrowed: valid while the context is, never destroyed
-        if (v2.duckdb_v2_file_system_get_from_context(context, &fs, err) != .ERROR_NONE) return null;
+        if (v2.duckdb_v2_context_get_file_system(context, &fs, err) != .ERROR_NONE) return null;
 
         var options: v2.duckdb_v2_file_open_options_handle = undefined;
         if (v2.duckdb_v2_file_open_options_create(fs, &options, err) != .ERROR_NONE) return null;
@@ -353,7 +353,7 @@ fn registerFunction(
     exec: anytype,
 ) !void {
     var function: v2.duckdb_v2_table_function_handle = undefined;
-    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
     const fn_name = helpers.str(name);
     if (v2.duckdb_v2_table_function_set_name(function, &fn_name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -371,10 +371,10 @@ fn registerFunction(
         if (param.default) |d| {
             var value: v2.duckdb_v2_value_handle = undefined;
             const code = switch (d) {
-                .int => |i| v2.duckdb_v2_value_create_bigint_with_context(input.context, i, &value, err),
+                .int => |i| v2.duckdb_v2_value_create_bigint(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, i, &value, err),
                 .text => |s| blk: {
                     const text = helpers.str(s);
-                    break :blk v2.duckdb_v2_value_create_varchar_with_context(input.context, &text, &value, err);
+                    break :blk v2.duckdb_v2_value_create_varchar(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &text, &value, err);
                 },
             };
             if (code != .ERROR_NONE) return error.FailedToCreateDefault;
@@ -387,7 +387,7 @@ fn registerFunction(
     if (v2.duckdb_v2_table_function_set_bind_callback(function, bind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_table_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the two functions. A failure leaves DuckDB's error info in the entrypoint's error slot.

@@ -5,7 +5,8 @@ to check what DuckDB's catalog knows about it, and where the limits are today. E
 repository; copy from it rather than from the snippets.
 
 Two C APIs are used here (see the README): **v1**, which the stable and LTS DuckDB releases ship, and **v2**, the API of
-DuckDB 2.0, pinned to the staged alpha `v2.0.0-alpha46057` (`b15358c371`). New work should go on v2. The steps below are
+DuckDB 2.0, pinned to the staged alpha `v2.0.0-alpha48730` (`f8f3f4dcd9`, on the branch `v2-alpha48730`; the branch
+`duckdb-v2-api` is still on `v2.0.0-alpha46057`, `b15358c371`). New work should go on v2. The steps below are
 for v2 and say so where v1 differs.
 
 ## 1. A project that builds an extension
@@ -100,22 +101,21 @@ FROM duckdb_functions() WHERE function_name = 'ct_add_numbers';
 |---|---|---|---|---|
 | `parameters` | the names you gave | the names you gave | `[a0, a1]` | `[col0, col1]` |
 | `parameter_types`, `return_type` | filled | filled | filled | filled |
-| `description`, `examples` | empty | empty | empty | empty |
+| `description`, `examples` | empty unless set (step 6) | empty unless set (step 6) | empty unless set (step 6) | empty (no API) |
 
 In v1 a function gets real names only through a **macro wrapper**: register the function as `tp_bar_impl` and then run
 `CREATE OR REPLACE MACRO tp_bar(value, "on" := ..., width := 15) AS tp_bar_impl(value, "on", "off", width)`
 (`src/functions/tp_bar.zig`). That gives names and defaults, but `parameter_types` is NULL for a macro. v2 extensions
 cannot run SQL at load time, so the wrapper is v1 only, and unnecessary in v2.
 
-## 6. Descriptions and examples: not with the pinned API, yes with a newer alpha
+## 6. Descriptions and examples
 
-`description` and `examples` in `duckdb_functions()` are **empty for every function in this repository**, because the
-pinned alpha (`v2.0.0-alpha46057`) has no call to set them, and v1 never had one. `COMMENT ON FUNCTION` does not help
-either: it works on macros only ("Can not comment on System Catalog entries" for a registered function).
+`description`, `examples` and `categories` in `duckdb_functions()` need the function docs calls, which exist from
+`v2.0.0-alpha48730` (`f8f3f4dcd9`) on. The earlier pinned alpha (`v2.0.0-alpha46057`) has none, and v1 never had any:
+there every function shows an empty description. `COMMENT ON FUNCTION` does not help either: it works on macros only
+("Can not comment on System Catalog entries" for a registered function).
 
-The staged alpha **`v2.0.0-alpha48730` (`f8f3f4dcd9`)**, from the "cyanoptera" staging channel
-(`https://artifacts.duckdb.org/staged/v2.0-cyanoptera/`), has the API. For a
-scalar, aggregate, table, pragma or macro function:
+For a scalar, aggregate, table, pragma or macro function:
 
 ```c
 duckdb_v2_scalar_function_get_docs(function, &docs, err);               // borrowed; never destroyed
@@ -126,40 +126,55 @@ duckdb_v2_function_docs_add_category(docs, &category, err);             // e.g. 
 
 The docs describe one overload and are registered with the function.
 
-**Verified with a spike** (`docs/spikes/function_docs_alpha48730.c`, in C against that alpha's headers, loaded in its
-CLI): a scalar function `spike_add(left_operand BIGINT, right_operand BIGINT)` that calls the four functions above gives
+**In this repository** (on the branch `v2-alpha48730`): `helpers.Docs` and `helpers.setDocs` wrap the calls, and
+
+```zig
+const CtAddNumbers = comptime_scalar_v2.FunctionDocumented("ct_add_numbers", add, &.{ "a", "b" }, .{
+    .description = "Adds two BIGINT values. Overflow is an error of the query.",
+    .examples = &.{
+        .{ .title = "Two numbers", .sql = "SELECT ct_add_numbers(40, 2);" },
+        .{ .sql = "SELECT ct_add_numbers(i, 1) FROM range(3) t(i);" },
+    },
+    .categories = &.{"numeric"},
+});
+```
+
+registers the function with them; a hand-written function calls `get_docs` and `setDocs` before it registers
+(`src/functions/hello_v2.zig`). The result, tested in `test/sql/zig_ext_v2.test`:
 
 ```
-function_name | parameters                    | parameter_types   | return_type | description             | examples                                                                  | categories
-spike_add     | [left_operand, right_operand] | [BIGINT, BIGINT] | BIGINT      | Adds two BIGINT values. | ['SELECT spike_add(40, 2);', 'SELECT spike_add(i, 1) FROM range(3) t(i);'] | [numeric]
+function_name  | parameters | description                                                 | examples                                                                       | categories
+ct_add_numbers | [a, b]     | Adds two BIGINT values. Overflow is an error of the query.  | ['SELECT ct_add_numbers(40, 2);', 'SELECT ct_add_numbers(i, 1) FROM range(3)...'] | [numeric]
 ```
 
-and the function computes (`SELECT spike_add(40, 2)` is 42). Notes from it:
+Notes:
 
-- `description`, `examples` and `categories` are all filled, and the examples keep the order they were added in.
 - The example's **title is not shown**: `examples` holds only the example text. Where a title surfaces, if anywhere, I did
   not find.
-- The footer for this alpha was `C_STRUCT` with `v2.0.0`, built by this repository's own `append_metadata` tool, and it
-  loads without changes.
-- The entry point is the header's `DUCKDB_EXTENSION_ENTRYPOINT` macro, which gives the extension handle, the context and
-  the error slot as arguments instead of the `duckdb_v2_extension_input` struct that the pinned alpha's entry point takes.
-- Only a scalar function was tried. The same call exists for aggregate, table, pragma and macro functions; I did not test
-  those.
+- Only the scalar framework has `FunctionDocumented` so far. Table and aggregate functions have the same `get_docs` call
+  (not tried), but their frameworks do not take docs yet.
+- A standalone spike in C against that alpha's headers is in `docs/spikes/function_docs_alpha48730.c`.
 
-That alpha is **not a drop-in replacement for the pinned one**. Moving the pin means regenerating the bindings
-(`zig build gen-v2-bindings`) and porting every call site, because it renames and restructures much of the API:
+### Moving from the earlier alpha
 
-- `*_create_with_extension` / `_with_connection` become `*_create`, and `*_register` becomes
-  `duckdb_v2_extension_register_*` (or `duckdb_v2_connection_register_*`);
-- `value_create_*_with_context` / `_with_connection` become `value_create_*`;
-- type creation moves to a `factory` (`duckdb_v2_context_get_factory`, `duckdb_v2_factory_create_type_from_id`, ...);
-- options become `config` (`duckdb_v2_context_get_config`, `config_get_option_*`);
-- `file_system_get_from_*` becomes `context_get_file_system`, and gains `path_exists`, `path_glob`, `path_expand`,
-  `path_remove`, `path_move` and `path_is_remote`, which the pinned alpha lacks;
+`v2.0.0-alpha48730` is not a drop-in replacement: it renames and restructures much of the API. The port (done on the
+branch `v2-alpha48730`) was:
+
+- `*_create_with_extension` / `_with_connection` / `_with_context` become `*_create(factory, ...)`, and
+  `*_register` becomes `duckdb_v2_extension_register_*(extension, function, err)`. The factory comes from
+  `duckdb_v2_context_get_factory` (or `connection_get_factory`); `helpers.factory(context, err)` wraps it;
+- `value_create_*_with_context` / `_with_connection` become `value_create_*(factory, ...)`, and `value_cast` and
+  `data_chunk_create` / `_copy` take a factory too;
+- type creation moves to the factory: `duckdb_v2_factory_create_type_from_id`, `_from_text`, `_from_name`;
+- options become a `config` (`duckdb_v2_context_get_config`, `config_get_option_value`, `config_get_option_by_index`):
+  the value comes back typed (cast it to VARCHAR to show it), and an option's scope is now its **default scope**
+  (`GLOBAL` or `SESSION`) instead of the old target scope;
+- `file_system_get_from_context` becomes `context_get_file_system`, and the file system gains `path_exists`, `path_glob`,
+  `path_expand`, `path_remove`, `path_move` and `path_is_remote`;
+- `instance_attach` takes `(instance, name, path, options, make_default, err)`: name and path swapped places;
 - new: log sinks, macro and pragma function registration, custom options, `copy_function_set_file_extension`.
 
-When the pin moves, the place for docs is the registration helper: `FunctionNamed` would take a description and examples
-next to the names, and the by-hand recipes would call `get_docs` right after `create`.
+Error texts changed in places too (`qname_parse` of an empty string now says "Zero-length identifier").
 
 ## 7. Package and publish
 

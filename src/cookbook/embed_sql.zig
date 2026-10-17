@@ -85,6 +85,8 @@ const Session = struct {
     env: v2.duckdb_v2_environment_handle,
     instance: v2.duckdb_v2_instance_handle,
     conn: v2.duckdb_v2_connection_handle,
+    /// What types, values and chunks are made through (the API's `create` calls take it): borrowed from the connection.
+    factory: v2.duckdb_v2_factory_handle,
     varchar: v2.duckdb_v2_logical_type_handle,
 
     /// An in-memory database. The environment is the root every instance hangs from; it detects the same file
@@ -97,10 +99,11 @@ const Session = struct {
         try c.ok(v2.duckdb_v2_instance_create(s.env, &s.instance, c.err()));
         errdefer _ = v2.duckdb_v2_instance_destroy(&s.instance);
         const memory = helpers.str(":memory:");
-        try c.ok(v2.duckdb_v2_instance_attach(s.instance, &memory, null, null, true, c.err()));
+        try c.ok(v2.duckdb_v2_instance_attach(s.instance, null, &memory, null, true, c.err()));
         try c.ok(v2.duckdb_v2_connection_create(s.instance, &s.conn, c.err()));
         errdefer _ = v2.duckdb_v2_connection_destroy(&s.conn);
-        try c.ok(v2.duckdb_v2_connection_create_type_from_id(s.conn, .LOGICAL_TYPE_ID_VARCHAR, null, null, 0, &s.varchar, c.err()));
+        try c.ok(v2.duckdb_v2_connection_get_factory(s.conn, &s.factory, c.err()));
+        try c.ok(v2.duckdb_v2_factory_create_type_from_id(s.factory, .LOGICAL_TYPE_ID_VARCHAR, null, null, 0, &s.varchar, c.err()));
         return s;
     }
 
@@ -214,7 +217,7 @@ fn cellText(arena: std.mem.Allocator, s: *Session, chunk: v2.duckdb_v2_data_chun
     try c.ok(v2.duckdb_v2_value_is_null(value, &is_null, c.err()));
     if (is_null) return "NULL";
     var as_text: v2.duckdb_v2_value_handle = undefined;
-    try c.ok(v2.duckdb_v2_value_cast_with_connection(s.conn, value, s.varchar, &as_text, c.err()));
+    try c.ok(v2.duckdb_v2_value_cast(s.factory, value, s.varchar, &as_text, c.err()));
     defer _ = v2.duckdb_v2_value_destroy(&as_text);
     var out: v2.duckdb_v2_str = undefined;
     try c.ok(v2.duckdb_v2_value_get_varchar(as_text, &out, c.err()));
@@ -497,9 +500,9 @@ fn parameters(arena: std.mem.Allocator, s: *Session) !void {
 
     inline for (.{ .{ 1, 2, "3" }, .{ 40, 2, "42" }, .{ -5, 5, "0" } }) |args| {
         var values: [2]v2.duckdb_v2_value_handle = undefined;
-        try c.ok(v2.duckdb_v2_value_create_int_with_connection(s.conn, args[0], &values[0], c.err()));
+        try c.ok(v2.duckdb_v2_value_create_int(s.factory, args[0], &values[0], c.err()));
         defer _ = v2.duckdb_v2_value_destroy(&values[0]);
-        try c.ok(v2.duckdb_v2_value_create_int_with_connection(s.conn, args[1], &values[1], c.err()));
+        try c.ok(v2.duckdb_v2_value_create_int(s.factory, args[1], &values[1], c.err()));
         defer _ = v2.duckdb_v2_value_destroy(&values[1]);
         var result: v2.duckdb_v2_result_handle = undefined;
         try c.ok(v2.duckdb_v2_prepared_statement_execute(prepared, null, &values, values.len, &result, c.err()));
@@ -512,9 +515,9 @@ fn parameters(arena: std.mem.Allocator, s: *Session) !void {
     try expectEqual("a positional parameter's name", "2", view(name));
 
     var values: [2]v2.duckdb_v2_value_handle = undefined;
-    try c.ok(v2.duckdb_v2_value_create_int_with_connection(s.conn, 7, &values[0], c.err()));
+    try c.ok(v2.duckdb_v2_value_create_int(s.factory, 7, &values[0], c.err()));
     defer _ = v2.duckdb_v2_value_destroy(&values[0]);
-    try c.ok(v2.duckdb_v2_value_create_int_with_connection(s.conn, 8, &values[1], c.err()));
+    try c.ok(v2.duckdb_v2_value_create_int(s.factory, 8, &values[1], c.err()));
     defer _ = v2.duckdb_v2_value_destroy(&values[1]);
     // By name, in the opposite order: the names decide, not the positions.
     const swapped = [_]v2.duckdb_v2_identifier_t{ helpers.str("2"), helpers.str("1") };
@@ -558,9 +561,9 @@ fn parameters(arena: std.mem.Allocator, s: *Session) !void {
 
     var x: v2.duckdb_v2_value_handle = undefined;
     var y: v2.duckdb_v2_value_handle = undefined;
-    try c.ok(v2.duckdb_v2_value_create_int_with_connection(s.conn, 6, &x, c.err()));
+    try c.ok(v2.duckdb_v2_value_create_int(s.factory, 6, &x, c.err()));
     defer _ = v2.duckdb_v2_value_destroy(&x);
-    try c.ok(v2.duckdb_v2_value_create_int_with_connection(s.conn, 7, &y, c.err()));
+    try c.ok(v2.duckdb_v2_value_create_int(s.factory, 7, &y, c.err()));
     defer _ = v2.duckdb_v2_value_destroy(&y);
     const named_values = [_]v2.duckdb_v2_value_handle{ x, y };
     const named_keys = [_]v2.duckdb_v2_identifier_t{ helpers.str("x"), helpers.str("y") };
@@ -619,5 +622,6 @@ fn lazyExecution(arena: std.mem.Allocator, s: *Session) !void {
     defer _ = v2.duckdb_v2_connection_destroy(&other);
     var other_session = s.*;
     other_session.conn = other;
+    try c.ok(v2.duckdb_v2_connection_get_factory(other, &other_session.factory, c.err()));
     try expectEqual("another connection sees it", "5001", try query(arena, &other_session, "SELECT count(*) FROM t"));
 }

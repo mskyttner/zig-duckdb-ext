@@ -58,10 +58,13 @@ fn directHelloExec(info: v2c.duckdb_v2_scalar_function_exec_info_handle, context
     const greeting = "Hello, static-direct world!";
     const str: v2c.duckdb_v2_str = .{ .ptr = greeting.ptr, .len = greeting.len };
 
+    var factory: v2c.duckdb_v2_factory_handle = undefined;
+    if (v2c.duckdb_v2_context_get_factory(context, &factory, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
+
     var row: v2c.idx_t = 0;
     while (row < row_count) : (row += 1) {
         var value: v2c.duckdb_v2_value_handle = undefined;
-        if (v2c.duckdb_v2_value_create_varchar_with_context(context, &str, &value, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
+        if (v2c.duckdb_v2_value_create_varchar(factory, &str, &value, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
         defer _ = v2c.duckdb_v2_value_destroy(&value);
         if (v2c.duckdb_v2_vector_set_value(result_vec, row, value, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
     }
@@ -75,8 +78,10 @@ export fn zig_ext_v2_direct_init_c_api_v2(input: *const v2c.duckdb_v2_extension_
     const context = input.context;
     const err = input.err;
 
+    var factory: v2c.duckdb_v2_factory_handle = undefined;
+    if (v2c.duckdb_v2_context_get_factory(context, &factory, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
     var function: v2c.duckdb_v2_scalar_function_handle = undefined;
-    if (v2c.duckdb_v2_scalar_function_create_with_extension(extension, &function, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
+    if (v2c.duckdb_v2_scalar_function_create(factory, &function, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
     defer _ = v2c.duckdb_v2_scalar_function_destroy(&function);
 
     const name: v2c.duckdb_v2_str = .{ .ptr = "direct_hello", .len = "direct_hello".len };
@@ -86,13 +91,13 @@ export fn zig_ext_v2_direct_init_c_api_v2(input: *const v2c.duckdb_v2_extension_
     if (v2c.duckdb_v2_scalar_function_get_signature(function, &signature, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
 
     var varchar_type: v2c.duckdb_v2_logical_type_handle = undefined;
-    if (v2c.duckdb_v2_context_create_type_from_id(context, v2c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, null, null, 0, &varchar_type, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
+    if (v2c.duckdb_v2_factory_create_type_from_id(factory, v2c.DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, null, null, 0, &varchar_type, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
     defer _ = v2c.duckdb_v2_logical_type_destroy(&varchar_type);
     if (v2c.duckdb_v2_function_signature_set_return_type(signature, varchar_type, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
 
     if (v2c.duckdb_v2_scalar_function_set_exec_callback(function, &directHelloExec, err) != v2c.DUCKDB_V2_ERROR_NONE) return;
 
-    _ = v2c.duckdb_v2_scalar_function_register(function, err);
+    _ = v2c.duckdb_v2_extension_register_scalar_function(extension, function, err);
 }
 
 fn describe(descriptor: *duckdb_static.ExtensionDescriptor) callconv(.c) i32 {

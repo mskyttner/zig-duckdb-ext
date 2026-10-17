@@ -205,7 +205,7 @@ fn sumFinalize(info: v2.duckdb_v2_aggregate_function_finalize_info_handle, err: 
 fn registerSum(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     inline for (.{ .{ "zig_cookbook_agg_sum", 0 }, .{ "zig_cookbook_agg_sumsq", 1 } }) |spec| {
         var function: v2.duckdb_v2_aggregate_function_handle = undefined;
-        if (v2.duckdb_v2_aggregate_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+        if (v2.duckdb_v2_aggregate_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
         defer _ = v2.duckdb_v2_aggregate_function_destroy(&function);
         const name = helpers.str(spec[0]);
         if (v2.duckdb_v2_aggregate_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -231,7 +231,7 @@ fn registerSum(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
         if (v2.duckdb_v2_aggregate_function_set_update_callback(function, &sumUpdate, err) != .ERROR_NONE) return error.FailedToSetCallback;
         if (v2.duckdb_v2_aggregate_function_set_combine_callback(function, &sumCombine, err) != .ERROR_NONE) return error.FailedToSetCallback;
         if (v2.duckdb_v2_aggregate_function_set_finalize_callback(function, &sumFinalize, err) != .ERROR_NONE) return error.FailedToSetCallback;
-        if (v2.duckdb_v2_aggregate_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+        if (v2.duckdb_v2_extension_register_aggregate_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
     }
 }
 
@@ -315,7 +315,7 @@ fn lastFinalize(info: v2.duckdb_v2_aggregate_function_finalize_info_handle, err:
 
 fn registerLast(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     var function: v2.duckdb_v2_aggregate_function_handle = undefined;
-    if (v2.duckdb_v2_aggregate_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_aggregate_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_aggregate_function_destroy(&function);
     const name = helpers.str("zig_cookbook_agg_last");
     if (v2.duckdb_v2_aggregate_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -335,7 +335,7 @@ fn registerLast(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_aggregate_function_set_update_callback(function, &lastUpdate, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_aggregate_function_set_combine_callback(function, &lastCombine, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_aggregate_function_set_finalize_callback(function, &lastFinalize, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_aggregate_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_aggregate_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the three aggregates. A failure leaves DuckDB's error info in the entrypoint's error slot.

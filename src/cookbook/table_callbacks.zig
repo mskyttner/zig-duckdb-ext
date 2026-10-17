@@ -200,7 +200,7 @@ fn partitionData(
 
 fn registerParallelRange(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     var function: v2.duckdb_v2_table_function_handle = undefined;
-    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
     const name = helpers.str("zig_cookbook_parallel_range");
     if (v2.duckdb_v2_table_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
@@ -213,7 +213,7 @@ fn registerParallelRange(input: *const v2.duckdb_v2_extension_input, err: Err) !
     const n_name = helpers.str("n");
     if (v2.duckdb_v2_function_signature_add_parameter(sig, &n_name, bigint, null, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
     var default_threads: v2.duckdb_v2_value_handle = undefined;
-    if (v2.duckdb_v2_value_create_bigint_with_context(input.context, 4, &default_threads, err) != .ERROR_NONE) return error.FailedToCreateDefault;
+    if (v2.duckdb_v2_value_create_bigint(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, 4, &default_threads, err) != .ERROR_NONE) return error.FailedToCreateDefault;
     defer _ = v2.duckdb_v2_value_destroy(&default_threads);
     const threads_name = helpers.str("max_threads");
     if (v2.duckdb_v2_function_signature_add_parameter(sig, &threads_name, bigint, default_threads, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
@@ -225,7 +225,7 @@ fn registerParallelRange(input: *const v2.duckdb_v2_extension_input, err: Err) !
     if (v2.duckdb_v2_table_function_set_init_local_callback(function, &initLocal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_partition_data_callback(function, &partitionData, err) != .ERROR_NONE) return error.FailedToSetCallback;
-    if (v2.duckdb_v2_table_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+    if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the example. A failure leaves DuckDB's error info in the entrypoint's error slot.

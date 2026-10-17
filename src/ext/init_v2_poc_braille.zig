@@ -107,11 +107,11 @@ fn registerBrailleReplacementScan(input: *const v2.duckdb_v2_extension_input) vo
     var err = (input.err orelse return).*;
 
     var scan: v2.duckdb_v2_replacement_scan_handle = undefined;
-    if (v2.duckdb_v2_replacement_scan_create_with_extension(input.extension, &scan, &err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_replacement_scan_create(helpers.factory(input.context, &err) orelse return, &scan, &err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_replacement_scan_destroy(&scan);
 
     if (v2.duckdb_v2_replacement_scan_set_callback(scan, braillereplacementScanCallback, &err) != .ERROR_NONE) return;
-    _ = v2.duckdb_v2_replacement_scan_register(scan, &err);
+    _ = v2.duckdb_v2_extension_register_replacement_scan(input.extension, scan, &err);
 }
 
 const image_extensions = [_][]const u8{ ".jpg", ".jpeg", ".png" };

@@ -50,7 +50,7 @@ export fn zig_ext_v2_poc_init_c_api_v2(input: *const v2.duckdb_v2_extension_inpu
 
 fn registerHello(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_hello");
@@ -76,7 +76,7 @@ fn registerHello(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_
 
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, exampleHelloExec, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_scalar_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err);
 }
 
 const Triple = comptime_scalar_v2.Function("zig_v2_triple", struct {
@@ -232,12 +232,14 @@ const VariantDefault = comptime_scalar_v2.Function("zig_v2_variant_default_ct", 
         var is_null = false;
         _ = v2.duckdb_v2_value_is_null(v, &is_null, &err);
         var out: v2.duckdb_v2_value_handle = undefined;
+        var factory: v2.duckdb_v2_factory_handle = undefined;
+        _ = v2.duckdb_v2_context_get_factory(context, &factory, &err);
         if (is_null) {
-            _ = v2.duckdb_v2_value_create_bigint_with_context(context, fallback, &out, &err);
+            _ = v2.duckdb_v2_value_create_bigint(factory, fallback, &out, &err);
         } else {
             var n: i64 = 0;
             _ = v2.duckdb_v2_value_get_bigint(v, &n, &err);
-            _ = v2.duckdb_v2_value_create_bigint_with_context(context, n, &out, &err);
+            _ = v2.duckdb_v2_value_create_bigint(factory, n, &out, &err);
         }
         return out;
     }
@@ -837,7 +839,7 @@ fn weightedAvgPartFinalize(info: v2.duckdb_v2_aggregate_function_finalize_info_h
 
 fn registerWeightedAvgPart(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_aggregate_function_handle = undefined;
-    if (v2.duckdb_v2_aggregate_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_aggregate_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_aggregate_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_weighted_avg_part_ct");
@@ -862,7 +864,7 @@ fn registerWeightedAvgPart(input: *const v2.duckdb_v2_extension_input, err: *v2.
     if (v2.duckdb_v2_aggregate_function_set_combine_callback(function, weightedAvgPartCombine, err) != .ERROR_NONE) return;
     if (v2.duckdb_v2_aggregate_function_set_finalize_callback(function, weightedAvgPartFinalize, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_aggregate_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_aggregate_function(input.extension, function, err);
 }
 
 /// Returns the id of the row with the largest value in each group — e.g.
@@ -1147,7 +1149,7 @@ fn registerComptimeExamples(input: *const v2.duckdb_v2_extension_input) void {
 
 fn registerDouble(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_double");
@@ -1174,12 +1176,12 @@ fn registerDouble(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2
 
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, exampleDoubleExec, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_scalar_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err);
 }
 
 fn registerRange3(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_table_function_handle = undefined;
-    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_range3");
@@ -1189,12 +1191,12 @@ fn registerRange3(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, exampleTableInitGlobal, err) != .ERROR_NONE) return;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, exampleTableExec, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_table_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_table_function(input.extension, function, err);
 }
 
 fn registerAggSum(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_aggregate_function_handle = undefined;
-    if (v2.duckdb_v2_aggregate_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_aggregate_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_aggregate_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_agg_sum");
@@ -1224,7 +1226,7 @@ fn registerAggSum(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2
     if (v2.duckdb_v2_aggregate_function_set_combine_callback(function, exampleAggCombine, err) != .ERROR_NONE) return;
     if (v2.duckdb_v2_aggregate_function_set_finalize_callback(function, exampleAggFinalize, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_aggregate_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_aggregate_function(input.extension, function, err);
 }
 
 /// Live round-trip test for `comptime_appender_v2.Appender`: builds three
@@ -1237,7 +1239,7 @@ fn registerAggSum(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2
 /// "1:alice:1.50|2:bob:2.75|3:carol:-4.00" if the round trip is intact.
 fn registerAppenderTest(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_appender_test");
@@ -1253,7 +1255,7 @@ fn registerAppenderTest(input: *const v2.duckdb_v2_extension_input, err: *v2.duc
 
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, appenderTestExec, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_scalar_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err);
 }
 
 const AppenderTestRow = struct { id: i64, name: []const u8, score: f64 };
@@ -1552,7 +1554,7 @@ fn nethogsTraceExec(info: v2.duckdb_v2_table_function_exec_info_handle, context:
 
 fn registerNethogsTrace(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_table_function_handle = undefined;
-    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_table_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_nethogs_trace");
@@ -1576,7 +1578,7 @@ fn registerNethogsTrace(input: *const v2.duckdb_v2_extension_input, err: *v2.duc
     if (v2.duckdb_v2_table_function_set_bind_callback(function, nethogsTraceBind, err) != .ERROR_NONE) return;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, nethogsTraceExec, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_table_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_table_function(input.extension, function, err);
 }
 
 /// Live round-trip test for `comptime_appender_v2.Appender`'s LIST and
@@ -1587,7 +1589,7 @@ fn registerNethogsTrace(input: *const v2.duckdb_v2_extension_input, err: *v2.duc
 /// round trip is intact.
 fn registerAppenderNestedTest(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_appender_nested_test");
@@ -1603,7 +1605,7 @@ fn registerAppenderNestedTest(input: *const v2.duckdb_v2_extension_input, err: *
 
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, appenderNestedTestExec, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_scalar_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err);
 }
 
 const NestedTestRow = struct { tags: []const i64, point: struct { x: f64, y: f64 } };
@@ -1768,7 +1770,7 @@ fn nestedTestRoundTrip(context: v2.duckdb_v2_context_handle, buf: []u8, err: *v2
 /// round trip is intact.
 fn registerAppenderArrayEnumTest(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_appender_array_enum_test");
@@ -1784,7 +1786,7 @@ fn registerAppenderArrayEnumTest(input: *const v2.duckdb_v2_extension_input, err
 
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, appenderArrayEnumTestExec, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_scalar_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err);
 }
 
 const Status = enum { pending, active, done };
@@ -1903,7 +1905,7 @@ fn arrayEnumRoundTrip(context: v2.duckdb_v2_context_handle, buf: []u8, err: *v2.
             if (v2.duckdb_v2_vector_get_value(status_vec, row, &status_value, &e) != .ERROR_NONE) return error.ScanFailed;
             defer _ = v2.duckdb_v2_value_destroy(&status_value);
             var status_text_value: v2.duckdb_v2_value_handle = undefined;
-            if (v2.duckdb_v2_value_cast_with_context(context, status_value, varchar_type, &status_text_value, &e) != .ERROR_NONE) return error.ScanFailed;
+            if (v2.duckdb_v2_value_cast(helpers.factory(context, &e) orelse return error.FailedToGetFactory, status_value, varchar_type, &status_text_value, &e) != .ERROR_NONE) return error.ScanFailed;
             defer _ = v2.duckdb_v2_value_destroy(&status_text_value);
             var status_text: v2.duckdb_v2_str = undefined;
             if (v2.duckdb_v2_value_get_varchar(status_text_value, &status_text, &e) != .ERROR_NONE) return error.ScanFailed;
@@ -2013,7 +2015,7 @@ fn registerFilterPushdownTest(input: *const v2.duckdb_v2_extension_input) void {
     var err: v2.duckdb_v2_error_info_handle = undefined;
 
     var get_fn: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &get_fn, &err) == .ERROR_NONE) {
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, &err) orelse return, &get_fn, &err) == .ERROR_NONE) {
         defer _ = v2.duckdb_v2_scalar_function_destroy(&get_fn);
         const get_name = helpers.str("zig_v2_pushdown_hit_count");
         _ = v2.duckdb_v2_scalar_function_set_name(get_fn, &get_name, &err);
@@ -2024,13 +2026,13 @@ fn registerFilterPushdownTest(input: *const v2.duckdb_v2_extension_input) void {
             if (v2.duckdb_v2_scalar_function_get_signature(get_fn, &sig, &err) == .ERROR_NONE) {
                 _ = v2.duckdb_v2_function_signature_set_return_type(sig, bigint_type, &err);
                 _ = v2.duckdb_v2_scalar_function_set_exec_callback(get_fn, pushdownHitCountExec, &err);
-                _ = v2.duckdb_v2_scalar_function_register(get_fn, &err);
+                _ = v2.duckdb_v2_extension_register_scalar_function(input.extension, get_fn, &err);
             }
         }
     }
 
     var reset_fn: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &reset_fn, &err) == .ERROR_NONE) {
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, &err) orelse return, &reset_fn, &err) == .ERROR_NONE) {
         defer _ = v2.duckdb_v2_scalar_function_destroy(&reset_fn);
         const reset_name = helpers.str("zig_v2_pushdown_hit_count_reset");
         _ = v2.duckdb_v2_scalar_function_set_name(reset_fn, &reset_name, &err);
@@ -2041,7 +2043,7 @@ fn registerFilterPushdownTest(input: *const v2.duckdb_v2_extension_input) void {
             if (v2.duckdb_v2_scalar_function_get_signature(reset_fn, &sig, &err) == .ERROR_NONE) {
                 _ = v2.duckdb_v2_function_signature_set_return_type(sig, bigint_type, &err);
                 _ = v2.duckdb_v2_scalar_function_set_exec_callback(reset_fn, pushdownHitCountResetExec, &err);
-                _ = v2.duckdb_v2_scalar_function_register(reset_fn, &err);
+                _ = v2.duckdb_v2_extension_register_scalar_function(input.extension, reset_fn, &err);
             }
         }
     }
@@ -2125,7 +2127,7 @@ fn registerProjectionPushdownTest(input: *const v2.duckdb_v2_extension_input) vo
     var err: v2.duckdb_v2_error_info_handle = undefined;
 
     var mask_fn: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &mask_fn, &err) == .ERROR_NONE) {
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, &err) orelse return, &mask_fn, &err) == .ERROR_NONE) {
         defer _ = v2.duckdb_v2_scalar_function_destroy(&mask_fn);
         const mask_name = helpers.str("zig_v2_project_last_mask");
         _ = v2.duckdb_v2_scalar_function_set_name(mask_fn, &mask_name, &err);
@@ -2136,7 +2138,7 @@ fn registerProjectionPushdownTest(input: *const v2.duckdb_v2_extension_input) vo
             if (v2.duckdb_v2_scalar_function_get_signature(mask_fn, &sig, &err) == .ERROR_NONE) {
                 _ = v2.duckdb_v2_function_signature_set_return_type(sig, bigint_type, &err);
                 _ = v2.duckdb_v2_scalar_function_set_exec_callback(mask_fn, projectionLastMaskExec, &err);
-                _ = v2.duckdb_v2_scalar_function_register(mask_fn, &err);
+                _ = v2.duckdb_v2_extension_register_scalar_function(input.extension, mask_fn, &err);
             }
         }
     }
@@ -2168,11 +2170,11 @@ fn registerReplacementScanTest(input: *const v2.duckdb_v2_extension_input) void 
     var err: v2.duckdb_v2_error_info_handle = undefined;
 
     var scan: v2.duckdb_v2_replacement_scan_handle = undefined;
-    if (v2.duckdb_v2_replacement_scan_create_with_extension(input.extension, &scan, &err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_replacement_scan_create(helpers.factory(input.context, &err) orelse return, &scan, &err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_replacement_scan_destroy(&scan);
 
     if (v2.duckdb_v2_replacement_scan_set_callback(scan, replacementScanCallback, &err) != .ERROR_NONE) return;
-    _ = v2.duckdb_v2_replacement_scan_register(scan, &err);
+    _ = v2.duckdb_v2_extension_register_replacement_scan(input.extension, scan, &err);
 }
 
 const range_prefix = "zig_v2_range_";
@@ -2200,7 +2202,7 @@ fn replacementScanCallback(info: v2.duckdb_v2_replacement_scan_info_handle, cont
     if (v2.duckdb_v2_replacement_scan_set_function_name(info, target, err) != .ERROR_NONE) return;
 
     var n_value: v2.duckdb_v2_value_handle = undefined;
-    if (v2.duckdb_v2_value_create_bigint_with_context(context, n, &n_value, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_value_create_bigint(helpers.factory(context, err) orelse return, n, &n_value, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_value_destroy(&n_value);
     _ = v2.duckdb_v2_replacement_scan_add_argument(info, n_value, err);
 }
@@ -2350,7 +2352,7 @@ const exampleAggFinalize = examples.exampleAggregateFinalizeForPoc;
 /// returns what it scans back, each column cast to VARCHAR and joined with `|`, the rows with `;`.
 fn registerAppenderTypesTest(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2_error_info_handle) void {
     var function: v2.duckdb_v2_scalar_function_handle = undefined;
-    if (v2.duckdb_v2_scalar_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_scalar_function_create(helpers.factory(input.context, err) orelse return, &function, err) != .ERROR_NONE) return;
     defer _ = v2.duckdb_v2_scalar_function_destroy(&function);
 
     const fn_name = helpers.str("zig_v2_appender_types_test");
@@ -2366,7 +2368,7 @@ fn registerAppenderTypesTest(input: *const v2.duckdb_v2_extension_input, err: *v
 
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, appenderTypesTestExec, err) != .ERROR_NONE) return;
 
-    _ = v2.duckdb_v2_scalar_function_register(function, err);
+    _ = v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err);
 }
 
 const TypesRow = struct {
@@ -2480,7 +2482,7 @@ fn appenderTypesRoundTrip(context: v2.duckdb_v2_context_handle, buf: []u8) ![]co
                 if (v2.duckdb_v2_vector_get_value(vec, row, &value, &e) != .ERROR_NONE) return error.ScanFailed;
                 defer _ = v2.duckdb_v2_value_destroy(&value);
                 var as_text: v2.duckdb_v2_value_handle = undefined;
-                if (v2.duckdb_v2_value_cast_with_context(context, value, varchar_type, &as_text, &e) != .ERROR_NONE) return error.ScanFailed;
+                if (v2.duckdb_v2_value_cast(helpers.factory(context, &e) orelse return error.FailedToGetFactory, value, varchar_type, &as_text, &e) != .ERROR_NONE) return error.ScanFailed;
                 defer _ = v2.duckdb_v2_value_destroy(&as_text);
                 var text: v2.duckdb_v2_str = undefined;
                 if (v2.duckdb_v2_value_get_varchar(as_text, &text, &e) != .ERROR_NONE) return error.ScanFailed;
