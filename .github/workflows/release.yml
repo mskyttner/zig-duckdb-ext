@@ -1,7 +1,7 @@
 name: Release extension
 
-# Builds the real v1 extension for every target in build.zig's
-# cross_targets (zig build cross) and publishes the result as a custom
+# Builds the real v1 extension and the two v2 extensions (zig_ext_v2 and the cookbook) for every target in build.zig's
+# cross_targets (zig build dist, zig build dist-v2) and publishes the result as a custom
 # DuckDB extension repository via GitHub Pages, per
 # docs/rationale/0004_extension-distribution-and-signing.md.
 #
@@ -14,6 +14,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Deploy to GitHub Pages (false: build and verify only, and keep the tree as an artifact)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -41,6 +46,12 @@ env:
   EXTENSION_NAME: "zig_ext"
   EXTENSION_API_VERSION: "v1.2.0"
   EXTENSION_VERSION: "v0.1.0"
+  # The v2 extensions are built for one exact DuckDB alpha: build.zig's v2_duckdb_version, which moves with the pin in
+  # build.zig.zon. The tree has a directory per DuckDB version, so this one sits beside v1.5.6. The CLI is that
+  # alpha's, from the same immutable staging path build.zig.zon pins.
+  DUCKDB_V2_VERSION: "v2.0.0-alpha48730"
+  DUCKDB_V2_CLI_URL: "https://duckdb-staging.duckdb.org/f8f3f4dcd9/v2.0.0-alpha48730/duckdb/duckdb/github_release/duckdb-cli-linux-amd64.tar.gz"
+  EXTENSION_VERSION_V2: "v0.1.0"
 
 jobs:
   build:
@@ -68,6 +79,14 @@ jobs:
             -Ddist-version="${DUCKDB_VERSION}"
           find dist -type f
 
+      - name: Cross-compile and package the v2 extensions (zig_ext_v2 and the cookbook)
+        run: |
+          zig build dist-v2 \
+            -Doptimize=ReleaseSafe \
+            -Ddist-version-v2="${DUCKDB_V2_VERSION}" \
+            -Dextension-version-v2="${EXTENSION_VERSION_V2}"
+          find "dist/${DUCKDB_V2_VERSION}" -type f
+
       - name: Assemble the landing page and API docs alongside the extension repository
         run: |
           set -euo pipefail
@@ -76,14 +95,41 @@ jobs:
           cp -r zig-out/docs-v2 dist/docs-v2
           find dist -maxdepth 1
 
+      # The tree as a normal artifact, for the v2 check below and for a dry run (the Pages artifact is not downloadable).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
-  deploy:
+  # Installs the v2 extensions from the tree, in the DuckDB alpha they are built for (tools/verify_dist_v2.sh), before
+  # anything is published. Linux amd64 only: the alpha CLI is not published for the other platforms.
+  verify-v2:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Fetch the DuckDB alpha CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/duckdb-v2"
+          curl -fsSL "${DUCKDB_V2_CLI_URL}" | tar -xz -C "$RUNNER_TEMP/duckdb-v2"
+          "$RUNNER_TEMP/duckdb-v2/duckdb" --version
+      - name: Install both extensions from the tree and use them
+        run: tools/verify_dist_v2.sh "$RUNNER_TEMP/duckdb-v2/duckdb" dist
+
+  deploy:
+    needs: [build, verify-v2]
+    if: github.event_name != 'workflow_dispatch' || inputs.publish
     runs-on: ubuntu-latest
     environment:
       name: github-pages

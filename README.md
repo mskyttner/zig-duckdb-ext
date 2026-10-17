@@ -267,7 +267,7 @@ test/data/            Fixtures for the tests (Arrow files written by PyArrow)
 docs/cookbook.md      Capability matrix: where each part of the C API is shown
 docs/api-v2-coverage.md  Generated: v2 functions that no code references yet
 docs/rationale/       Architecture decision records
-.github/workflows/   ci.yml (every push and pull request), ci-extended.yml (weekly), release.yml (tags)
+.github/workflows/   ci.yml (pull requests, main), ci-extended.yml (weekly), release.yml (v* tags: v1 and v2 trees)
 ```
 
 ## Platform Support
@@ -294,6 +294,8 @@ docs/rationale/       Architecture decision records
 | `task test:arrow-vendor` | Tests of the vendored Arrow library |
 | `task verify:arrow-pyarrow` | Read the cookbook's Arrow files with PyArrow (needs `pyarrow`; run `sqllogictest:cookbook` first) |
 | `task coverage:api-v2` | Rewrite the v2 API coverage report |
+| `task dist:v2` | Cross-compile the v2 extensions into `dist/<alpha>/<platform>/` |
+| `task verify:dist-v2` | Install them from `dist/` into the pinned alpha CLI and use them (run `dist:v2` first) |
 | `task verify:static-windows` | Windows static embedding under Wine, in a container |
 | `task check:all`     | Format, build, unit tests, coverage report is current (not the SQL suites) |
 | `task bench`         | Benchmark hand-written vs comptime  |

@@ -215,6 +215,16 @@ tasks:
         echo "$OUTPUT" | grep -qx "XXXXX....." || { echo "FAILED: tp_bar(...) did not return the expected bar"; exit 1; }
         echo "verify:cross-arm64 PASSED — linux_arm64 cross build loads and runs correctly under QEMU"
 
+  dist:v2:
+    desc: "Cross-compile the v2 extensions (zig_ext_v2 and the cookbook) into dist/<alpha>/<platform>/ (ReleaseSafe)"
+    cmds:
+      - zig build dist-v2 -Doptimize=ReleaseSafe
+
+  verify:dist-v2:
+    desc: "Install the v2 extensions from dist/ (a file:// repository) into the pinned alpha CLI and use them (run dist:v2 first)"
+    cmds:
+      - zig build verify-dist-v2
+
   verify:static-windows:
     desc: "Build the Windows static embedding (real extension + DuckDB's MinGW static libs) and run it under Wine in a container"
     cmds:
