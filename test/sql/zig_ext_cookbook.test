@@ -1,0 +1,163 @@
+# name: test/sql/zig_ext_cookbook.test
+# description: The v2 cookbook extension, one section per example (see docs/cookbook.md)
+# group: [zig_ext_cookbook]
+
+statement ok
+SET allow_extensions_metadata_mismatch=true
+
+require zig_ext_cookbook
+
+# ── Reading configuration: zig_cookbook_option / zig_cookbook_options (src/cookbook/config_options.zig) ──
+# DuckDB's own current_setting() and duckdb_settings() are the oracle.
+
+query T
+SELECT zig_cookbook_option('threads') = current_setting('threads')::VARCHAR
+----
+true
+
+# The connection's SET is what a function sees (a context reads the session's value).
+statement ok
+SET threads = 3
+
+query T
+SELECT zig_cookbook_option('threads')
+----
+3
+
+statement ok
+SET threads = 2
+
+query T
+SELECT zig_cookbook_option('threads')
+----
+2
+
+# A string option, in the form DuckDB stores it.
+statement ok
+SET default_null_order = 'nulls_first'
+
+query T
+SELECT zig_cookbook_option('default_null_order')
+----
+NULLS_FIRST
+
+# Names are case-insensitive, and an alias resolves to the option it stands for.
+query T
+SELECT zig_cookbook_option('DEFAULT_NULL_ORDER')
+----
+NULLS_FIRST
+
+query T
+SELECT zig_cookbook_option('wal_autocheckpoint') = zig_cookbook_option('checkpoint_threshold')
+----
+true
+
+# Settings of other types, in the form current_setting() gives them (it needs a constant name, so one each).
+query TT
+SELECT zig_cookbook_option('memory_limit') = current_setting('memory_limit')::VARCHAR, zig_cookbook_option('enable_progress_bar') = current_setting('enable_progress_bar')::VARCHAR
+----
+true
+true
+
+# A NULL name gives NULL, on some rows of a column or on all.
+query T
+SELECT zig_cookbook_option(NULL) IS NULL
+----
+true
+
+query I
+SELECT count(zig_cookbook_option(CASE WHEN i % 3 = 0 THEN NULL ELSE 'threads' END)) FROM generate_series(1, 200) t(i)
+----
+134
+
+# An unknown option is an error of the query, with DuckDB's reason.
+statement error
+SELECT zig_cookbook_option('no_such_option')
+----
+unknown configuration option: no_such_option
+
+statement error
+SELECT zig_cookbook_option(CASE WHEN i = 150 THEN 'no_such_option' ELSE 'threads' END) FROM generate_series(1, 200) t(i)
+----
+unknown configuration option: no_such_option
+
+# The listing: aliases are not listed, each option once.
+query T
+SELECT count(*) > 100 AND count(DISTINCT name) = count(*) FROM zig_cookbook_options()
+----
+true
+
+# Every listed option that duckdb_settings() also knows has the same description, and its setting is the
+# one a function reads by name.
+query I
+SELECT count(*) FROM zig_cookbook_options() o JOIN duckdb_settings() s ON o.name = s.name WHERE o.description <> s.description
+----
+0
+
+query T
+SELECT count(*) > 100 FROM zig_cookbook_options() o JOIN duckdb_settings() s ON o.name = s.name
+----
+true
+
+query T
+SELECT bool_and(o.setting = zig_cookbook_option(o.name)) FROM zig_cookbook_options() o
+----
+true
+
+# Nothing is dropped: the only names of duckdb_settings() missing from the listing are aliases of listed
+# options, which the listing leaves out and zig_cookbook_option() resolves. The total is that of the pinned
+# DuckDB build; update it when the pin moves.
+query T
+SELECT string_agg(s.name, ',' ORDER BY s.name) FROM duckdb_settings() s WHERE s.name NOT IN (SELECT name FROM zig_cookbook_options())
+----
+memory_limit,null_order,profile_output,streaming_buffer_size,user,wal_autocheckpoint,worker_threads
+
+query I
+SELECT count(*) FROM zig_cookbook_options()
+----
+201
+
+# Aliases: those the listing reports that duckdb_settings() knows are exactly the names it lists but the
+# listing does not (hidden options have aliases of their own, which duckdb_settings() does not show). No
+# option of the pinned build has two aliases, so the comma between aliases is not exercised by real data.
+query T
+SELECT string_agg(a, ',' ORDER BY a) FROM (SELECT unnest(string_split(aliases, ',')) a FROM zig_cookbook_options() WHERE aliases <> '') WHERE a IN (SELECT name FROM duckdb_settings())
+----
+memory_limit,null_order,profile_output,streaming_buffer_size,user,wal_autocheckpoint,worker_threads
+
+query TT
+SELECT name, aliases FROM zig_cookbook_options() WHERE aliases LIKE '%wal_autocheckpoint%' OR aliases LIKE '%worker_threads%' ORDER BY name
+----
+checkpoint_threshold
+wal_autocheckpoint
+threads
+worker_threads
+
+# The listing is a snapshot taken at bind, of this session's settings; the default stays the default.
+query TT
+SELECT setting, default_setting FROM zig_cookbook_options() WHERE name = 'default_null_order'
+----
+NULLS_FIRST
+NULLS_LAST
+
+query T
+SELECT setting FROM zig_cookbook_options() WHERE name = 'threads'
+----
+2
+
+# The target scope is reported by name; UNKNOWN is what an option without an explicit scope gets.
+query T
+SELECT string_agg(DISTINCT scope, ',' ORDER BY scope) FROM zig_cookbook_options()
+----
+GLOBAL_DEFAULT,GLOBAL_ONLY,LOCAL_DEFAULT,UNKNOWN
+
+query T
+SELECT scope FROM zig_cookbook_options() WHERE name = 'default_null_order'
+----
+GLOBAL_DEFAULT
+
+# The table function is usable like any other: filter, join, repeat.
+query I
+SELECT count(*) FROM zig_cookbook_options() a, zig_cookbook_options() b WHERE a.name = 'threads' AND b.name = 'threads'
+----
+1

@@ -670,7 +670,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseSafe,
             }),
         });
-        const coverage_args = [_][]const u8{ "--poc", "poc", "--poc", "examples", "src/functions", "src/lib", "src/ext" };
+        const coverage_args = [_][]const u8{ "--poc", "poc", "--poc", "examples", "src/functions", "src/cookbook", "src/lib", "src/ext" };
         const coverage_run = b.addRunArtifact(coverage_exe);
         coverage_run.addFileArg(b.path("docs/generated/api_v2_functions.tsv"));
         coverage_run.addArg("docs/api-v2-coverage.md");
@@ -861,6 +861,24 @@ pub fn build(b: *std.Build) void {
 
     const ext_v2_step = b.step("ext-v2", "Build the real, parallel v2 .duckdb_extension file");
     ext_v2_step.dependOn(&install_ext_v2.step);
+
+    // The cookbook: one small, tested example per capability of the v2 C API (docs/cookbook.md).
+    const ext_cookbook_lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "zig_ext_cookbook",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root_cookbook.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    ext_cookbook_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
+    ext_cookbook_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
+    ext_cookbook_lib.root_module.link_libc = true;
+    const ext_cookbook_output = addDuckdbExtensionMetadata(b, ext_cookbook_lib, "zig_ext_cookbook", "v2.0.0", "v0.1.0", "C_STRUCT", duckdbPlatformString(target));
+    const install_ext_cookbook = b.addInstallFile(ext_cookbook_output, "lib/zig_ext_cookbook.duckdb_extension");
+    const ext_cookbook_step = b.step("ext-cookbook", "Build the v2 cookbook .duckdb_extension file");
+    ext_cookbook_step.dependOn(&install_ext_cookbook.step);
 
     // ── Interactive session with the real v2 extension pre-loaded ────────
     // Idea borrowed from habedi/template-duckdb-extension-zig (a build step
@@ -1456,6 +1474,16 @@ pub fn build(b: *std.Build) void {
 
         const sqllogictest_v2_step = b.step("sqllogictest-v2", "Run SQL logic tests against the real v2 extension");
         sqllogictest_v2_step.dependOn(&run.step);
+    }
+    {
+        const run = b.addRunArtifact(sqllogictest_tool);
+        if (duckdb_cli_v2) |cli| run.addFileArg(cli) else run.addArg("duckdb");
+        run.addFileArg(ext_cookbook_output);
+        run.addFileArg(b.path("test/sql/zig_ext_cookbook.test"));
+        run.step.dependOn(&install_ext_cookbook.step);
+
+        const sqllogictest_cookbook_step = b.step("sqllogictest-cookbook", "Run SQL logic tests against the v2 cookbook extension");
+        sqllogictest_cookbook_step.dependOn(&run.step);
     }
     {
         // The proof-of-concept extension carries the comptime scalar/table frameworks' broadest

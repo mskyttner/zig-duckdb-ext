@@ -46,6 +46,11 @@ tasks:
     cmds:
       - zig build sqllogictest-v2
 
+  sqllogictest:cookbook:
+    desc: "SQL tests of the v2 cookbook extension (test/sql/zig_ext_cookbook.test)"
+    cmds:
+      - zig build sqllogictest-cookbook
+
   sqllogictest:v2:poc:
     desc: "SQL tests of the comptime scalar/table frameworks, through the v2 proof-of-concept extension (test/sql/zig_ext_v2_poc.test)"
     cmds:
