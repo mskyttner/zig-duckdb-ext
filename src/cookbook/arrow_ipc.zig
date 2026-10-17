@@ -3,6 +3,7 @@
 ///!
 ///!   COPY t TO 'file.arrows' (FORMAT zig_cookbook_arrow_ipc, CODEC 'zstd');
 ///!   COPY t FROM 'file.arrows' (FORMAT zig_cookbook_arrow_ipc);
+///!   SELECT * FROM zig_cookbook_read_arrow('file.arrows');
 ///!
 ///! The recipe is the *seam* between two memory layouts: DuckDB's vectors on one side, Arrow's columnar buffers on the
 ///! other. Both are validity bits plus a flat array (booleans as bits, strings as offsets plus bytes), so the seam is
@@ -91,6 +92,33 @@ const Kind = enum {
             .LOGICAL_TYPE_ID_VARCHAR => .varchar,
             else => null,
         };
+    }
+
+    fn typeId(self: Kind) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
+        return switch (self) {
+            .boolean => .LOGICAL_TYPE_ID_BOOLEAN,
+            .i8 => .LOGICAL_TYPE_ID_TINYINT,
+            .i16 => .LOGICAL_TYPE_ID_SMALLINT,
+            .i32 => .LOGICAL_TYPE_ID_INTEGER,
+            .i64 => .LOGICAL_TYPE_ID_BIGINT,
+            .u8 => .LOGICAL_TYPE_ID_UTINYINT,
+            .u16 => .LOGICAL_TYPE_ID_USMALLINT,
+            .u32 => .LOGICAL_TYPE_ID_UINTEGER,
+            .u64 => .LOGICAL_TYPE_ID_UBIGINT,
+            .f32 => .LOGICAL_TYPE_ID_FLOAT,
+            .f64 => .LOGICAL_TYPE_ID_DOUBLE,
+            .date => .LOGICAL_TYPE_ID_DATE,
+            .timestamp => .LOGICAL_TYPE_ID_TIMESTAMP,
+            .varchar => .LOGICAL_TYPE_ID_VARCHAR,
+        };
+    }
+
+    /// The kind a column in a file maps to, if any.
+    fn fromField(f: arrow.Field) ?Kind {
+        for (std.enums.values(Kind)) |k| {
+            if (k.matches(f)) return k;
+        }
+        return null;
     }
 
     fn sqlName(self: Kind) []const u8 {
@@ -628,6 +656,18 @@ fn checkSchema(c: *const arrow.Columnar, kinds: []const Kind, err: Err) bool {
     return true;
 }
 
+/// Reads and decodes the file into `data`, which owns the bytes and the decoded tables from then on.
+fn loadFile(data: *FromBind, path: [:0]const u8, err: Err) bool {
+    data.bytes = readFile(path, err) orelse return false;
+    const decoded = (if (std.mem.startsWith(u8, data.bytes, "ARROW1")) arrow.decodeFile(gpa, data.bytes) else arrow.decodeStream(gpa, data.bytes));
+    data.columnar = decoded catch |e| {
+        fail(err, .ERROR_INPUT_INVALID, format_name ++ ": {s} is not a readable Arrow IPC stream or file ({s})", .{ path, @errorName(e) });
+        return false;
+    };
+    for (data.columnar.batches.items) |b| data.rows += @intCast(b.length);
+    return true;
+}
+
 fn fromBind(info: v2.duckdb_v2_copy_from_bind_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
     _ = context;
     const data = gpa.create(FromBind) catch return oom(err);
@@ -654,11 +694,8 @@ fn fromBind(info: v2.duckdb_v2_copy_from_bind_info_handle, context: v2.duckdb_v2
 
     // Reading the file now means a bad file is reported while the statement is planned, and the exact row count is
     // known for the optimizer.
-    data.bytes = readFile(c_path, err) orelse return;
-    const decoded = (if (std.mem.startsWith(u8, data.bytes, "ARROW1")) arrow.decodeFile(gpa, data.bytes) else arrow.decodeStream(gpa, data.bytes));
-    data.columnar = decoded catch |e| return fail(err, .ERROR_INPUT_INVALID, format_name ++ ": {s} is not a readable Arrow IPC stream or file ({s})", .{ c_path, @errorName(e) });
+    if (!loadFile(data, c_path, err)) return;
     if (!checkSchema(&data.columnar, data.kinds, err)) return;
-    for (data.columnar.batches.items) |b| data.rows += @intCast(b.length);
     if (v2.duckdb_v2_copy_from_bind_set_cardinality(info, data.rows, true, err) != .ERROR_NONE) return;
 
     var boxed: v2.duckdb_v2_opaque = .{ .ptr = data, .destroy = destroyFromBind, .equals = null };
@@ -767,7 +804,11 @@ fn fromExec(info: v2.duckdb_v2_copy_from_exec_info_handle, context: v2.duckdb_v2
 
     var chunk: v2.duckdb_v2_data_chunk_handle = undefined;
     if (v2.duckdb_v2_copy_from_exec_get_output_chunk(info, &chunk, err) != .ERROR_NONE) return;
+    fillChunk(bound, state, chunk, err);
+}
 
+/// Fills the chunk with the next rows of the file, up to a vector's worth, and moves the cursor past them.
+fn fillChunk(bound: *const FromBind, state: *FromState, chunk: v2.duckdb_v2_data_chunk_handle, err: Err) void {
     // The next record batch that still has rows. Past the last, the chunk stays empty, which ends the read.
     const batches = bound.columnar.batches.items;
     while (state.batch < batches.len and state.row >= @as(usize, @intCast(batches[state.batch].length))) {
@@ -806,6 +847,99 @@ fn fromProgress(info: v2.duckdb_v2_copy_from_progress_info_handle, context: v2.d
     _ = v2.duckdb_v2_copy_from_progress_set_progress(info, done / total, err);
 }
 
+// --- zig_cookbook_read_arrow(path) --------------------------------------------------------------------------------
+
+// The same decode and the same chunk filling, as a table function: the table's columns are not known, so the file
+// says what they are. `bind` names and types the result columns from the file's schema.
+
+fn readBind(
+    info: v2.duckdb_v2_function_bind_info_handle,
+    result: v2.duckdb_v2_table_function_bind_info_handle,
+    context: v2.duckdb_v2_context_handle,
+    err: Err,
+) callconv(.c) void {
+    const data = gpa.create(FromBind) catch return oom(err);
+    data.* = .{ .arena = .init(gpa), .bytes = &.{}, .columnar = .init(gpa), .kinds = &.{}, .types = &.{}, .rows = 0 };
+    var keep = false;
+    defer if (!keep) destroyFromBind(data);
+    const arena = data.arena.allocator();
+
+    var value: v2.duckdb_v2_value_handle = undefined;
+    if (v2.duckdb_v2_function_bind_get_arg_value(info, 0, &value, err) != .ERROR_NONE) return;
+    defer _ = v2.duckdb_v2_value_destroy(&value);
+    var text: v2.duckdb_v2_str = undefined;
+    if (v2.duckdb_v2_value_get_varchar(value, &text, err) != .ERROR_NONE) return;
+    const path = arena.dupeSentinel(u8, spanOf(text), 0) catch return oom(err);
+    if (!loadFile(data, path, err)) return;
+
+    const c = &data.columnar;
+    const kinds = arena.alloc(Kind, c.top.items.len) catch return oom(err);
+    data.kinds = kinds;
+    for (c.top.items, 0..) |field_id, i| {
+        const f = c.fields.items[field_id];
+        kinds[i] = Kind.fromField(f) orelse {
+            var buf: [32]u8 = undefined;
+            const dictionary: []const u8 = if (f.dict_id >= 0) " (dictionary-encoded)" else "";
+            return fail(err, .ERROR_TYPE_INVALID, format_name ++ ": column {d} ({s}) is {s}{s} in the file, which is not supported", .{ i + 1, fieldName(c, f), describe(&buf, f), dictionary });
+        };
+        var ty: v2.duckdb_v2_logical_type_handle = undefined;
+        if (helpers.createTypeFromId(context, kinds[i].typeId(), &ty, err) != .ERROR_NONE) return;
+        defer _ = v2.duckdb_v2_logical_type_destroy(&ty);
+        const name = helpers.str(fieldName(c, f));
+        if (v2.duckdb_v2_table_function_bind_add_result_column(result, &name, ty, err) != .ERROR_NONE) return;
+    }
+    if (v2.duckdb_v2_table_function_bind_set_cardinality(result, data.rows, true, err) != .ERROR_NONE) return;
+
+    var boxed: v2.duckdb_v2_opaque = .{ .ptr = data, .destroy = destroyFromBind, .equals = null };
+    if (v2.duckdb_v2_function_bind_set_bind_data(info, &boxed, err) != .ERROR_NONE) return;
+    keep = true;
+}
+
+fn readInitGlobal(info: v2.duckdb_v2_table_function_init_global_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
+    _ = context;
+    // One cursor, no local state: one thread reads.
+    if (v2.duckdb_v2_table_function_init_global_set_max_threads(info, 1, err) != .ERROR_NONE) return;
+    const state = gpa.create(FromState) catch return oom(err);
+    state.* = .{};
+    var boxed: v2.duckdb_v2_opaque = .{ .ptr = state, .destroy = destroyFromState, .equals = null };
+    if (v2.duckdb_v2_table_function_init_global_set_global_state(info, &boxed, err) != .ERROR_NONE) destroyFromState(state);
+}
+
+fn readExec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
+    _ = context;
+    var bind_ptr: ?*anyopaque = null;
+    var state_ptr: ?*anyopaque = null;
+    if (v2.duckdb_v2_table_function_exec_get_bind_data(info, &bind_ptr, err) != .ERROR_NONE) return;
+    if (v2.duckdb_v2_table_function_exec_get_global_state(info, &state_ptr, err) != .ERROR_NONE) return;
+    // SAFETY: the types stored by `readBind` and `readInitGlobal`.
+    const bound: *const FromBind = @ptrCast(@alignCast(bind_ptr.?));
+    const state: *FromState = @ptrCast(@alignCast(state_ptr.?));
+    var chunk: v2.duckdb_v2_data_chunk_handle = undefined;
+    if (v2.duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != .ERROR_NONE) return;
+    fillChunk(bound, state, chunk, err);
+}
+
+fn registerRead(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
+    var function: v2.duckdb_v2_table_function_handle = undefined;
+    if (v2.duckdb_v2_table_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
+    defer _ = v2.duckdb_v2_table_function_destroy(&function);
+    const name = helpers.str("zig_cookbook_read_arrow");
+    if (v2.duckdb_v2_table_function_set_name(function, &name, err) != .ERROR_NONE) return error.FailedToSetName;
+
+    var varchar: v2.duckdb_v2_logical_type_handle = undefined;
+    if (helpers.createTypeFromId(input.context, .LOGICAL_TYPE_ID_VARCHAR, &varchar, err) != .ERROR_NONE) return error.FailedToCreateType;
+    defer _ = v2.duckdb_v2_logical_type_destroy(&varchar);
+    var sig: v2.duckdb_v2_function_signature_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_signature(function, &sig, err) != .ERROR_NONE) return error.FailedToGetSignature;
+    const path_name = helpers.str("path");
+    if (v2.duckdb_v2_function_signature_add_parameter(sig, &path_name, varchar, null, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
+
+    if (v2.duckdb_v2_table_function_set_bind_callback(function, &readBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    if (v2.duckdb_v2_table_function_set_init_global_callback(function, &readInitGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    if (v2.duckdb_v2_table_function_set_exec_callback(function, &readExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    if (v2.duckdb_v2_table_function_register(function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
+}
+
 fn registerCopy(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     var function: v2.duckdb_v2_copy_function_handle = undefined;
     if (v2.duckdb_v2_copy_function_create_with_extension(input.extension, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
@@ -832,4 +966,5 @@ fn registerCopy(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
 pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     const err = input.err orelse return error.MissingErrorSlot;
     try registerCopy(input, err);
+    try registerRead(input, err);
 }

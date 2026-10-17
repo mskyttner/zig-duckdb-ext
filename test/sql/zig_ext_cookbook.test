@@ -1328,3 +1328,85 @@ statement error
 COPY arrow_expected TO '/nonexistent_dir/x.arrows' (FORMAT zig_cookbook_arrow_ipc)
 ----
 cannot open /nonexistent_dir/x.arrows for writing
+
+# zig_cookbook_read_arrow(path): the same decoder as COPY FROM, with the file's own schema.
+query T
+SELECT column_name || ' ' || column_type FROM (DESCRIBE SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/types.arrows'))
+----
+b BOOLEAN
+i8 TINYINT
+i16 SMALLINT
+i32 INTEGER
+i64 BIGINT
+u8 UTINYINT
+u16 USMALLINT
+u32 UINTEGER
+u64 UBIGINT
+f32 FLOAT
+f64 DOUBLE
+d DATE
+ts TIMESTAMP
+s VARCHAR
+
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/types.arrows') EXCEPT SELECT * FROM arrow_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_expected EXCEPT SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/types.arrow'))
+----
+0
+
+query T
+SELECT s FROM zig_cookbook_read_arrow('test/data/arrow/types.arrows') ORDER BY i64 NULLS LAST, s NULLS LAST LIMIT 1
+----
+(empty)
+
+# Several batches, LZ4, a filter and a projection over the scan.
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/big_batches.arrows') EXCEPT SELECT * FROM arrow_big_expected)
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_read_arrow('test/data/arrow/big_lz4.arrows') WHERE id % 2 = 0
+----
+2500
+
+query I
+SELECT count(*) FROM zig_cookbook_read_arrow('test/data/arrow/no_rows.arrows')
+----
+0
+
+# Joined with itself, so the function is bound and run twice in one statement.
+query I
+SELECT count(*) FROM zig_cookbook_read_arrow('test/data/arrow/types.arrows') a JOIN zig_cookbook_read_arrow('test/data/arrow/types.arrow') b USING (i64)
+----
+4
+
+# Files the decoder or the type mapping rejects, while the statement is planned.
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/dictionary.arrows')
+----
+column 1 (s) is utf8 (dictionary-encoded) in the file, which is not supported
+
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/timezone.arrows')
+----
+timestamp[us, with a time zone]
+
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/garbage.arrows')
+----
+is not a readable Arrow IPC stream or file
+
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/does_not_exist.arrows')
+----
+cannot open test/data/arrow/does_not_exist.arrows
+
+statement error
+SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/bad_utf8.arrows')
+----
+not valid UTF-8
