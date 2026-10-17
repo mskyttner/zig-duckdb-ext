@@ -1,13 +1,14 @@
-///! Worked examples for the v2 bindings in `duckdb_v2.zig` — hand-written
+///! Worked examples for the generated v2 bindings (`duckdb_v2_dynamic`) — hand-written
 ///! proofs-of-concept for each function kind (scalar numeric, scalar
 ///! VARCHAR, table, aggregate), written before the comptime frameworks
 ///! existed to prove each piece of the vtable by hand first. Kept
-///! separate from `duckdb_v2.zig` itself (which is real bindings only, no
+///! separate from the bindings themselves (which are real bindings only, no
 ///! demo code — matching v1's `duckdb.zig`) purely so
 ///! `src/ext/init_v2_poc.zig`'s disposable experimentation harness has
 ///! something to register; not part of the permanent extension.
 const std = @import("std");
-const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
+const helpers = @import("v2_helpers");
 
 // ─── Worked example ──────────────────────────────────────────────────────
 //
@@ -21,47 +22,45 @@ const db = @import("duckdb_v2");
 // Not registered against a real connection anywhere yet — `v2-check` only
 // type-checks this against the vtable's declared signatures.
 const example = struct {
-    // `err` must match the vtable's raw `[*c]ErrorInfoHandle` C-pointer type
-    // exactly — assigning a fn literal to a function-pointer-typed field
-    // requires an exact type match, unlike ordinary argument passing (which
-    // auto-coerces `*T` to `[*c]T`, as every other wrapper above relies on).
-    fn doubleExec(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
+    // `err` must match the callback typedef's pointer type exactly — assigning a fn literal to
+    // a function-pointer-typed field requires an exact type match.
+    fn doubleExec(info: v2.duckdb_v2_scalar_function_exec_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
         _ = context;
-        var row_count: db.idx_t = 0;
-        if (db.scalarFunctionExecGetRowCount(info, &row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var row_count: u64 = 0;
+        if (v2.duckdb_v2_scalar_function_exec_get_row_count(info, &row_count, err) != .ERROR_NONE) return;
 
-        var arg_vec: db.VectorHandle = undefined;
-        if (db.scalarFunctionExecGetArg(info, 0, &arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        if (db.vectorFlatten(arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var arg_vec: v2.duckdb_v2_vector_handle = undefined;
+        if (v2.duckdb_v2_scalar_function_exec_get_arg(info, 0, &arg_vec, err) != .ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_flatten(arg_vec, err) != .ERROR_NONE) return;
 
-        var view: db.VectorView = undefined;
-        if (db.vectorGetView(arg_vec, &view, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var view: v2.duckdb_v2_vector_view = undefined;
+        if (v2.duckdb_v2_vector_get_view(arg_vec, &view, err) != .ERROR_NONE) return;
 
-        var result_vec: db.VectorHandle = undefined;
-        if (db.scalarFunctionExecGetResult(info, &result_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var result_vec: v2.duckdb_v2_vector_handle = undefined;
+        if (v2.duckdb_v2_scalar_function_exec_get_result(info, &result_vec, err) != .ERROR_NONE) return;
         // The result vector starts at whatever size it was last used at (often
         // 1) — must grow it to row_count before writing/nulling past index 0,
         // or duckdb_v2_vector_set_null rejects out-of-range rows.
-        if (db.vectorSetSize(result_vec, row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_set_size(result_vec, row_count, err) != .ERROR_NONE) return;
 
         var out_data: ?*anyopaque = null;
-        if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
         // SAFETY: the signature registered this function as (BIGINT) -> BIGINT,
         // so the arg view and result buffer are both i64-typed by construction.
         const in: [*]const i64 = @ptrCast(@alignCast(view.data));
         const out: [*]i64 = @ptrCast(@alignCast(out_data));
 
-        var row: db.idx_t = 0;
+        var row: u64 = 0;
         while (row < row_count) : (row += 1) {
             if (view.validity != null and !isValid(view.validity.?, row)) {
-                if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                 continue;
             }
             out[row] = in[row] * 2;
         }
     }
 
-    inline fn isValid(validity: [*]const u64, row: db.idx_t) bool {
+    inline fn isValid(validity: [*]const u64, row: u64) bool {
         const entry_idx = row / 64;
         const bit_idx: u6 = @intCast(row % 64);
         return (validity[entry_idx] & (@as(u64, 1) << bit_idx)) != 0;
@@ -82,30 +81,30 @@ pub const exampleDoubleExecForPoc = example.doubleExec;
 // simpler than hand-rolling the inline/arena encoding — see those
 // functions' own doc comments for the tradeoff).
 const varchar_example = struct {
-    fn helloExec(info: db.ScalarFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-        var row_count: db.idx_t = 0;
-        if (db.scalarFunctionExecGetRowCount(info, &row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    fn helloExec(info: v2.duckdb_v2_scalar_function_exec_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+        var row_count: u64 = 0;
+        if (v2.duckdb_v2_scalar_function_exec_get_row_count(info, &row_count, err) != .ERROR_NONE) return;
 
-        var arg_vec: db.VectorHandle = undefined;
-        if (db.scalarFunctionExecGetArg(info, 0, &arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        if (db.vectorFlatten(arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        var view: db.VectorView = undefined;
-        if (db.vectorGetView(arg_vec, &view, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var arg_vec: v2.duckdb_v2_vector_handle = undefined;
+        if (v2.duckdb_v2_scalar_function_exec_get_arg(info, 0, &arg_vec, err) != .ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_flatten(arg_vec, err) != .ERROR_NONE) return;
+        var view: v2.duckdb_v2_vector_view = undefined;
+        if (v2.duckdb_v2_vector_get_view(arg_vec, &view, err) != .ERROR_NONE) return;
 
-        var result_vec: db.VectorHandle = undefined;
-        if (db.scalarFunctionExecGetResult(info, &result_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        if (db.vectorSetSize(result_vec, row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var result_vec: v2.duckdb_v2_vector_handle = undefined;
+        if (v2.duckdb_v2_scalar_function_exec_get_result(info, &result_vec, err) != .ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_set_size(result_vec, row_count, err) != .ERROR_NONE) return;
 
         // SAFETY: the signature registered this function as (VARCHAR) -> VARCHAR.
-        const in: [*]const db.BytesValue = @ptrCast(@alignCast(view.data));
+        const in: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(view.data));
 
-        var row: db.idx_t = 0;
+        var row: u64 = 0;
         while (row < row_count) : (row += 1) {
             if (view.validity != null and !example.isValid(view.validity.?, row)) {
-                if (db.vectorSetNull(result_vec, row, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                 continue;
             }
-            const name = db.bytesSlice(&in[row]);
+            const name = helpers.bytesSlice(&in[row]);
             var buf: [1024]u8 = undefined;
             const prefix = "Hello, ";
             const suffix = "!";
@@ -117,10 +116,10 @@ const varchar_example = struct {
                 break :blk buf[0..total];
             } else "Hello, world!";
 
-            var value: db.ValueHandle = undefined;
-            if (db.valueCreateVarcharWithContext(context, greeting, &value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-            defer _ = db.valueDestroy(&value);
-            if (db.vectorSetValue(result_vec, row, value, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+            var value: v2.duckdb_v2_value_handle = undefined;
+            if (helpers.createVarcharValue(context, greeting, &value, err) != .ERROR_NONE) return;
+            defer _ = v2.duckdb_v2_value_destroy(&value);
+            if (v2.duckdb_v2_vector_set_value(result_vec, row, value, err) != .ERROR_NONE) return;
         }
     }
 };
@@ -134,7 +133,7 @@ pub const exampleHelloExecForPoc = varchar_example.helloExec;
 // exec against a live runtime. Global state is a single heap-allocated
 // `GlobalState.emitted` flag, boxed in a `duckdb_v2_opaque` (ptr + destroy +
 // equals) via `table_function_init_global_set_global_state` so DuckDB frees
-// it itself when the query ends — see `Opaque`'s doc comment in duckdb_v2.zig.
+// it itself when the query ends — see `duckdb_v2_opaque`'s doc comment in the generated types.
 const table_example = struct {
     const GlobalState = struct { emitted: bool };
 
@@ -143,46 +142,46 @@ const table_example = struct {
         std.heap.c_allocator.destroy(state);
     }
 
-    fn bind(info: db.c.duckdb_v2_function_bind_info_handle, result: db.TableFunctionBindInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
+    fn bind(info: v2.duckdb_v2_function_bind_info_handle, result: v2.duckdb_v2_table_function_bind_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
         _ = info;
-        var bigint_type: db.LogicalTypeHandle = undefined;
-        if (db.contextCreateTypeFromId(context, db.c.DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, &bigint_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        defer _ = db.logicalTypeDestroy(&bigint_type);
+        var bigint_type: v2.duckdb_v2_logical_type_handle = undefined;
+        if (helpers.createTypeFromId(context, .LOGICAL_TYPE_ID_BIGINT, &bigint_type, err) != .ERROR_NONE) return;
+        defer _ = v2.duckdb_v2_logical_type_destroy(&bigint_type);
 
-        const col_name = db.str("n");
-        if (db.tableFunctionBindAddResultColumn(result, &col_name, bigint_type, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        _ = db.tableFunctionBindSetCardinality(result, 3, true, err);
+        const col_name = helpers.str("n");
+        if (v2.duckdb_v2_table_function_bind_add_result_column(result, &col_name, bigint_type, err) != .ERROR_NONE) return;
+        _ = v2.duckdb_v2_table_function_bind_set_cardinality(result, 3, true, err);
     }
 
-    fn initGlobal(info: db.TableFunctionInitGlobalInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
+    fn initGlobal(info: v2.duckdb_v2_table_function_init_global_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
         _ = context;
         const state = std.heap.c_allocator.create(GlobalState) catch return;
         state.* = .{ .emitted = false };
-        var boxed: db.Opaque = .{ .ptr = state, .destroy = destroyGlobalState, .equals = null };
-        _ = db.tableFunctionInitGlobalSetGlobalState(info, &boxed, err);
+        var boxed: v2.duckdb_v2_opaque = .{ .ptr = state, .destroy = destroyGlobalState, .equals = null };
+        _ = v2.duckdb_v2_table_function_init_global_set_global_state(info, &boxed, err);
     }
 
-    fn exec(info: db.TableFunctionExecInfoHandle, context: db.ContextHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
+    fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
         _ = context;
         var state_ptr: ?*anyopaque = null;
-        if (db.tableFunctionExecGetGlobalState(info, &state_ptr, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        if (v2.duckdb_v2_table_function_exec_get_global_state(info, &state_ptr, err) != .ERROR_NONE) return;
         // SAFETY: the pointer stored in initGlobal is always a *GlobalState.
         const state: *GlobalState = @ptrCast(@alignCast(state_ptr.?));
 
-        var chunk: db.DataChunkHandle = undefined;
-        if (db.tableFunctionExecGetOutputChunk(info, &chunk, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        var col0: db.VectorHandle = undefined;
-        if (db.dataChunkGetVector(chunk, 0, &col0, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var chunk: v2.duckdb_v2_data_chunk_handle = undefined;
+        if (v2.duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != .ERROR_NONE) return;
+        var col0: v2.duckdb_v2_vector_handle = undefined;
+        if (v2.duckdb_v2_data_chunk_get_vector(chunk, 0, &col0, err) != .ERROR_NONE) return;
 
         // A table function signals end-of-scan by returning a 0-size chunk.
         if (state.emitted) {
-            _ = db.vectorSetSize(col0, 0, err);
+            _ = v2.duckdb_v2_vector_set_size(col0, 0, err);
             return;
         }
 
-        if (db.vectorSetSize(col0, 3, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_set_size(col0, 3, err) != .ERROR_NONE) return;
         var out_data: ?*anyopaque = null;
-        if (db.vectorGetDataMutable(col0, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_get_data_mutable(col0, &out_data, err) != .ERROR_NONE) return;
         const out: [*]i64 = @ptrCast(@alignCast(out_data));
         out[0] = 0;
         out[1] = 1;
@@ -206,39 +205,39 @@ pub const exampleTableExecForPoc = table_example.exec;
 const aggregate_example = struct {
     const SumState = struct { sum: i64 };
 
-    fn size(info: db.AggregateFunctionSizeInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-        _ = db.aggregateFunctionSizeSetStateSize(info, @sizeOf(SumState), err);
+    fn size(info: v2.duckdb_v2_aggregate_function_size_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+        _ = v2.duckdb_v2_aggregate_function_size_set_state_size(info, @sizeOf(SumState), err);
     }
 
-    fn init(info: db.AggregateFunctionInitInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-        var count: db.idx_t = 0;
-        if (db.aggregateFunctionInitGetStateCount(info, &count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        var states: [*c]?*anyopaque = null;
-        if (db.aggregateFunctionInitGetStates(info, &states, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    fn init(info: v2.duckdb_v2_aggregate_function_init_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+        var count: u64 = 0;
+        if (v2.duckdb_v2_aggregate_function_init_get_state_count(info, &count, err) != .ERROR_NONE) return;
+        var states: [*]?*anyopaque = undefined;
+        if (v2.duckdb_v2_aggregate_function_init_get_states(info, &states, err) != .ERROR_NONE) return;
 
-        var i: db.idx_t = 0;
+        var i: u64 = 0;
         while (i < count) : (i += 1) {
             const state: *SumState = @ptrCast(@alignCast(states[i].?));
             state.* = .{ .sum = 0 };
         }
     }
 
-    fn update(info: db.AggregateFunctionUpdateInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-        var row_count: db.idx_t = 0;
-        if (db.aggregateFunctionUpdateGetRowCount(info, &row_count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    fn update(info: v2.duckdb_v2_aggregate_function_update_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+        var row_count: u64 = 0;
+        if (v2.duckdb_v2_aggregate_function_update_get_row_count(info, &row_count, err) != .ERROR_NONE) return;
 
-        var arg_vec: db.VectorHandle = undefined;
-        if (db.aggregateFunctionUpdateGetArg(info, 0, &arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        if (db.vectorFlatten(arg_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        var view: db.VectorView = undefined;
-        if (db.vectorGetView(arg_vec, &view, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var arg_vec: v2.duckdb_v2_vector_handle = undefined;
+        if (v2.duckdb_v2_aggregate_function_update_get_arg(info, 0, &arg_vec, err) != .ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_flatten(arg_vec, err) != .ERROR_NONE) return;
+        var view: v2.duckdb_v2_vector_view = undefined;
+        if (v2.duckdb_v2_vector_get_view(arg_vec, &view, err) != .ERROR_NONE) return;
 
-        var states: [*c]?*anyopaque = null;
-        if (db.aggregateFunctionUpdateGetStates(info, &states, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        var states: [*]?*anyopaque = undefined;
+        if (v2.duckdb_v2_aggregate_function_update_get_states(info, &states, err) != .ERROR_NONE) return;
 
         // SAFETY: the signature registered this function as (BIGINT) -> BIGINT.
         const values: [*]const i64 = @ptrCast(@alignCast(view.data));
-        var row: db.idx_t = 0;
+        var row: u64 = 0;
         while (row < row_count) : (row += 1) {
             if (view.validity != null and !example.isValid(view.validity.?, row)) continue;
             const state: *SumState = @ptrCast(@alignCast(states[row].?));
@@ -246,15 +245,15 @@ const aggregate_example = struct {
         }
     }
 
-    fn combine(info: db.AggregateFunctionCombineInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-        var count: db.idx_t = 0;
-        if (db.aggregateFunctionCombineGetStateCount(info, &count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        var sources: [*c]?*anyopaque = null;
-        if (db.aggregateFunctionCombineGetSources(info, &sources, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        var targets: [*c]?*anyopaque = null;
-        if (db.aggregateFunctionCombineGetTargets(info, &targets, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    fn combine(info: v2.duckdb_v2_aggregate_function_combine_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+        var count: u64 = 0;
+        if (v2.duckdb_v2_aggregate_function_combine_get_state_count(info, &count, err) != .ERROR_NONE) return;
+        var sources: [*]?*anyopaque = undefined;
+        if (v2.duckdb_v2_aggregate_function_combine_get_sources(info, &sources, err) != .ERROR_NONE) return;
+        var targets: [*]?*anyopaque = undefined;
+        if (v2.duckdb_v2_aggregate_function_combine_get_targets(info, &targets, err) != .ERROR_NONE) return;
 
-        var i: db.idx_t = 0;
+        var i: u64 = 0;
         while (i < count) : (i += 1) {
             const source: *SumState = @ptrCast(@alignCast(sources[i].?));
             const target: *SumState = @ptrCast(@alignCast(targets[i].?));
@@ -262,21 +261,21 @@ const aggregate_example = struct {
         }
     }
 
-    fn finalize(info: db.AggregateFunctionFinalizeInfoHandle, err: [*c]db.ErrorInfoHandle) callconv(.c) void {
-        var count: db.idx_t = 0;
-        if (db.aggregateFunctionFinalizeGetStateCount(info, &count, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        var states: [*c]?*anyopaque = null;
-        if (db.aggregateFunctionFinalizeGetStates(info, &states, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        var result_vec: db.VectorHandle = undefined;
-        if (db.aggregateFunctionFinalizeGetResult(info, &result_vec, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
-        var offset: db.idx_t = 0;
-        if (db.aggregateFunctionFinalizeGetResultOffset(info, &offset, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+    fn finalize(info: v2.duckdb_v2_aggregate_function_finalize_info_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+        var count: u64 = 0;
+        if (v2.duckdb_v2_aggregate_function_finalize_get_state_count(info, &count, err) != .ERROR_NONE) return;
+        var states: [*]?*anyopaque = undefined;
+        if (v2.duckdb_v2_aggregate_function_finalize_get_states(info, &states, err) != .ERROR_NONE) return;
+        var result_vec: v2.duckdb_v2_vector_handle = undefined;
+        if (v2.duckdb_v2_aggregate_function_finalize_get_result(info, &result_vec, err) != .ERROR_NONE) return;
+        var offset: u64 = 0;
+        if (v2.duckdb_v2_aggregate_function_finalize_get_result_offset(info, &offset, err) != .ERROR_NONE) return;
 
         var out_data: ?*anyopaque = null;
-        if (db.vectorGetDataMutable(result_vec, &out_data, err) != db.c.DUCKDB_V2_ERROR_NONE) return;
+        if (v2.duckdb_v2_vector_get_data_mutable(result_vec, &out_data, err) != .ERROR_NONE) return;
         const out: [*]i64 = @ptrCast(@alignCast(out_data));
 
-        var i: db.idx_t = 0;
+        var i: u64 = 0;
         while (i < count) : (i += 1) {
             const state: *SumState = @ptrCast(@alignCast(states[i].?));
             out[offset + i] = state.sum;
@@ -299,35 +298,35 @@ test "example.doubleExec matches the exec callback signature" {
     // Taking the function's address forces Zig to semantically analyze its
     // body (analysis is lazy per-function) — this is the only thing that
     // actually type-checks the worked example above, since nothing calls it.
-    const cb: db.ScalarFunctionExecCallback = example.doubleExec;
-    try std.testing.expect(cb != null);
+    const cb: v2.duckdb_v2_scalar_function_exec_callback_fn = example.doubleExec;
+    try std.testing.expect(@intFromPtr(cb) != 0);
 }
 
 test "varchar_example.helloExec matches the exec callback signature" {
-    const cb: db.ScalarFunctionExecCallback = varchar_example.helloExec;
-    try std.testing.expect(cb != null);
+    const cb: v2.duckdb_v2_scalar_function_exec_callback_fn = varchar_example.helloExec;
+    try std.testing.expect(@intFromPtr(cb) != 0);
 }
 
 test "table_example callbacks match their callback signatures" {
-    const bind_cb: db.c.duckdb_v2_table_function_bind_callback_fn = table_example.bind;
-    const init_cb: db.c.duckdb_v2_table_function_init_global_callback_fn = table_example.initGlobal;
-    const exec_cb: db.c.duckdb_v2_table_function_exec_callback_fn = table_example.exec;
-    try std.testing.expect(bind_cb != null);
-    try std.testing.expect(init_cb != null);
-    try std.testing.expect(exec_cb != null);
+    const bind_cb: v2.duckdb_v2_table_function_bind_callback_fn = table_example.bind;
+    const init_cb: v2.duckdb_v2_table_function_init_global_callback_fn = table_example.initGlobal;
+    const exec_cb: v2.duckdb_v2_table_function_exec_callback_fn = table_example.exec;
+    try std.testing.expect(@intFromPtr(bind_cb) != 0);
+    try std.testing.expect(@intFromPtr(init_cb) != 0);
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
 }
 
 test "aggregate_example callbacks match their callback signatures" {
-    const size_cb: db.c.duckdb_v2_aggregate_function_size_callback_fn = aggregate_example.size;
-    const init_cb: db.c.duckdb_v2_aggregate_function_init_callback_fn = aggregate_example.init;
-    const update_cb: db.c.duckdb_v2_aggregate_function_update_callback_fn = aggregate_example.update;
-    const combine_cb: db.c.duckdb_v2_aggregate_function_combine_callback_fn = aggregate_example.combine;
-    const finalize_cb: db.c.duckdb_v2_aggregate_function_finalize_callback_fn = aggregate_example.finalize;
-    try std.testing.expect(size_cb != null);
-    try std.testing.expect(init_cb != null);
-    try std.testing.expect(update_cb != null);
-    try std.testing.expect(combine_cb != null);
-    try std.testing.expect(finalize_cb != null);
+    const size_cb: v2.duckdb_v2_aggregate_function_size_callback_fn = aggregate_example.size;
+    const init_cb: v2.duckdb_v2_aggregate_function_init_callback_fn = aggregate_example.init;
+    const update_cb: v2.duckdb_v2_aggregate_function_update_callback_fn = aggregate_example.update;
+    const combine_cb: v2.duckdb_v2_aggregate_function_combine_callback_fn = aggregate_example.combine;
+    const finalize_cb: v2.duckdb_v2_aggregate_function_finalize_callback_fn = aggregate_example.finalize;
+    try std.testing.expect(@intFromPtr(size_cb) != 0);
+    try std.testing.expect(@intFromPtr(init_cb) != 0);
+    try std.testing.expect(@intFromPtr(update_cb) != 0);
+    try std.testing.expect(@intFromPtr(combine_cb) != 0);
+    try std.testing.expect(@intFromPtr(finalize_cb) != 0);
 }
 
 test "example.isValid reads validity bits correctly" {

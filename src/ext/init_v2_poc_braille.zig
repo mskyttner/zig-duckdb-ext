@@ -32,7 +32,9 @@
 ///!   already proved, applied to a URL-shaped "table name" instead of a
 ///!   bare identifier.
 const std = @import("std");
-const db2 = @import("duckdb_v2");
+const db = @import("duckdb_v2");
+const v2 = @import("duckdb_v2_dynamic");
+const helpers = @import("v2_helpers");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const comptime_table_v2 = @import("comptime_table_v2");
 const braille_image = @import("braille_image");
@@ -102,29 +104,29 @@ const BrailleTableState = struct {
 
 const BrailleFromUrlTableCt = comptime_table_v2.FunctionNamed("braille_from_url_table_ct", BrailleTableState, &.{"url"});
 
-fn registerBrailleReplacementScan(input: *const db2.ExtensionInput) void {
-    var err: db2.ErrorInfoHandle = undefined;
+fn registerBrailleReplacementScan(input: *const v2.duckdb_v2_extension_input) void {
+    var err: v2.duckdb_v2_error_info_handle = undefined;
 
-    var scan: db2.ReplacementScanHandle = undefined;
-    if (db2.replacementScanCreateWithExtension(input.extension, &scan, &err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
-    defer _ = db2.replacementScanDestroy(&scan);
+    var scan: v2.duckdb_v2_replacement_scan_handle = undefined;
+    if (v2.duckdb_v2_replacement_scan_create_with_extension(input.extension, &scan, &err) != .ERROR_NONE) return;
+    defer _ = v2.duckdb_v2_replacement_scan_destroy(&scan);
 
-    if (db2.replacementScanSetCallback(scan, braillereplacementScanCallback, &err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
-    _ = db2.replacementScanRegister(scan, &err);
+    if (v2.duckdb_v2_replacement_scan_set_callback(scan, braillereplacementScanCallback, &err) != .ERROR_NONE) return;
+    _ = v2.duckdb_v2_replacement_scan_register(scan, &err);
 }
 
 const image_extensions = [_][]const u8{ ".jpg", ".jpeg", ".png" };
 
-fn braillereplacementScanCallback(info: db2.ReplacementScanInfoHandle, context: db2.ContextHandle, err: [*c]db2.ErrorInfoHandle) callconv(.c) void {
-    var qname: db2.QnameHandle = undefined;
-    if (db2.replacementScanGetName(info, &qname, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
-    defer _ = db2.qnameDestroy(&qname);
+fn braillereplacementScanCallback(info: v2.duckdb_v2_replacement_scan_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+    var qname: v2.duckdb_v2_qname_handle = undefined;
+    if (v2.duckdb_v2_replacement_scan_get_name(info, &qname, err) != .ERROR_NONE) return;
+    defer _ = v2.duckdb_v2_qname_destroy(&qname);
 
-    var part_count: db2.idx_t = 0;
-    if (db2.qnameGetPartCount(qname, &part_count, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var part_count: u64 = 0;
+    if (v2.duckdb_v2_qname_get_part_count(qname, &part_count, err) != .ERROR_NONE) return;
 
-    var object_name: db2.IdentifierT = undefined;
-    if (db2.qnameGetPart(qname, part_count - 1, &object_name, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var object_name: v2.duckdb_v2_identifier_t = undefined;
+    if (v2.duckdb_v2_qname_get_part(qname, part_count - 1, &object_name, err) != .ERROR_NONE) return;
     // SAFETY: `object_name` borrows from `qname`, valid until it's destroyed above.
     const name_slice: []const u8 = @as([*]const u8, @ptrCast(object_name.ptr))[0..object_name.len];
 
@@ -140,20 +142,23 @@ fn braillereplacementScanCallback(info: db2.ReplacementScanInfoHandle, context: 
     }
     if (!matches_extension) return; // decline — not an image-shaped URL
 
-    var target: db2.QnameHandle = undefined;
-    const target_name = db2.str("braille_from_url_table_ct");
-    if (db2.qnameCreate((&target_name)[0..1], &target, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
-    defer _ = db2.qnameDestroy(&target);
-    if (db2.replacementScanSetFunctionName(info, target, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
+    var target: v2.duckdb_v2_qname_handle = undefined;
+    const target_name = helpers.str("braille_from_url_table_ct");
+    if (v2.duckdb_v2_qname_create(&.{target_name}, 1, &target, err) != .ERROR_NONE) return;
+    defer _ = v2.duckdb_v2_qname_destroy(&target);
+    if (v2.duckdb_v2_replacement_scan_set_function_name(info, target, err) != .ERROR_NONE) return;
 
-    var url_value: db2.ValueHandle = undefined;
-    if (db2.valueCreateVarcharWithContext(context, name_slice, &url_value, err) != db2.c.DUCKDB_V2_ERROR_NONE) return;
-    defer _ = db2.valueDestroy(&url_value);
-    _ = db2.replacementScanAddArgument(info, url_value, err);
+    var url_value: v2.duckdb_v2_value_handle = undefined;
+    if (helpers.createVarcharValue(context, name_slice, &url_value, err) != .ERROR_NONE) return;
+    defer _ = v2.duckdb_v2_value_destroy(&url_value);
+    _ = v2.duckdb_v2_replacement_scan_add_argument(info, url_value, err);
 }
 
-export fn zig_ext_v2_poc_braille_init_c_api_v2(input: *const db2.ExtensionInput) callconv(.c) void {
-    if (!db2.initApi(input, "v2.0.0")) return;
+export fn zig_ext_v2_poc_braille_init_c_api_v2(raw_input: *const db.ExtensionInput) callconv(.c) void {
+    if (!db.initApi(raw_input, "v2.0.0")) return;
+    // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
+    // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
+    const input: *const v2.duckdb_v2_extension_input = @ptrCast(raw_input);
     BrailleFromUrlCt.register(input) catch {};
     BrailleFromUrlTableCt.register(input) catch {};
     registerBrailleReplacementScan(input);

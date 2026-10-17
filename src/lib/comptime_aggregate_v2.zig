@@ -47,7 +47,7 @@
 ///!
 ///! Optional sixth decl, for a batch-at-a-time fast path over the
 ///! *ungrouped* case (`SELECT my_agg(x) FROM t`, no `GROUP BY`):
-///!   - `pub fn updateBatch(self: *State, views: *const [N]db.VectorView, row_count: db.idx_t) void`
+///!   - `pub fn updateBatch(self: *State, views: *const [N]v2.duckdb_v2_vector_view, row_count: u64) void`
 ///!     where N is `arg_types.len` (the same count `update`'s own
 ///!     parameters have, after `self`).
 ///!
@@ -87,11 +87,9 @@
 ///! `other` argument must NOT be freed by `combine` itself — `other`'s
 ///! owning state gets its own, separate `deinit` call from `destroy` later.
 ///!
-///! Bindings: the framework itself calls DuckDB through the generated bindings
-///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). A State's optional
-///! `updateBatch` hook is still written against the hand-written `duckdb_v2.zig`'s
-///! `db.VectorView`; the views are handed to it through a cast of the same struct (its layout
-///! is checked at comptime), which goes away with the hand-written layer.
+///! Bindings: the framework calls DuckDB through the generated bindings
+///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`); a State's optional
+///! `updateBatch` hook takes `v2.duckdb_v2_vector_view`.
 ///!
 ///! Usage:
 ///!   const Sum = comptime_aggregate_v2.Function("my_sum", struct {
@@ -101,26 +99,10 @@
 ///!       pub fn combine(self: *@This(), other: @This()) void { self.sum += other.sum; }
 ///!       pub fn finalize(self: @This()) i64 { return self.sum; }
 ///!   });
-///!   try Sum.register(input); // input: *const db.ExtensionInput
+///!   try Sum.register(input); // input: *const v2.duckdb_v2_extension_input
 const std = @import("std");
-const db = @import("duckdb_v2");
 const v2 = @import("duckdb_v2_dynamic");
 const helpers = @import("v2_helpers");
-
-// Everything this framework does goes through the generated bindings (`v2`). The optional `updateBatch`
-// hook of a State is still written against the hand-written layer's `db.VectorView`, a different Zig
-// type for the same struct, so the views are handed to it through `UserView`. This goes away with the
-// hand-written layer.
-const UserView = db.VectorView;
-
-comptime {
-    // The two translations of `duckdb_v2_vector_view` must agree for the pointer cast below to be valid.
-    std.debug.assert(@sizeOf(UserView) == @sizeOf(v2.duckdb_v2_vector_view));
-    std.debug.assert(@alignOf(UserView) == @alignOf(v2.duckdb_v2_vector_view));
-    for (std.meta.fieldNames(v2.duckdb_v2_vector_view)) |field| {
-        std.debug.assert(@offsetOf(UserView, field) == @offsetOf(v2.duckdb_v2_vector_view, field));
-    }
-}
 
 fn duckdbV2TypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
     return switch (T) {
@@ -190,15 +172,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
     _ = duckdbV2TypeId(ReturnType);
 
     return struct {
-        pub fn register(user_input: *const db.ExtensionInput) !void {
-            // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
-            // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
-            return registerGenerated(@ptrCast(user_input));
-        }
-
-        /// `register` for code that has the generated bindings' input (`duckdb_v2_dynamic`), which needs no
-        /// conversion. When the hand-written layer is gone this is `register`.
-        pub fn registerGenerated(input: *const v2.duckdb_v2_extension_input) !void {
+        pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
             var err: v2.duckdb_v2_error_info_handle = undefined;
 
             var function: v2.duckdb_v2_aggregate_function_handle = undefined;
@@ -308,8 +282,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
             if (comptime has_update_batch) {
                 if (row_count > 0 and allStatesEqual(states, row_count)) {
                     const state: *State = @ptrCast(@alignCast(states[0].?));
-                    // SAFETY: `UserView` and the generated view are the same struct (checked at comptime above).
-                    State.updateBatch(state, @ptrCast(&views), row_count);
+                    State.updateBatch(state, &views, row_count);
                     return;
                 }
             }

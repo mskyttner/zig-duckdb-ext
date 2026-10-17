@@ -123,45 +123,23 @@
 ///!   STRUCT/VARIANT/LIST/ARRAY/the other of MAP or UNION in the same
 ///!   function yet (compile error).
 ///!
-///! Bindings: the framework itself calls DuckDB through the generated bindings
-///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). What a user function
-///! may take or return is still written in the hand-written `duckdb_v2.zig`'s types —
-///! `db.ContextHandle`, `db.ValueHandle`, `db.Interval`, `db.Date`/`Time`/`Timestamp`,
-///! `db.Blob`, `db.Decimal` — and the handles among them are converted where they cross.
+///! Bindings: the framework calls DuckDB through the generated bindings
+///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). A user function takes and returns
+///! the generated handles (`v2.duckdb_v2_context_handle`, `v2.duckdb_v2_value_handle`) and the
+///! value types `db.Interval`, `db.Date`/`Time`/`Timestamp`, `db.Blob`, `db.Decimal`.
 ///!
 ///! Usage:
 ///!   const MyFn = comptime_scalar_v2.Function("my_double", struct {
 ///!       fn eval(a: i64) i64 { return a * 2; }
 ///!   }.eval);
-///!   try MyFn.register(input); // input: *const db2.ExtensionInput
+///!   try MyFn.register(input); // input: *const v2.duckdb_v2_extension_input
 const std = @import("std");
 const db = @import("duckdb_v2");
 const v2 = @import("duckdb_v2_dynamic");
 const helpers = @import("v2_helpers");
 
-// Everything this framework does goes through the generated bindings (`v2`). What a user function can
-// take or return is still written in the hand-written layer's types, which are different Zig types
-// for the same pointers: `db.ContextHandle` (the first parameter of a VARIANT function), `db.ValueHandle`
-// (a VARIANT value) and `db.Interval` (in `db.ExtensionInput` as well). They are converted where they
-// cross. This goes away with the hand-written layer.
-const UserContext = db.ContextHandle;
-const UserValue = db.ValueHandle;
-
-fn toUserContext(ctx: v2.duckdb_v2_context_handle) UserContext {
-    // SAFETY: both are the same pointer to DuckDB's context, typed by two different translations;
-    // the generated handle points to an opaque type, so only the alignment needs restoring.
-    return @ptrCast(@alignCast(ctx));
-}
-
-fn toUserValue(v: v2.duckdb_v2_value_handle) UserValue {
-    // SAFETY: as `toUserContext`, for a value.
-    return @ptrCast(@alignCast(v));
-}
-
-fn fromUserValue(v: UserValue) v2.duckdb_v2_value_handle {
-    // SAFETY: as `toUserContext`, for a value.
-    return @ptrCast(v);
-}
+const UserContext = v2.duckdb_v2_context_handle;
+const UserValue = v2.duckdb_v2_value_handle;
 
 fn duckdbV2TypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
     return switch (T) {
@@ -526,16 +504,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// Must be called from inside the v2 extension entrypoint, which is
         /// handed both an `extension` handle (to create the function) and a
         /// `context` handle (to create logical types — v2 has no
-        /// handle-less type constructor, see `duckdb_v2.zig`'s own note).
-        pub fn register(user_input: *const db.ExtensionInput) !void {
-            // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
-            // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
-            return registerGenerated(@ptrCast(user_input));
-        }
-
-        /// `register` for code that has the generated bindings' input (`duckdb_v2_dynamic`), which needs no
-        /// conversion. When the hand-written layer is gone this is `register`.
-        pub fn registerGenerated(input: *const v2.duckdb_v2_extension_input) !void {
+        /// handle-less type constructor).
+        pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
             var err: v2.duckdb_v2_error_info_handle = undefined;
 
             var function: v2.duckdb_v2_scalar_function_handle = undefined;
@@ -848,7 +818,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         var value: v2.duckdb_v2_value_handle = undefined;
                         if (v2.duckdb_v2_vector_get_value(arg_vecs[i], row, &value, err) != .ERROR_NONE) return;
                         fetched[i] = value;
-                        args[i] = toUserValue(value);
+                        args[i] = value;
                     } else {
                         if (views[i].validity) |validity| {
                             const entry_idx = row / 64;
@@ -881,9 +851,9 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
                 // executeDynamic only runs when needs_context is true (see
                 // the branch in `execute`), so implFn always takes context first.
-                const result = @call(.auto, implFn, .{toUserContext(context)} ++ args);
+                const result = @call(.auto, implFn, .{context} ++ args);
                 if (comptime return_is_variant) {
-                    var rv = fromUserValue(result);
+                    var rv = result;
                     if (v2.duckdb_v2_vector_set_value(result_vec, row, rv, err) != .ERROR_NONE) return;
                     _ = v2.duckdb_v2_value_destroy(&rv);
                 } else if (comptime return_is_varchar) {
@@ -1682,12 +1652,11 @@ test "Function supports VARIANT as a parameter and return type" {
     // itself (which would double-free, since the framework destroys both
     // the argument and the return value independently).
     const IsNull = Function("v2_test_variant_is_null", struct {
-        fn eval(context: db.ContextHandle, v: db.ValueHandle) bool {
+        fn eval(context: v2.duckdb_v2_context_handle, v: v2.duckdb_v2_value_handle) bool {
             _ = context;
-            // A user function: written against the hand-written layer's types.
-            var err: db.ErrorInfoHandle = undefined;
+            var err: v2.duckdb_v2_error_info_handle = undefined;
             var is_null: bool = false;
-            _ = db.valueIsNull(v, &is_null, &err);
+            _ = v2.duckdb_v2_value_is_null(v, &is_null, &err);
             return is_null;
         }
     }.eval);

@@ -17,5 +17,5 @@ fn add(a: i64, b: i64) i64 {
 const CtAddNumbers = comptime_scalar_v2.FunctionNamed("ct_add_numbers", add, &.{ "a", "b" });
 
 pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
-    return CtAddNumbers.registerGenerated(input);
+    return CtAddNumbers.register(input);
 }

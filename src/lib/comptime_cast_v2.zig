@@ -37,7 +37,7 @@
 ///! DECIMAL, ENUM, and STRUCT (one level deep, numeric/bool/`[]const u8`
 ///! fields — same restriction `comptime_scalar_v2.zig` has) as either
 ///! source or target type, and VARIANT as a **source** type only (not
-///! target — see the `@compileError` on `TargetT == db.ValueHandle`: a
+///! target — see the `@compileError` on `TargetT == UserValue`: a
 ///! VARIANT target needs `context` to build a fresh `Value`, which
 ///! `castFn`'s fixed `fn(SourceT) ?TargetT` signature doesn't receive,
 ///! unlike `comptime_scalar_v2.Function`'s `implFn`, which can opt into a
@@ -81,11 +81,9 @@
 ///! custom `register` if a future caller needs that; not exposed as a
 ///! `Function` parameter yet since nothing needs it.
 ///!
-///! Bindings: the framework itself calls DuckDB through the generated bindings
+///! Bindings: the framework calls DuckDB through the generated bindings
 ///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). A VARIANT source type is
-///! still written as the hand-written `duckdb_v2.zig`'s `db.ValueHandle`, which `castFn`
-///! receives; the handle is converted where it crosses. Port of the behavior as it was,
-///! as it was, with the output vector's size the one thing changed afterwards.
+///! written as `v2.duckdb_v2_value_handle`, which `castFn` receives.
 ///!
 ///! Usage:
 ///!   const VarcharToInt = comptime_cast_v2.Function([]const u8, i64, struct {
@@ -93,22 +91,13 @@
 ///!           return std.fmt.parseInt(i64, s, 10) catch null;
 ///!       }
 ///!   }.cast);
-///!   try VarcharToInt.register(input); // input: *const db.ExtensionInput
+///!   try VarcharToInt.register(input); // input: *const v2.duckdb_v2_extension_input
 const std = @import("std");
 const db = @import("duckdb_v2");
 const v2 = @import("duckdb_v2_dynamic");
 const helpers = @import("v2_helpers");
 
-// Everything this framework does goes through the generated bindings (`v2`). A VARIANT source type is
-// still written in the hand-written layer's `db.ValueHandle`, a different Zig type for the same pointer,
-// which `castFn` receives; it is converted where it crosses. This goes away with the hand-written layer.
-const UserValue = db.ValueHandle;
-
-fn toUserValue(v: v2.duckdb_v2_value_handle) UserValue {
-    // SAFETY: both are the same pointer to DuckDB's value, typed by two different translations; the
-    // generated handle points to an opaque type, so only the alignment needs restoring.
-    return @ptrCast(@alignCast(v));
-}
+const UserValue = v2.duckdb_v2_value_handle;
 
 fn duckdbV2TypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
     return switch (T) {
@@ -274,15 +263,7 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
         /// Register this cast against the extension being loaded. Must be
         /// called from inside the v2 extension entrypoint, same as every
         /// other comptime framework's `register`.
-        pub fn register(user_input: *const db.ExtensionInput) !void {
-            // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
-            // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
-            return registerGenerated(@ptrCast(user_input));
-        }
-
-        /// `register` for code that has the generated bindings' input (`duckdb_v2_dynamic`), which needs no
-        /// conversion. When the hand-written layer is gone this is `register`.
-        pub fn registerGenerated(input: *const v2.duckdb_v2_extension_input) !void {
+        pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
             var err: v2.duckdb_v2_error_info_handle = undefined;
 
             var function: v2.duckdb_v2_cast_function_handle = undefined;
@@ -449,7 +430,7 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                 if (v2.duckdb_v2_vector_get_value(input_vec, row, &value, err) != .ERROR_NONE) return;
                 defer _ = v2.duckdb_v2_value_destroy(&value);
 
-                if (castFn(toUserValue(value))) |result| {
+                if (castFn(value)) |result| {
                     if (comptime target_is_varchar) {
                         var v: v2.duckdb_v2_value_handle = undefined;
                         if (helpers.createVarcharValue(context, result, &v, err) != .ERROR_NONE) return;
@@ -733,12 +714,11 @@ test "Function supports STRUCT as either source or target type" {
 }
 
 test "Function supports VARIANT as a source type (target-only is a compile error, see module doc comment)" {
-    const VariantToInt = Function(db.ValueHandle, i64, struct {
-        fn cast(v: db.ValueHandle) ?i64 {
-            // A user cast function: written against the hand-written layer's types.
-            var err: db.ErrorInfoHandle = undefined;
+    const VariantToInt = Function(v2.duckdb_v2_value_handle, i64, struct {
+        fn cast(v: v2.duckdb_v2_value_handle) ?i64 {
+            var err: v2.duckdb_v2_error_info_handle = undefined;
             var is_null: bool = false;
-            _ = db.valueIsNull(v, &is_null, &err);
+            _ = v2.duckdb_v2_value_is_null(v, &is_null, &err);
             return if (is_null) null else 0;
         }
     }.cast);

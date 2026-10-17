@@ -55,5 +55,5 @@ const State = struct {
 const CtTokenize = comptime_table_v2.Function("ct_tokenize", State);
 
 pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
-    return CtTokenize.registerGenerated(input);
+    return CtTokenize.register(input);
 }

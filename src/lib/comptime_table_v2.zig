@@ -32,7 +32,7 @@
 ///!     allocated (e.g. a `[]const u8` argument the framework copied onto
 ///!     the heap before calling `init` — see the note on VARCHAR arguments
 ///!     below).
-///!   - `pub fn pushdown(self: *State, info: db.TableFunctionFilterPushdownInfoHandle, err: [*c]db.ErrorInfoHandle) void`
+///!   - `pub fn pushdown(self: *State, info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, err: *v2.duckdb_v2_error_info_handle) void`
 ///!     — optional. Called during optimization, after `bind` and before
 ///!     any `next`, with the filter predicates the query applies to this
 ///!     function's rows (see `duckdb_v2.zig`'s
@@ -83,11 +83,10 @@
 ///! (`std.heap.c_allocator`) before being passed to `init` — `State` must
 ///! free any such slice it keeps, in `deinit`.
 ///!
-///! Bindings: the framework itself calls DuckDB through the generated bindings
-///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). The hooks a `State` may
-///! define are still written in the hand-written `duckdb_v2.zig`'s types (the `pushdown`
-///! hook's `db.TableFunctionFilterPushdownInfoHandle` and `[*c]db.ErrorInfoHandle`), and
-///! the handles are converted where they cross.
+///! Bindings: the framework calls DuckDB through the generated bindings
+///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`); the hooks a `State` may
+///! define take the generated handles (the `pushdown` hook's
+///! `v2.duckdb_v2_table_function_filter_pushdown_info_handle` and `*v2.duckdb_v2_error_info_handle`).
 ///!
 ///! Usage:
 ///!   const Range = comptime_table_v2.Function("zig_v2_range_ct", struct {
@@ -101,7 +100,7 @@
 ///!           return .{ .value = self.i };
 ///!       }
 ///!   });
-///!   try Range.register(input); // input: *const db.ExtensionInput
+///!   try Range.register(input); // input: *const v2.duckdb_v2_extension_input
 const std = @import("std");
 const db = @import("duckdb_v2");
 const v2 = @import("duckdb_v2_dynamic");
@@ -170,15 +169,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
     inline for (arg_types) |t| _ = duckdbV2TypeId(t.?);
 
     return struct {
-        pub fn register(user_input: *const db.ExtensionInput) !void {
-            // SAFETY: `db.ExtensionInput` is the translate-c'd `duckdb_v2_extension_input`, which the
-            // generated struct mirrors field for field (checked by duckdb_v2_static_parity.zig).
-            return registerGenerated(@ptrCast(user_input));
-        }
-
-        /// `register` for code that has the generated bindings' input (`duckdb_v2_dynamic`), which needs no
-        /// conversion. When the hand-written layer is gone this is `register`.
-        pub fn registerGenerated(input: *const v2.duckdb_v2_extension_input) !void {
+        pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
             var err: v2.duckdb_v2_error_info_handle = undefined;
 
             var function: v2.duckdb_v2_table_function_handle = undefined;
@@ -257,11 +248,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
             var bind_data_ptr: ?*anyopaque = null;
             if (v2.duckdb_v2_table_function_filter_pushdown_get_bind_data(info, &bind_data_ptr, err) != .ERROR_NONE) return;
             const state: *State = @ptrCast(@alignCast(bind_data_ptr.?));
-            // The hook is written against the hand-written layer's types, which are different Zig
-            // types for the same pointers; they are converted here.
-            // SAFETY: the same pointers, typed by two translations of the same C API; the generated
-            // handles point to opaque types, so only their alignment needs restoring.
-            State.pushdown(state, @ptrCast(@alignCast(info)), @ptrCast(@alignCast(err)));
+            State.pushdown(state, info, err);
         }
 
         fn progressCallback(info: v2.duckdb_v2_table_function_progress_info_handle, context: v2.duckdb_v2_context_handle, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
@@ -544,7 +531,7 @@ test "Function supports an optional pushdown hook" {
             }
             return null;
         }
-        pub fn pushdown(self: *@This(), info: db.TableFunctionFilterPushdownInfoHandle, err: [*c]db.ErrorInfoHandle) void {
+        pub fn pushdown(self: *@This(), info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, err: *v2.duckdb_v2_error_info_handle) void {
             _ = self;
             _ = info;
             _ = err;
