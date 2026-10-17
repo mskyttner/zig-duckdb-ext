@@ -161,3 +161,182 @@ query I
 SELECT count(*) FROM zig_cookbook_options() a, zig_cookbook_options() b WHERE a.name = 'threads' AND b.name = 'threads'
 ----
 1
+
+# ── The callbacks of a scalar call site (src/cookbook/scalar_callbacks.zig) ───────────────────────────
+# DuckDB's own operators and round() are the oracle.
+
+# Resolve types: the result type follows the argument, per call site.
+query TTTTT
+SELECT typeof(zig_cookbook_negate(5::TINYINT)), typeof(zig_cookbook_negate(5::SMALLINT)), typeof(zig_cookbook_negate(5)), typeof(zig_cookbook_negate(5::BIGINT)), typeof(zig_cookbook_negate(2.5::FLOAT))
+----
+TINYINT
+SMALLINT
+INTEGER
+BIGINT
+FLOAT
+
+query T
+SELECT typeof(zig_cookbook_negate(2.5::DOUBLE))
+----
+DOUBLE
+
+query TTT
+SELECT zig_cookbook_negate(5::TINYINT), zig_cookbook_negate(-2.5::DOUBLE), zig_cookbook_negate(NULL::INTEGER)
+----
+-5
+2.5
+NULL
+
+# Over a column, with NULLs, in every supported type.
+query TTTTTT
+SELECT bool_and(zig_cookbook_negate(x::TINYINT) = -(x::TINYINT)), bool_and(zig_cookbook_negate(x::SMALLINT) = -(x::SMALLINT)), bool_and(zig_cookbook_negate(x::INTEGER) = -(x::INTEGER)), bool_and(zig_cookbook_negate(x::BIGINT) = -(x::BIGINT)), bool_and(zig_cookbook_negate(x::FLOAT) = -(x::FLOAT)), bool_and(zig_cookbook_negate(x::DOUBLE) = -(x::DOUBLE)) FROM range(-100, 100) t(x)
+----
+true
+true
+true
+true
+true
+true
+
+query II
+SELECT sum(zig_cookbook_negate(i::BIGINT)), count(zig_cookbook_negate(CASE WHEN i % 7 = 0 THEN NULL ELSE i::BIGINT END)) FROM range(1, 201) t(i)
+----
+-20100
+172
+
+query T
+SELECT sum(zig_cookbook_negate(i::DOUBLE)) FROM range(1, 4001) t(i)
+----
+-8002000.0
+
+# Bind: a type that cannot be negated fails while the query is planned, with a message of our own;
+# so does an overflow, while the data is read.
+statement error
+SELECT zig_cookbook_negate('text')
+----
+zig_cookbook_negate: cannot negate a value of type VARCHAR
+
+statement error
+SELECT zig_cookbook_negate(DATE '2020-01-01')
+----
+zig_cookbook_negate: cannot negate a value of type DATE
+
+statement error
+SELECT zig_cookbook_negate(-127::TINYINT - 1::TINYINT)
+----
+Overflow in negation of TINYINT (-128)
+
+statement error
+SELECT zig_cookbook_negate(CASE WHEN i = 150 THEN -9223372036854775807 - 1 ELSE i END) FROM range(1, 200) t(i)
+----
+Overflow in negation of BIGINT (-9223372036854775808)
+
+# Bind: the constant argument is read once. DuckDB's round() is the oracle, on halves and on thirds.
+query TTTT
+SELECT zig_cookbook_round_to(3.14159::DOUBLE, 2), zig_cookbook_round_to(2.5::DOUBLE, 0), zig_cookbook_round_to(-2.5::DOUBLE, 0), zig_cookbook_round_to(1234.5678::DOUBLE, 1)
+----
+3.14
+3.0
+-3.0
+1234.6
+
+query TT
+SELECT bool_and(zig_cookbook_round_to(x / 8.0, 2) = round(x / 8.0, 2)), bool_and(zig_cookbook_round_to(x / 7.0, 3) = round(x / 7.0, 3)) FROM range(-4000, 4000) t(x)
+----
+true
+true
+
+query I
+SELECT count(zig_cookbook_round_to(CASE WHEN i % 4 = 0 THEN NULL ELSE i / 3.0 END, 1)) FROM range(1, 201) t(i)
+----
+150
+
+query T
+SELECT zig_cookbook_round_to(1.5::DOUBLE, NULL) IS NULL
+----
+true
+
+# A digits that is not constant is refused at bind time, in our words; so is one out of range.
+statement error
+SELECT zig_cookbook_round_to(x, d) FROM (VALUES (1.5::DOUBLE, 1)) t(x, d)
+----
+zig_cookbook_round_to: digits must be a constant, not a column
+
+statement error
+SELECT zig_cookbook_round_to(1.5::DOUBLE, 99)
+----
+zig_cookbook_round_to: digits must be between 0 and 15, got 99
+
+query T
+SELECT zig_cookbook_round_to(1.25::DOUBLE, 15)
+----
+1.25
+
+statement error
+SELECT zig_cookbook_round_to(1.5::DOUBLE, 16)
+----
+zig_cookbook_round_to: digits must be between 0 and 15, got 16
+
+statement error
+SELECT zig_cookbook_round_to(1.5::DOUBLE, -1)
+----
+zig_cookbook_round_to: digits must be between 0 and 15, got -1
+
+# User data: one exec callback, three functions.
+query TTTT
+SELECT zig_cookbook_times2(21), zig_cookbook_times3(7), zig_cookbook_times10(-4), zig_cookbook_times10(NULL)
+----
+42
+21
+-40
+NULL
+
+query III
+SELECT sum(zig_cookbook_times2(i)), sum(zig_cookbook_times3(i)), sum(zig_cookbook_times10(i)) FROM range(1, 101) t(i)
+----
+10100
+15150
+50500
+
+statement error
+SELECT zig_cookbook_times10(9223372036854775807)
+----
+Overflow in multiplication of INT64 (9223372036854775807 * 10)!
+
+# Init data and a property: one counter per worker and call site, so with one thread it counts 1, 2, 3, ... over
+# all chunks of the query; VOLATILE keeps DuckDB from evaluating the argument-less call once.
+statement ok
+SET threads = 1
+
+query IIII
+SELECT min(n), max(n), count(DISTINCT n), count(*) FROM (SELECT zig_cookbook_row_number() AS n FROM range(5000))
+----
+1
+5000
+5000
+5000
+
+query T
+SELECT bool_and(n = i + 1) FROM (SELECT i, zig_cookbook_row_number() AS n FROM range(5000) t(i))
+----
+true
+
+# Two call sites in one query have a counter each.
+query III
+SELECT zig_cookbook_row_number(), zig_cookbook_row_number(), i FROM range(3) t(i)
+----
+1
+1
+0
+2
+2
+1
+3
+3
+2
+
+# The counter starts again with the next query.
+query I
+SELECT max(zig_cookbook_row_number()) FROM range(10)
+----
+10

@@ -28,6 +28,7 @@ if it is stale, so the gaps below are measured, not remembered.
 | Aggregate function | — | `zig_v2_agg_sum`, `zig_v2_agg_sum_ct`, `zig_v2_weighted_avg_*`, `zig_v2_string_agg_ct`, `zig_v2_arg_max_ct` (PoC), `lib/comptime_aggregate_v2.zig` | State, update, combine, finalize; a SIMD batch path. |
 | Cast function | — | `lib/comptime_cast_v2.zig`; casts registered in `ext/init_v2_poc.zig` | Including `TRY_CAST`. |
 | Reading DuckDB's configuration | — | `cookbook/config_options.zig`: `zig_cookbook_option`, `zig_cookbook_options` (with aliases) | Options through the context (scalar `exec`) and a bind-time snapshot (table function). Read-only: see below. |
+| Scalar callbacks: resolve types, bind, init, user data, properties | — | `cookbook/scalar_callbacks.zig`: `zig_cookbook_negate` (result type follows the argument), `_round_to` (a constant argument read at bind), `_times2/3/10` (user data), `_row_number` (per-thread init data, `VOLATILE`) | The four callbacks in the order they run, and what each hands to the next. |
 | Appender, building a result set | — | `lib/comptime_appender_v2.zig`, `zig_v2_appender_*_test`, `zig_v2_nethogs_trace` (PoC) | |
 | Replacement scan | — | `zig_v2_range_<N>`, the braille demo (PoC) | `SELECT * FROM zig_v2_range_5`. |
 
@@ -47,8 +48,9 @@ Taken from the generated coverage report. In the order I would write the recipes
 1. ~~Extension settings~~ — done as *reading* configuration (`cookbook/config_options.zig`). The `configuration` module is
    read-only, and **the v2 C API has no call to register an option of your own** (extension options exist only for C++
    extensions), so a setting for an extension written against the C API is not possible yet.
-2. **Bind-time and resolve-types callbacks, `user_data`, function properties** for scalar and aggregate functions
-   (`function/scalar`, `function/aggregate`), and **table-function local state and partition data** (`function/table`).
+2. ~~Bind-time and resolve-types callbacks, `user_data`, properties for scalar functions~~ — done
+   (`cookbook/scalar_callbacks.zig`). Still open: the same for **aggregate functions** (`function/aggregate`: bind
+   callback, properties) and **table-function local state and partition data** (`function/table`).
 3. **A `COPY` format** (`function/copy`, 78 functions).
 4. **Running SQL from an extension**: connection, prepared statements, result chunks (`connection`,
    `prepared_statement`, `query_result`).

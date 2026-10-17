@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 55 scanned source files. Referenced by the extension: **133**; by the extension or the PoC: **162**.
+587 functions (26 unstable) in 32 spec modules, from 56 scanned source files. Referenced by the extension: **145**; by the extension or the PoC: **174**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -26,16 +26,16 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | function/aggregate | 44 | 0 | 26 | 26 | 18 |
 | function/cast | 14 | 0 | 10 | 10 | 4 |
 | function/copy | 78 | 6 | 0 | 0 | 78 |
-| function | 7 | 0 | 2 | 2 | 5 |
+| function | 7 | 0 | 3 | 3 | 4 |
 | function/replacement_scan | 15 | 0 | 0 | 7 | 8 |
-| function/scalar | 24 | 0 | 10 | 10 | 14 |
+| function/scalar | 24 | 0 | 20 | 20 | 4 |
 | function/signature | 2 | 0 | 2 | 2 | 0 |
 | function/table | 83 | 19 | 21 | 26 | 57 |
 | identifier | 1 | 0 | 0 | 0 | 1 |
 | instance | 13 | 0 | 0 | 0 | 13 |
 | logging | 1 | 0 | 0 | 0 | 1 |
 | logical_type/custom_type | 6 | 0 | 0 | 0 | 6 |
-| logical_type | 16 | 0 | 3 | 3 | 13 |
+| logical_type | 16 | 0 | 4 | 4 | 12 |
 | prepared_statement | 4 | 0 | 0 | 0 | 4 |
 | qname | 8 | 0 | 0 | 4 | 4 |
 | query_result | 10 | 0 | 0 | 0 | 10 |
@@ -73,11 +73,11 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **function/copy**: `copy_function_create_with_connection`, `copy_function_create_with_extension`, `copy_function_set_name`, `copy_function_set_user_data`, `copy_to_set_bind_callback`, `copy_to_set_batch_size_callback`, `copy_to_set_init_callback`, `copy_to_set_batch_callback`, `copy_to_set_flush_callback`, `copy_to_set_finalize_callback`, `copy_to_bind_get_user_data`, `copy_to_bind_set_bind_data`, `copy_to_bind_get_file_path`, `copy_to_bind_get_column_count`, `copy_to_bind_get_column_type`, `copy_to_bind_get_column_name`, `copy_to_bind_get_option_count`, `copy_to_bind_get_option_name`, `copy_to_bind_get_option_value`, `copy_to_batch_size_get_user_data`, `copy_to_batch_size_get_bind_data`, `copy_to_batch_size_set_target`, `copy_to_init_get_user_data`, `copy_to_init_get_bind_data`, `copy_to_init_get_file_path`, `copy_to_init_set_init_data`, `copy_to_batch_get_user_data`, `copy_to_batch_get_bind_data`, `copy_to_batch_get_init_data`, `copy_to_batch_take_input`, `copy_to_batch_set_batch_data`, `copy_to_flush_get_user_data`, `copy_to_flush_get_bind_data`, `copy_to_flush_get_init_data`, `copy_to_flush_get_batch_data`, `copy_to_finalize_get_user_data`, `copy_to_finalize_get_bind_data`, `copy_to_finalize_get_init_data`, `copy_from_set_bind_callback`, `copy_from_set_init_global_callback`, `copy_from_set_init_local_callback`, `copy_from_set_exec_callback`, `copy_from_set_progress_callback`, `copy_from_bind_get_user_data`, `copy_from_bind_set_bind_data`, `copy_from_bind_get_file_path`, `copy_from_bind_get_column_count`, `copy_from_bind_get_column_type`, `copy_from_bind_get_column_name`, `copy_from_bind_get_option_count`, `copy_from_bind_get_option_name`, `copy_from_bind_get_option_value`, `copy_from_bind_set_cardinality`, `copy_from_init_global_get_user_data`, `copy_from_init_global_get_bind_data`, `copy_from_init_global_set_global_state`, `copy_from_init_global_set_max_threads`, `copy_from_init_local_get_user_data`, `copy_from_init_local_get_bind_data`, `copy_from_init_local_get_global_state`, `copy_from_init_local_set_local_state`, `copy_from_exec_get_user_data`, `copy_from_exec_get_bind_data`, `copy_from_exec_get_global_state`, `copy_from_exec_get_local_state`, `copy_from_exec_get_output_chunk`, `copy_from_progress_get_user_data`, `copy_from_progress_get_bind_data`, `copy_from_progress_get_global_state`, `copy_from_progress_set_progress`, `copy_function_register`, `copy_function_destroy`, `copy_to_set_statistics_callback` *(u)*, `copy_to_statistics_get_user_data` *(u)*, `copy_to_statistics_get_bind_data` *(u)*, `copy_to_statistics_get_init_data` *(u)*, `copy_to_statistics_set_row_count` *(u)*, `copy_to_statistics_set_file_size` *(u)*
 
-**function**: `function_bind_get_user_data`, `function_bind_get_arg_count`, `function_bind_get_arg_type`, `function_bind_get_arg_name`, `function_bind_get_arg_index`
+**function**: `function_bind_get_user_data`, `function_bind_get_arg_count`, `function_bind_get_arg_name`, `function_bind_get_arg_index`
 
 **function/replacement_scan**: `replacement_scan_create_with_connection`, `replacement_scan_create_with_instance`, `replacement_scan_set_user_data`, `replacement_scan_get_user_data`, `replacement_scan_add_named_argument`, `replacement_scan_set_collection`, `replacement_scan_set_subquery`, `replacement_scan_set_alias`
 
-**function/scalar**: `scalar_function_create_with_connection`, `scalar_function_set_user_data`, `scalar_function_set_resolve_types_callback`, `scalar_function_set_bind_callback`, `scalar_function_set_init_callback`, `scalar_function_resolve_types_set_return_type`, `scalar_function_bind_set_bind_data`, `scalar_function_init_get_user_data`, `scalar_function_init_get_bind_data`, `scalar_function_init_set_init_data`, `scalar_function_exec_get_user_data`, `scalar_function_exec_get_bind_data`, `scalar_function_exec_get_init_data`, `scalar_function_exec_get_arg_count`
+**function/scalar**: `scalar_function_create_with_connection`, `scalar_function_init_get_user_data`, `scalar_function_init_get_bind_data`, `scalar_function_exec_get_arg_count`
 
 **function/table**: `table_function_create_with_connection`, `table_function_set_user_data`, `table_function_set_init_local_callback`, `table_function_set_partition_data_callback`, `table_function_set_partitioning_callback`, `table_function_bind_set_order_preservation`, `table_function_init_global_get_user_data`, `table_function_init_global_get_bind_data`, `table_function_init_global_set_max_threads`, `table_function_init_global_get_column_count`, `table_function_init_global_get_column_index`, `table_function_init_local_get_user_data`, `table_function_init_local_get_bind_data`, `table_function_init_local_get_global_state`, `table_function_init_local_set_local_state`, `table_function_init_local_get_column_count`, `table_function_init_local_get_column_index`, `table_function_exec_get_user_data`, `table_function_exec_get_local_state`, `table_function_progress_get_user_data`, `table_function_progress_get_global_state`, `table_function_filter_pushdown_get_user_data`, `table_function_filter_pushdown_get_column_count`, `table_function_partition_data_get_user_data`, `table_function_partition_data_get_bind_data`, `table_function_partition_data_get_global_state`, `table_function_partition_data_get_local_state`, `table_function_partition_data_requires_batch_index`, `table_function_partition_data_requires_partition_columns`, `table_function_partition_data_get_partition_column_count`, `table_function_partition_data_get_partition_column_index`, `table_function_partition_data_set_batch_index`, `table_function_partition_data_set_partition_value`, `table_function_partitioning_get_user_data`, `table_function_partitioning_get_bind_data`, `table_function_partitioning_get_partition_column_count`, `table_function_partitioning_get_partition_column_index`, `table_function_partitioning_set_partition_info`, `table_function_set_claim_batch_callback` *(u)*, `table_function_claim_batch_get_user_data` *(u)*, `table_function_claim_batch_get_bind_data` *(u)*, `table_function_claim_batch_get_global_state` *(u)*, `table_function_claim_batch_get_local_state` *(u)*, `table_function_claim_batch_set_claimed` *(u)*, `table_function_set_get_bind_info_callback` *(u)*, `table_function_get_bind_info_get_user_data` *(u)*, `table_function_get_bind_info_get_bind_data` *(u)*, `table_function_get_bind_info_set_column_identifier` *(u)*, `table_function_get_bind_info_set_option` *(u)*, `multi_file_function_create_with_connection` *(u)*, `multi_file_function_create_with_extension` *(u)*, `multi_file_function_set_name` *(u)*, `multi_file_function_set_single_file_function` *(u)*, `multi_file_function_set_reader_type` *(u)*, `multi_file_function_set_file_extension` *(u)*, `multi_file_function_register` *(u)*, `multi_file_function_destroy` *(u)*
 
@@ -89,7 +89,7 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **logical_type/custom_type**: `custom_type_create_with_connection`, `custom_type_create_with_extension`, `custom_type_set_name`, `custom_type_set_base_type`, `custom_type_register`, `custom_type_destroy`
 
-**logical_type**: `context_create_type_from_name`, `connection_create_type_from_id`, `connection_create_type_from_name`, `connection_create_type_from_text`, `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_id`, `logical_type_get_name`, `logical_type_to_text`, `logical_type_get_param_count`, `logical_type_get_param`, `context_create_type_with_alias`, `connection_create_type_with_alias`
+**logical_type**: `context_create_type_from_name`, `connection_create_type_from_id`, `connection_create_type_from_name`, `connection_create_type_from_text`, `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_name`, `logical_type_to_text`, `logical_type_get_param_count`, `logical_type_get_param`, `context_create_type_with_alias`, `connection_create_type_with_alias`
 
 **prepared_statement**: `prepared_statement_create`, `prepared_statement_execute`, `prepared_statement_reuses_plan`, `prepared_statement_destroy`
 

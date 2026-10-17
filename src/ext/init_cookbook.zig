@@ -5,9 +5,11 @@
 const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 const config_options = @import("../cookbook/config_options.zig");
+const scalar_callbacks = @import("../cookbook/scalar_callbacks.zig");
 
 export fn zig_ext_cookbook_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
     if (!helpers.init(input, "v2.0.0")) return;
 
     config_options.register(input) catch return;
+    scalar_callbacks.register(input) catch return;
 }
