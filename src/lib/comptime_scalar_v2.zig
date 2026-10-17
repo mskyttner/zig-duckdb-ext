@@ -123,6 +123,11 @@
 ///!   STRUCT/VARIANT/LIST/ARRAY/the other of MAP or UNION in the same
 ///!   function yet (compile error).
 ///!
+///! An `implFn` may return `E!T` (T a number, Date/Time/Timestamp, Interval, DECIMAL, ENUM, VARCHAR or
+///! BLOB; not a nested type or VARIANT yet): an error ends the query with "<function name>:
+///! <error name>", as out-of-range input for `error.Overflow` (e.g. `std.math.add`) and as invalid
+///! input for any other error. NULL arguments never reach `implFn`, so they cannot cause one.
+///!
 ///! Bindings: the framework calls DuckDB through the generated bindings
 ///! (`duckdb_v2_dynamic`, plus the helpers in `v2_helpers.zig`). A user function takes and returns
 ///! the generated handles (`v2.duckdb_v2_context_handle`, `v2.duckdb_v2_value_handle`) and the
@@ -426,7 +431,11 @@ pub fn FunctionNamed(comptime name: [:0]const u8, comptime implFn: anytype, comp
 fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime param_names: ?[]const [:0]const u8) type {
     const fn_info = @typeInfo(@TypeOf(implFn)).@"fn";
     const raw_param_types = fn_info.param_types;
-    const ReturnType = fn_info.return_type.?;
+    // `implFn` may return `E!T`: on an error the query fails (see `reportError`). Only the paths
+    // that write a leaf, VARCHAR, BLOB, DECIMAL or ENUM result support it.
+    const RawReturnType = fn_info.return_type.?;
+    const returns_error = @typeInfo(RawReturnType) == .error_union;
+    const ReturnType = if (returns_error) @typeInfo(RawReturnType).error_union.payload else RawReturnType;
 
     const return_is_variant = ReturnType == UserValue;
     const raw_has_variant_arg = blk: {
@@ -489,6 +498,9 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         break :blk false;
     };
     const has_union = has_union_arg or return_is_union;
+    if (returns_error and (has_variant_arg or return_is_variant or has_struct_arg or return_is_struct or has_list_or_array or has_map or has_union)) {
+        @compileError("a Function returning an error union can't take or return VARIANT/STRUCT/LIST/ARRAY/MAP/UNION yet");
+    }
     if (has_list_or_array and (has_variant_arg or return_is_variant or has_struct_arg or return_is_struct)) {
         @compileError("a Function can't mix LIST/ARRAY with STRUCT or VARIANT parameters/return in the same function yet");
     }
@@ -630,7 +642,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                         continue;
                     }
-                    const produced = invoke(&views, row);
+                    const produced = call(&views, row, err) orelse return;
                     const bytes = if (comptime return_is_blob) produced.bytes else produced;
                     var value: v2.duckdb_v2_value_handle = undefined;
                     const create_err = if (comptime return_is_blob)
@@ -660,7 +672,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                         continue;
                     }
-                    const produced = invoke(&views, row);
+                    const produced = call(&views, row, err) orelse return;
                     var text_value: v2.duckdb_v2_value_handle = undefined;
                     if (helpers.createVarcharValue(context, @tagName(produced), &text_value, err) != .ERROR_NONE) return;
                     defer _ = v2.duckdb_v2_value_destroy(&text_value);
@@ -686,7 +698,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 var row: u64 = 0;
                 while (row < row_count) : (row += 1) {
                     if (rowIsValid(&views, row)) {
-                        result[row] = writeResult(&views, row);
+                        result[row] = writeResult(&views, row, err) orelse return;
                     } else {
                         if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
                     }
@@ -694,13 +706,13 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             } else {
                 var row: u64 = 0;
                 while (row < row_count) : (row += 1) {
-                    result[row] = writeResult(&views, row);
+                    result[row] = writeResult(&views, row, err) orelse return;
                 }
             }
         }
 
-        inline fn writeResult(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) WriteType {
-            const v = invoke(views, row);
+        inline fn writeResult(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64, err: *v2.duckdb_v2_error_info_handle) ?WriteType {
+            const v = call(views, row, err) orelse return null;
             return if (comptime return_is_decimal) v.raw else v;
         }
 
@@ -722,7 +734,30 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         }
         const ArgsTuple = MakeArgsTuple();
 
-        inline fn invoke(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) ReturnType {
+        /// `invoke`, with an error of `implFn` reported as the error of the query: null means the
+        /// caller must stop (DuckDB fails the query, whatever else is written).
+        inline fn call(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64, err: *v2.duckdb_v2_error_info_handle) ?ReturnType {
+            const produced = invoke(views, row);
+            if (comptime !returns_error) return produced;
+            return produced catch |e| {
+                reportError(err, e);
+                return null;
+            };
+        }
+
+        /// Makes `e` the error of the query: `error.Overflow` is out-of-range
+        /// input, any other error is invalid input, and the text is "<function name>: <error name>".
+        fn reportError(err: *v2.duckdb_v2_error_info_handle, e: anyerror) void {
+            var buf: [160]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "{s}: {s}", .{ name, @errorName(e) }) catch name;
+            const text = helpers.str(msg);
+            const code: v2.DUCKDB_V2_ERROR = if (e == error.Overflow) .ERROR_INPUT_OUT_OF_RANGE else .ERROR_INPUT_INVALID;
+            // There is nowhere to report a failure to report: DuckDB fails the query either way.
+            _ = v2.duckdb_v2_error_info_set_code(err.*, code);
+            _ = v2.duckdb_v2_error_info_set_text(err.*, &text);
+        }
+
+        inline fn invoke(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) RawReturnType {
             var args: ArgsTuple = undefined;
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
@@ -1663,6 +1698,31 @@ test "Function supports VARIANT as a parameter and return type" {
     _ = &IsNull.register;
     const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = IsNull.execute;
     try std.testing.expect(@intFromPtr(exec_cb) != 0);
+}
+
+test "Function accepts an error-union return on the leaf, VARCHAR and DECIMAL paths" {
+    const Checked = Function("v2_test_checked", struct {
+        fn eval(a: i64) !i64 {
+            return std.math.add(i64, a, 1);
+        }
+    }.eval);
+    _ = &Checked.register;
+    const exec_cb: v2.duckdb_v2_scalar_function_exec_callback_fn = Checked.execute;
+    try std.testing.expect(@intFromPtr(exec_cb) != 0);
+
+    const Word = Function("v2_test_checked_word", struct {
+        fn eval(s: []const u8) ![]const u8 {
+            if (s.len == 0) return error.EmptyInput;
+            return s;
+        }
+    }.eval);
+    _ = &Word.register;
+    const Money = Function("v2_test_checked_money", struct {
+        fn eval(d: v2_values.Decimal(10, 2)) !v2_values.Decimal(10, 2) {
+            return d;
+        }
+    }.eval);
+    _ = &Money.register;
 }
 
 test "Function supports the smaller integer/float types" {

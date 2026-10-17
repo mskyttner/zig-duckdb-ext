@@ -1548,3 +1548,63 @@ true
 simd
 true
 true
+
+# ── A function returning an error union fails the query instead of crashing ─────────────────────────
+
+query III
+SELECT zig_v2_checked_div_ct(7, 2), zig_v2_checked_div_ct(-7, 2), zig_v2_checked_div_ct(NULL, 2)
+----
+3
+-3
+NULL
+
+statement error
+SELECT zig_v2_checked_div_ct(1, 0)
+----
+Invalid Input Error: zig_v2_checked_div_ct: DivisionByZero
+
+statement error
+SELECT zig_v2_checked_div_ct(-9223372036854775807 - 1, -1)
+----
+Out of Range Error: zig_v2_checked_div_ct: Overflow
+
+# One bad row in a column fails the whole query; a NULL divisor is NULL, not an error.
+statement error
+SELECT sum(zig_v2_checked_div_ct(100, i - 150)) FROM generate_series(1, 200) t(i)
+----
+zig_v2_checked_div_ct: DivisionByZero
+
+query II
+SELECT count(zig_v2_checked_div_ct(100, CASE WHEN i % 4 = 0 THEN NULL ELSE i END)), sum(zig_v2_checked_div_ct(100, CASE WHEN i % 4 = 0 THEN NULL ELSE i END)) FROM generate_series(1, 200) t(i)
+----
+150
+395
+
+query IIII
+SELECT zig_v2_first_word_ct('hello world'), zig_v2_first_word_ct('  padded text'), zig_v2_first_word_ct('single'), zig_v2_first_word_ct(NULL)
+----
+hello
+padded
+single
+NULL
+
+statement error
+SELECT zig_v2_first_word_ct('   ')
+----
+Invalid Input Error: zig_v2_first_word_ct: EmptyInput
+
+statement error
+SELECT zig_v2_first_word_ct('')
+----
+zig_v2_first_word_ct: EmptyInput
+
+# VARCHAR rows before the bad one are written, and the bad row ends the query.
+statement error
+SELECT count(zig_v2_first_word_ct(CASE WHEN i = 120 THEN '' ELSE 'w x' END)) FROM generate_series(1, 200) t(i)
+----
+zig_v2_first_word_ct: EmptyInput
+
+query I
+SELECT count(zig_v2_first_word_ct(CASE WHEN i % 3 = 0 THEN NULL ELSE 'w x' END)) FROM generate_series(1, 200) t(i)
+----
+134

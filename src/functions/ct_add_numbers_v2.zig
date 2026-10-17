@@ -7,11 +7,13 @@
 ///! is what was showing up in `duckdb_functions()` before this fix (see
 ///! docs/v2-migration-plan.md's "Function parameter naming & catalog
 ///! discoverability" section).
+const std = @import("std");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const v2 = @import("duckdb_v2_api");
 
-fn add(a: i64, b: i64) i64 {
-    return a + b;
+/// Overflow is an error of the query (`ct_add_numbers: Overflow`), not a trap of the process.
+fn add(a: i64, b: i64) !i64 {
+    return std.math.add(i64, a, b);
 }
 
 const CtAddNumbers = comptime_scalar_v2.FunctionNamed("ct_add_numbers", add, &.{ "a", "b" });

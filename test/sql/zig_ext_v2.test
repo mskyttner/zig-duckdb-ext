@@ -52,6 +52,40 @@ SELECT CASE WHEN count(*) = 5000 THEN 'same' ELSE 'different' END FROM generate_
 ----
 same
 
+# Overflow is an error of the query, as for the hand-written zig_add_numbers, not the end of the process.
+statement error
+SELECT ct_add_numbers(9223372036854775807, 1)
+----
+Out of Range Error: ct_add_numbers: Overflow
+
+statement error
+SELECT ct_add_numbers(-9223372036854775807 - 1, -1)
+----
+Out of Range Error: ct_add_numbers: Overflow
+
+query I
+SELECT ct_add_numbers(9223372036854775806, 1)
+----
+9223372036854775807
+
+# The error comes from the row that overflows, wherever it is in the column; the other rows are fine.
+statement error
+SELECT sum(ct_add_numbers(i, CASE WHEN i = 150 THEN 9223372036854775807 ELSE 1 END)) FROM generate_series(1, 200) t(i)
+----
+Out of Range Error: ct_add_numbers: Overflow
+
+# A NULL operand is NULL, not an overflow, even where the other operand is huge.
+query I
+SELECT ct_add_numbers(9223372036854775807, NULL)
+----
+NULL
+
+# The process survived: the function still works afterwards.
+query I
+SELECT ct_add_numbers(1, 2)
+----
+3
+
 # ── ct_tokenize (comptime table function) and tokenize (hand-written) ────
 
 query IT

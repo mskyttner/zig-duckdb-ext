@@ -278,6 +278,25 @@ const BlobPrefixCt = comptime_scalar_v2.Function("zig_v2_blob_prefix_ct", struct
     }
 }.eval);
 
+/// Proves an error-union return on the numeric path: integer division that fails the query on a
+/// zero divisor (invalid input) or on `minInt / -1` (out of range).
+const CheckedDivCt = comptime_scalar_v2.Function("zig_v2_checked_div_ct", struct {
+    fn eval(a: i64, b: i64) !i64 {
+        if (b == 0) return error.DivisionByZero;
+        return std.math.divTrunc(i64, a, b) catch error.Overflow;
+    }
+}.eval);
+
+/// Proves an error-union return on the VARCHAR path: the first word, or an error for a text
+/// without one.
+const FirstWordCt = comptime_scalar_v2.Function("zig_v2_first_word_ct", struct {
+    fn eval(s: []const u8) ![]const u8 {
+        const word = std.mem.sliceTo(std.mem.trimStart(u8, s, " "), ' ');
+        if (word.len == 0) return error.EmptyInput;
+        return word;
+    }
+}.eval);
+
 /// Proves DECIMAL as a parameter and return type: applies a tax rate
 /// (as a plain double) to a DECIMAL(10,2) price, returning DECIMAL(10,2).
 const Price = v2_values.Decimal(10, 2);
@@ -1094,6 +1113,8 @@ fn registerComptimeExamples(input: *const v2.duckdb_v2_extension_input) void {
     NarrowSum.register(input) catch {};
     TimestampAddCt.register(input) catch {};
     BlobPrefixCt.register(input) catch {};
+    CheckedDivCt.register(input) catch {};
+    FirstWordCt.register(input) catch {};
     ApplyTaxCt.register(input) catch {};
     BigDecimalDoubleCt.register(input) catch {};
     NextMoodCt.register(input) catch {};
