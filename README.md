@@ -63,6 +63,45 @@ Supports multi-character delimiters:
 SELECT * FROM zig_tokenize('x::y::z', '::');
 ```
 
+## Two C APIs, and a cookbook
+
+The repository builds the same kind of extension against **both** DuckDB C extension APIs:
+
+- **v1**, the stable API that the LTS and stable DuckDB releases ship: the `zig_ext` extension above
+  (`zig build ext`, sources in `src/functions`, tested by `test/sql/zig_ext.test`).
+- **v2**, the API of DuckDB 2.0, through bindings that are generated from DuckDB's API specification
+  (`src/lib/duckdb_v2_{types,static,dynamic}.zig`, `zig build gen-v2-bindings`). A dynamic backend (an extension
+  loaded by DuckDB) and a static one (DuckDB linked into a program) share the types. The real v2 extension is
+  `zig build ext-v2`; `zig build v2-poc` is a proof of concept that exercises the comptime frameworks over many types.
+
+On top of v2 sits the **cookbook**, `zig_ext_cookbook` (`zig build ext-cookbook`, sources in `src/cookbook`): one small,
+tested example per capability of the API, each file with a header that says what it shows and why.
+
+| Recipe | Shows |
+|---|---|
+| `config_options`, `scalar_callbacks`, `aggregate_callbacks`, `table_callbacks` | settings through the context; every callback of a scalar, aggregate and parallel table function, in the order they run |
+| `copy_format` | a custom `COPY` format, both directions |
+| `custom_type` | a custom logical type |
+| `arrow_ipc` | an Arrow IPC `COPY` format and a reader table function, over a vendored pure-Zig library (`third_party/gld-arrow-zig`, MIT, with a [patch note](third_party/gld-arrow-zig/PATCHES.md)) |
+| `arrow_c_data` | the Arrow C Data Interface: an exporter and an importer, and the rules for producing `ArrowSchema` and `ArrowArray` structs |
+| `file_system` | files through DuckDB's file system instead of libc (`file:` URLs, remote file systems) |
+| `logging` | `context_log`, and what the log configuration does with an entry |
+| `names` | identifiers, qualified names and UTF-8 validation, which work on text alone |
+| `embed_sql` | a program that **hosts** DuckDB: SQL, prepared statements, Arrow results, the tokenizer and the parser |
+
+Some calls take a connection, which an extension is never given; those are only in `embed_sql`. The capability matrix
+in [docs/cookbook.md](docs/cookbook.md) lists, per capability, the file that shows it for v1 and for v2, and
+[docs/api-v2-coverage.md](docs/api-v2-coverage.md) is a generated report of the v2 functions that no code references yet
+(`task coverage:api-v2`; `task check:all` fails when it is stale).
+
+```sql
+LOAD 'zig-out/lib/zig_ext_cookbook.duckdb_extension';
+
+SELECT * FROM zig_cookbook_qname_parts('main."a.b".select');
+COPY (SELECT 42 AS id, 'duck' AS name) TO '/tmp/x.arrows' (FORMAT zig_cookbook_arrow_ipc);
+SELECT * FROM zig_cookbook_read_arrow('/tmp/x.arrows');
+```
+
 ## Comptime Function Framework
 
 The extension includes a `comptime` registration framework that generates
@@ -126,9 +165,12 @@ binary bloat. Details in [ADR-0002](docs/rationale/0002_comptime-registration-vs
 
 ## Prerequisites
 
-- [Zig](https://ziglang.org/download/) 0.15.2+
+- [Zig](https://ziglang.org/download/) 0.17.0 (the version CI uses; `build.zig.zon` allows 0.16.0 as a minimum, but the code needs 0.17 syntax)
 - [DuckDB](https://duckdb.org/) CLI (for running the extension)
 - [Task](https://taskfile.dev/) (optional, for convenience commands)
+- Optional: Python with `pyarrow` (`task verify:arrow-pyarrow`), and Docker (the Windows and QEMU checks, `task verify:static-windows`)
+
+The SQL tests run a DuckDB CLI that the build fetches and pins; the one on your `PATH` is not used.
 
 ## Build
 
@@ -183,10 +225,17 @@ SELECT * FROM zig_tokenize('hello world', ' ');
 # Unit tests
 task test:unit
 
-# End-to-end SQL tests (sqllogictest format, against the real v1 extension)
-task sqllogictest
+# End-to-end SQL tests (sqllogictest format), one suite per extension
+task sqllogictest              # v1
+task sqllogictest:v2           # v2
+task sqllogictest:v2:poc       # v2 proof of concept (comptime frameworks)
+task sqllogictest:cookbook     # the cookbook
 
-# All quality gates (format + build + unit tests)
+# A failing registration must fail the load with its reason
+task test:load-failure
+
+# Quality gates: format + build + unit tests + a current API coverage report.
+# This does NOT run the SQL suites above; CI (.github/workflows/ci.yml) runs both.
 task check:all
 
 # Benchmark hand-written vs comptime (release build)
@@ -197,13 +246,20 @@ task bench
 
 ```
 src/
-  ext/                Extension entry point and function registration
+  ext/                Extension entry points and function registration (v1, v2, PoC, cookbook)
   functions/          Function implementations (hand-written and comptime)
-  lib/                DuckDB C API bindings + comptime frameworks
+  cookbook/           One recipe per capability of the v2 API
+  lib/                DuckDB C API bindings (v1 and generated v2) + comptime frameworks
+third_party/          Vendored libraries (gld-arrow-zig, with its patch note)
+tools/                Binding generator, coverage report, Arrow fixture generator and PyArrow check
 build.zig             Build configuration
 build.zig.zon         Package manifest — also pins the DuckDB C headers (v1.5.6), fetched at build time rather than committed locally
 test/sql/             End-to-end SQL tests (sqllogictest .test format)
+test/data/            Fixtures for the tests (Arrow files written by PyArrow)
+docs/cookbook.md      Capability matrix: where each part of the C API is shown
+docs/api-v2-coverage.md  Generated: v2 functions that no code references yet
 docs/rationale/       Architecture decision records
+.github/workflows/   ci.yml (every push and pull request), ci-extended.yml (weekly), release.yml (tags)
 ```
 
 ## Platform Support
@@ -224,7 +280,14 @@ docs/rationale/       Architecture decision records
 | `task test:unit`     | Run unit tests                      |
 | `task sqllogictest`  | Run end-to-end SQL tests (v1)       |
 | `task sqllogictest:v2` | Run end-to-end SQL tests (v2)     |
-| `task check:all`     | Run all quality gates               |
+| `task sqllogictest:v2:poc` | SQL tests of the v2 comptime frameworks |
+| `task sqllogictest:cookbook` | SQL tests of the cookbook extension |
+| `task test:load-failure` | A failing registration fails the load with its reason |
+| `task test:arrow-vendor` | Tests of the vendored Arrow library |
+| `task verify:arrow-pyarrow` | Read the cookbook's Arrow files with PyArrow (needs `pyarrow`; run `sqllogictest:cookbook` first) |
+| `task coverage:api-v2` | Rewrite the v2 API coverage report |
+| `task verify:static-windows` | Windows static embedding under Wine, in a container |
+| `task check:all`     | Format, build, unit tests, coverage report is current (not the SQL suites) |
 | `task bench`         | Benchmark hand-written vs comptime  |
 | `task format`        | Format Zig source files             |
 | `task demo:hello`    | Demo the zig_hello function         |

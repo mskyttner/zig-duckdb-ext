@@ -1,0 +1,59 @@
+name: CI
+
+# The gates a change has to pass: `task check:all` (format, build, unit tests, a fresh API coverage report) and every
+# SQL suite. `check:all` does not run the SQL suites, so they are listed here. The slower or optional checks (the
+# embedding recipe against DuckDB's static libraries, PyArrow reading the Arrow files) are in ci-extended.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The same version as release.yml; build.zig.zon's minimum is lower, but the code needs 0.17.
+  ZIG_VERSION: "0.17.0"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The SQL suites run the pinned DuckDB CLI, which the build fetches (build.zig.zon), so they need the network.
+      - name: Quality gates (format, build, unit tests, API coverage report is current)
+        run: task check:all
+
+      - name: SQL tests, v1 extension
+        run: task sqllogictest
+
+      - name: SQL tests, v2 extension
+        run: task sqllogictest:v2
+
+      - name: SQL tests, v2 proof of concept (comptime frameworks)
+        run: task sqllogictest:v2:poc
+
+      - name: SQL tests, v2 cookbook extension
+        run: task sqllogictest:cookbook
+
+      - name: A failing registration fails the load with its reason
+        run: task test:load-failure
+
+      - name: Tests of the vendored Arrow library
+        run: task test:arrow-vendor
