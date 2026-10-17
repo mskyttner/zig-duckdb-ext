@@ -1857,8 +1857,8 @@ global switch exists yet.
   built on them moves too). That is every framework. Then the five remaining
   function modules, **`tp_bar`, `tokenize`, `tp_line`, `tp_treemap` and
   `tp_snakemap`**: all nine functions of the real extension are on the generated
-  bindings. Only the PoC code itself (`init_v2_poc*.zig`, `duckdb_v2_examples.zig`,
-  `nethogs_trace.zig`) still uses the hand-written `duckdb_v2.zig`. What the migrated code needs to read vectors
+  bindings. Then the PoC code itself (`init_v2_poc*.zig`, `duckdb_v2_examples.zig`;
+  `nethogs_trace.zig` never used the hand-written layer). What the migrated code needs to read vectors
   and build parametrised types lives in `src/lib/v2_helpers.zig` (a module of
   its own, since the frameworks are modules too): `isValid`, `bytesSlice`,
   `str`, the slice forms of the calls that take a pointer and a count or a
@@ -1878,7 +1878,7 @@ global switch exists yet.
 - **How the frameworks were verified.** They had almost no runtime tests: the
   real extension used one scalar and one table function through them, and
   everything else was compile-time. `test/sql/zig_ext_v2_poc.test` (new step
-  `sqllogictest-v2-poc`, task `sqllogictest:v2:poc`, now 237 blocks) pins their
+  `sqllogictest-v2-poc`, task `sqllogictest:v2:poc`, 237 blocks when written; 256 now) pins their
   behavior through the proof-of-concept extension — numeric, VARCHAR, STRUCT,
   VARIANT, TIMESTAMP, BLOB, DECIMAL, ENUM, LIST, ARRAY, MAP and UNION scalars,
   matmul at odd sizes, range/repeat tables across batch boundaries, filter and
@@ -2008,11 +2008,33 @@ global switch exists yet.
   is now pinned. Each `register` takes `*const v2.duckdb_v2_extension_input`
   and fails with `MissingErrorSlot` if the entry point's error slot is absent
   (it is optional in the generated type).
-- **Not done:** the PoC code itself, and finally removing
-  `duckdb_v2.zig` and the `register`/`create`/`db.*` compatibility layer (every
-  framework keeps a conversion wrapper for callers still on the hand-written
-  handles, and `UserContext`/`UserValue`/`db.VectorView`-style boundary casts for
-  what a user function receives); a build option that binds `duckdb_v2_api` for
+- **The PoC code: ported (`9180920`).** The frameworks' user-facing handles
+  (context, value, error info, extension input, vector view, the pushdown hook's
+  info, the column data collection) are now the generated types, so the boundary
+  casts (`toUserContext`, `UserView`, the pushdown cast, the appender's
+  `toContext`/`toError`/`toCollection`) and the `register(db.ExtensionInput)` and
+  `create`/`append`/`flush`/`finish` conversion wrappers are gone; the
+  `...Generated` variants are the only ones, under the plain names.
+  `comptime_appender_v2.duckdbV2TypeId` returns the generated id enum. The PoC
+  files were translated mechanically (names, `[*c]` pointers to `*`, `.data`
+  unwrapped with `orelse`) and the entry points keep `initApi`'s hand-written
+  `ExtensionInput`, cast once to the generated one. Still from `duckdb_v2.zig`:
+  `initApi` and `ExtensionInput`, and the value types a user function takes or
+  returns (`Decimal`, `Blob`, `Date`, `Time`, `Timestamp`, `Interval`, `Map`).
+  The PoC suite (237 blocks) passed unchanged, but mutating the port showed
+  that eight registered functions had no SQL test: the hand-written examples
+  `zig_v2_double`, `zig_v2_hello`, `zig_v2_range3` and `zig_v2_agg_sum`, the
+  partitioned weighted average (`zig_v2_weighted_avg_part_ct`, a ~150-line
+  hand-written SIMD aggregate), the `zig_v2_range_<N>` replacement scan, and
+  `zig_v2_matmul_bench_ct`. 19 blocks now pin them (`79944e7`; the suite is 256
+  blocks), verified on the pre-port code first. The partitioned average is checked
+  against DuckDB's own `sum(x * w) / sum(w)` per group. Mutations survive only
+  in the table cardinality hint, which nothing observes. The `v2-poc-braille` and
+  `v2-poc-stipple` extensions build but have no SQL suite of their own.
+- **Not done:** finally removing `duckdb_v2.zig`: move `initApi`, the
+  extension input and the value types (`Decimal`, `Blob`, `Date`, `Time`,
+  `Timestamp`, `Interval`, `Map`) somewhere generated-bindings-only, which means
+  the `Interval` a user function takes becomes the generated struct; a build option that binds `duckdb_v2_api` for
   the frameworks. `ct_add_numbers` (v1 and v2) and v1's `zig_add_numbers` still
   trap on overflow, now for the comptime framework as a design question: the
   framework calls a user function that returns a plain `i64`, so it has no way
