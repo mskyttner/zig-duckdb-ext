@@ -11,6 +11,11 @@
 ///!   statement_execute / prepared_statement_execute -> a **lazy** result: nothing runs until it is stepped
 ///!   result_fetch_chunk / result_drain / result_get_schema -> rows, side effects, columns
 ///!
+///! A query can also come back as **Arrow** (`statement_execute_arrow`: an `ArrowSchema` and `ArrowArray`s of the C Data
+///! Interface instead of chunks), which is what a host handing rows to PyArrow or Arrow C++ wants. `arrowResults` below
+///! reads one; the extension side of the interface (an exporter and an importer made from a context) is
+///! `arrow_c_data.zig`.
+///!
 ///! The program checks what it prints and exits non-zero on any difference. Only what is built into the library is
 ///! there: functions such as `sum` live in the `core_functions` extension, which is not linked (`-Dstatic-extensions`
 ///! links extensions into the other embedding programs).
@@ -322,6 +327,59 @@ fn run(arena: std.mem.Allocator, s: *Session) !void {
     try parameters(arena, s);
     try errors(arena, s);
     try lazyExecution(arena, s);
+    try arrowResults(s);
+}
+
+/// A query's rows as Arrow: the schema first (a struct whose children are the columns), then arrays of at most the
+/// batch size, until one comes back released. The caller releases every schema and array it is given.
+fn arrowResults(s: *Session) !void {
+    var c: Call = .{};
+    const sql = "SELECT i AS id, 'row' || i AS name, CASE WHEN i % 5 = 0 THEN NULL ELSE i * 0.5 END::DOUBLE AS half FROM range(2500) r(i)";
+    var iterator: v2.duckdb_v2_statement_iterator_handle = undefined;
+    try c.ok(v2.duckdb_v2_parse_sql(s.conn, sql, &iterator, c.err()));
+    defer _ = v2.duckdb_v2_statement_iterator_destroy(&iterator);
+    var statement: ?v2.duckdb_v2_sql_statement_handle = null;
+    try c.ok(v2.duckdb_v2_statement_iterator_next(iterator, @ptrCast(&statement), c.err()));
+    var stmt = statement.?;
+    defer _ = v2.duckdb_v2_sql_statement_destroy(&stmt);
+
+    var result: v2.duckdb_v2_arrow_result_handle = undefined;
+    try c.ok(v2.duckdb_v2_statement_execute_arrow(s.conn, stmt, null, null, 0, 1000, &result, c.err()));
+    defer _ = v2.duckdb_v2_arrow_result_destroy(&result);
+
+    var schema: v2.ArrowSchema = undefined;
+    try c.ok(v2.duckdb_v2_arrow_result_get_schema(result, &schema, c.err()));
+    defer if (schema.release) |release| release(&schema);
+    try expectInt("the schema is a struct of three columns", 3, @intCast(schema.n_children));
+    try expectEqual("schema format", "+s", std.mem.span(schema.format.?));
+    var formats: std.ArrayList(u8) = .empty;
+    for (0..3) |i| {
+        const child = schema.children.?[i].?;
+        try formats.print(std.heap.c_allocator, "{s}:{s} ", .{ std.mem.span(child.name.?), std.mem.span(child.format.?) });
+    }
+    defer formats.deinit(std.heap.c_allocator);
+    try expectEqual("column names and Arrow formats", "id:l name:u half:g ", formats.items);
+
+    var arrays: u64 = 0;
+    var rows: i64 = 0;
+    var id_sum: i64 = 0;
+    var nulls: i64 = 0;
+    while (true) {
+        var array: v2.ArrowArray = undefined;
+        try c.ok(v2.duckdb_v2_arrow_result_fetch_array(result, &array, c.err()));
+        // A released array (`release == null`) is the end of the result.
+        const release = array.release orelse break;
+        defer release(&array);
+        arrays += 1;
+        rows += array.length;
+        const ids: [*]const i64 = @ptrCast(@alignCast(array.children.?[0].?.buffers.?[1].?));
+        for (0..@intCast(array.length)) |i| id_sum += ids[@as(usize, @intCast(array.offset)) + i];
+        nulls += array.children.?[2].?.null_count;
+    }
+    try expectInt("arrays of at most 1000 rows", 3, arrays);
+    try expectInt("rows", 2500, @intCast(rows));
+    try expectInt("sum of ids, read from the Arrow buffers", 3123750, @intCast(id_sum));
+    try expectInt("NULLs in the DOUBLE column", 500, @intCast(nulls));
 }
 
 /// Parameters: bound as constants for one execution, positional ($1) or by name ($x), in a statement run directly

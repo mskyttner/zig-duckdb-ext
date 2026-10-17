@@ -1410,3 +1410,141 @@ statement error
 SELECT * FROM zig_cookbook_read_arrow('test/data/arrow/bad_utf8.arrows')
 ----
 not valid UTF-8
+
+# The Arrow C Data Interface. zig_cookbook_arrow_export feeds DuckDB chunks to an exporter and reports the ArrowArrays
+# that come out: what the structs say, and checksums that Zig computes from the raw Arrow buffers. The oracle is SQL.
+query I
+SELECT count(*) FROM zig_cookbook_arrow_export(2500)
+----
+9
+
+query T
+SELECT DISTINCT col || ':' || format || ':' || n_buffers FROM zig_cookbook_arrow_export(2500) ORDER BY 1
+----
+even:b:2
+id:l:2
+label:u:3
+
+# 2500 rows in chunks of 2048 come out as arrays of 1000, 1000 and 500: the exporter holds rows back across chunks
+# and the final flush finishes the last array.
+query T
+SELECT string_agg(length::VARCHAR, ',' ORDER BY batch) FROM zig_cookbook_arrow_export(2500) WHERE col = 'id'
+----
+1000,1000,500
+
+# Per array: the sum of the ids, the bytes of the non-NULL labels (the offsets), the true booleans, and the NULLs.
+query I
+SELECT count(*) FROM (
+    SELECT batch, col, length, null_count, checksum FROM zig_cookbook_arrow_export(2500)
+    EXCEPT
+    SELECT * FROM (
+    SELECT i // 1000, 'id', count(*), 0, sum(i) FROM range(2500) t(i) GROUP BY 1
+    UNION ALL
+    SELECT i // 1000, 'label', count(*), count(*) FILTER (WHERE i % 3 = 0), sum(length('row-' || i)) FILTER (WHERE i % 3 <> 0) FROM range(2500) t(i) GROUP BY 1
+    UNION ALL
+    SELECT i // 1000, 'even', count(*), 0, count(*) FILTER (WHERE i % 2 = 0) FROM range(2500) t(i) GROUP BY 1
+    )
+)
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_arrow_export(0)
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_arrow_export(1)
+----
+3
+
+statement error
+SELECT * FROM zig_cookbook_arrow_export(-1)
+----
+n must be between 0 and 10000000, got -1
+
+# zig_cookbook_arrow_import builds an ArrowSchema and ArrowArray by hand and gives them to an importer.
+query T
+SELECT column_name || ' ' || column_type FROM (DESCRIBE SELECT * FROM zig_cookbook_arrow_import(3))
+----
+id BIGINT
+label VARCHAR
+day DATE
+
+statement ok
+CREATE TABLE arrow_c_expected AS
+SELECT (10 * i)::BIGINT AS id, CASE WHEN i % 4 = 3 THEN NULL ELSE 'item-' || i END AS label, DATE '1970-01-01' + i::INTEGER AS day
+FROM range(2500) t(i)
+
+# Zero-copy (the array is consumed) and copied, across chunk boundaries (batches of 1000 rows).
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_arrow_import(2500) EXCEPT SELECT * FROM arrow_c_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_c_expected EXCEPT SELECT * FROM zig_cookbook_arrow_import(2500))
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_arrow_import(2500, copy := true) EXCEPT SELECT * FROM arrow_c_expected)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT * FROM arrow_c_expected EXCEPT SELECT * FROM zig_cookbook_arrow_import(2500, copy := true))
+----
+0
+
+query III
+SELECT count(*), count(label), max(id) FROM zig_cookbook_arrow_import(1001)
+----
+1001
+751
+10000
+
+query T
+SELECT label FROM zig_cookbook_arrow_import(8) ORDER BY id
+----
+item-0
+item-1
+item-2
+NULL
+item-4
+item-5
+item-6
+NULL
+
+query I
+SELECT count(*) FROM zig_cookbook_arrow_import(0)
+----
+0
+
+# Twice in one statement: two importers, two arrays, each released once.
+query I
+SELECT count(*) FROM zig_cookbook_arrow_import(3000) a JOIN zig_cookbook_arrow_import(3000, copy := true) b USING (id, label, day)
+----
+2250
+
+query I
+SELECT count(*) FROM (SELECT * FROM zig_cookbook_arrow_import(2000) UNION ALL SELECT * FROM zig_cookbook_arrow_import(2000, copy := true))
+----
+4000
+
+statement error
+SELECT * FROM zig_cookbook_arrow_import(10000001)
+----
+n must be between 0 and 10000000, got 10000001
+
+# Every hand-built array was released exactly once, in both modes: none is left, and none was freed twice (a crash).
+query I
+SELECT live_arrays FROM zig_cookbook_arrow_live_arrays()
+----
+0
+
+# While a statement still holds the chunks of a consumed array, the array is alive.
+query I
+SELECT max(live_arrays) FROM (SELECT live_arrays FROM zig_cookbook_arrow_live_arrays(), zig_cookbook_arrow_import(10) LIMIT 1)
+----
+1

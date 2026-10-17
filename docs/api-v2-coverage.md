@@ -8,12 +8,12 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 63 scanned source files. Referenced by the extension: **263**; by the extension or the PoC: **283**.
+587 functions (26 unstable) in 32 spec modules, from 64 scanned source files. Referenced by the extension: **278**; by the extension or the PoC: **298**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
 | arena | 1 | 0 | 1 | 1 | 0 |
-| arrow | 21 | 0 | 0 | 0 | 21 |
+| arrow | 21 | 0 | 14 | 14 | 7 |
 | catalog | 11 | 0 | 0 | 0 | 11 |
 | configuration | 11 | 0 | 11 | 11 | 0 |
 | connection | 8 | 0 | 2 | 2 | 6 |
@@ -43,13 +43,13 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | sql_statement | 9 | 0 | 8 | 8 | 1 |
 | tokenizer | 4 | 0 | 0 | 0 | 4 |
 | value | 112 | 0 | 28 | 30 | 82 |
-| vector | 21 | 0 | 10 | 10 | 11 |
+| vector | 21 | 0 | 11 | 11 | 10 |
 
 ## Not referenced
 
 By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable function.
 
-**arrow**: `arrow_importer_create`, `arrow_importer_get_schema`, `arrow_importer_append`, `arrow_importer_next_chunk`, `arrow_importer_destroy`, `arrow_exporter_create`, `arrow_exporter_get_schema`, `arrow_exporter_append`, `arrow_exporter_next_array`, `arrow_exporter_destroy`, `statement_execute_arrow`, `prepared_statement_execute_arrow`, `arrow_result_destroy`, `arrow_result_step`, `arrow_result_fetch_array`, `arrow_result_wait`, `arrow_result_drain`, `arrow_result_get_result_type`, `arrow_result_get_statement_type`, `arrow_result_get_schema`, `arrow_result_to_arrow_c_stream`
+**arrow**: `prepared_statement_execute_arrow`, `arrow_result_step`, `arrow_result_wait`, `arrow_result_drain`, `arrow_result_get_result_type`, `arrow_result_get_statement_type`, `arrow_result_to_arrow_c_stream`
 
 **catalog**: `connection_describe_table`, `table_description_get_qname`, `table_description_is_readonly`, `table_description_get_column_count`, `table_description_get_column`, `table_description_destroy`, `column_description_get_name`, `column_description_get_type`, `column_description_has_default`, `column_description_has_generated`, `column_description_destroy`
 
@@ -101,5 +101,5 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **value**: `value_create_null`, `value_get_utinyint`, `value_get_usmallint`, `value_get_uint`, `value_get_ubigint`, `value_get_uhugeint`, `value_get_hugeint`, `value_get_blob`, `value_get_date`, `value_get_time`, `value_get_time_ns`, `value_get_time_tz`, `value_get_timestamp`, `value_get_timestamp_sec`, `value_get_timestamp_ms`, `value_get_timestamp_ns`, `value_get_timestamp_tz`, `value_get_timestamp_tz_ns`, `value_get_interval`, `value_get_uuid`, `value_get_decimal`, `value_get_type`, `value_create_null_with_context`, `value_create_usmallint_with_context`, `value_create_uint_with_context`, `value_create_ubigint_with_context`, `value_create_uhugeint_with_context`, `value_create_hugeint_with_context`, `value_create_null_with_connection`, `value_create_bool_with_connection`, `value_create_utinyint_with_connection`, `value_create_usmallint_with_connection`, `value_create_uint_with_connection`, `value_create_ubigint_with_connection`, `value_create_uhugeint_with_connection`, `value_create_tinyint_with_connection`, `value_create_smallint_with_connection`, `value_create_bigint_with_connection`, `value_create_hugeint_with_connection`, `value_create_varchar_with_connection`, `value_create_blob_with_connection`, `value_create_float_with_connection`, `value_create_double_with_connection`, `value_create_type_with_connection`, `value_create_date_with_context`, `value_create_date_with_connection`, `value_create_time_with_context`, `value_create_time_with_connection`, `value_create_time_ns_with_context`, `value_create_time_ns_with_connection`, `value_create_time_tz_with_context`, `value_create_time_tz_with_connection`, `value_create_timestamp_with_context`, `value_create_timestamp_with_connection`, `value_create_timestamp_sec_with_context`, `value_create_timestamp_sec_with_connection`, `value_create_timestamp_ms_with_context`, `value_create_timestamp_ms_with_connection`, `value_create_timestamp_ns_with_context`, `value_create_timestamp_ns_with_connection`, `value_create_timestamp_tz_with_context`, `value_create_timestamp_tz_with_connection`, `value_create_timestamp_tz_ns_with_context`, `value_create_timestamp_tz_ns_with_connection`, `value_create_interval_with_context`, `value_create_interval_with_connection`, `value_create_decimal_with_context`, `value_create_decimal_with_connection`, `value_create_uuid_with_context`, `value_create_uuid_with_connection`, `value_create_bit_with_context`, `value_create_bit_with_connection`, `value_create_bignum_with_context`, `value_create_bignum_with_connection`, `value_create_list_with_connection`, `value_create_array_with_connection`, `value_create_struct_with_connection`, `value_create_tuple_with_context`, `value_create_tuple_with_connection`, `value_create_map_with_connection`, `value_get_logical_type`, `value_to_string`
 
-**vector**: `vector_get_vector_type`, `vector_get_size`, `vector_reference`, `vector_make_constant`, `vector_make_sequence`, `vector_flat_get_validity_mutable`, `vector_constant_set_valid`, `vector_get_child_count`, `bignum_decode`, `bignum_encode`, `validate_utf8`
+**vector**: `vector_get_vector_type`, `vector_get_size`, `vector_make_constant`, `vector_make_sequence`, `vector_flat_get_validity_mutable`, `vector_constant_set_valid`, `vector_get_child_count`, `bignum_decode`, `bignum_encode`, `validate_utf8`
 
