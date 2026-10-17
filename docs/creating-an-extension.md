@@ -107,13 +107,14 @@ In v1 a function gets real names only through a **macro wrapper**: register the 
 (`src/functions/tp_bar.zig`). That gives names and defaults, but `parameter_types` is NULL for a macro. v2 extensions
 cannot run SQL at load time, so the wrapper is v1 only, and unnecessary in v2.
 
-## 6. Descriptions and examples: not with the pinned API
+## 6. Descriptions and examples: not with the pinned API, yes with a newer alpha
 
 `description` and `examples` in `duckdb_functions()` are **empty for every function in this repository**, because the
 pinned alpha (`v2.0.0-alpha46057`) has no call to set them, and v1 never had one. `COMMENT ON FUNCTION` does not help
 either: it works on macros only ("Can not comment on System Catalog entries" for a registered function).
 
-The staged alpha **`v2.0.0-alpha48730` (`f8f3f4dcd9`)**, from the "cyanoptera" staging channel, has the API. For a
+The staged alpha **`v2.0.0-alpha48730` (`f8f3f4dcd9`)**, from the "cyanoptera" staging channel
+(`https://artifacts.duckdb.org/staged/v2.0-cyanoptera/`), has the API. For a
 scalar, aggregate, table, pragma or macro function:
 
 ```c
@@ -123,8 +124,27 @@ duckdb_v2_function_docs_add_example(docs, &title_or_null, &example, err); // in 
 duckdb_v2_function_docs_add_category(docs, &category, err);             // e.g. "string", "aggregate"
 ```
 
-The docs describe one overload and are registered with the function. I have read the header of that alpha but have not
-built an extension against it, so that these fill the `description` and `examples` columns is **not yet verified here**.
+The docs describe one overload and are registered with the function.
+
+**Verified with a spike** (`docs/spikes/function_docs_alpha48730.c`, in C against that alpha's headers, loaded in its
+CLI): a scalar function `spike_add(left_operand BIGINT, right_operand BIGINT)` that calls the four functions above gives
+
+```
+function_name | parameters                    | parameter_types   | return_type | description             | examples                                                                  | categories
+spike_add     | [left_operand, right_operand] | [BIGINT, BIGINT] | BIGINT      | Adds two BIGINT values. | ['SELECT spike_add(40, 2);', 'SELECT spike_add(i, 1) FROM range(3) t(i);'] | [numeric]
+```
+
+and the function computes (`SELECT spike_add(40, 2)` is 42). Notes from it:
+
+- `description`, `examples` and `categories` are all filled, and the examples keep the order they were added in.
+- The example's **title is not shown**: `examples` holds only the example text. Where a title surfaces, if anywhere, I did
+  not find.
+- The footer for this alpha was `C_STRUCT` with `v2.0.0`, built by this repository's own `append_metadata` tool, and it
+  loads without changes.
+- The entry point is the header's `DUCKDB_EXTENSION_ENTRYPOINT` macro, which gives the extension handle, the context and
+  the error slot as arguments instead of the `duckdb_v2_extension_input` struct that the pinned alpha's entry point takes.
+- Only a scalar function was tried. The same call exists for aggregate, table, pragma and macro functions; I did not test
+  those.
 
 That alpha is **not a drop-in replacement for the pinned one**. Moving the pin means regenerating the bindings
 (`zig build gen-v2-bindings`) and porting every call site, because it renames and restructures much of the API:
