@@ -39,7 +39,8 @@ jobs:
       - run: zig build cookbook-embed
 
   # The Arrow IPC files that the cookbook suite writes are read back by PyArrow, an independent implementation.
-  # `verify:arrow-pyarrow` skips when PyArrow is missing, so it is installed here: a skip would prove nothing.
+  # `tools/verify_arrow_output.py` skips when PyArrow is missing, so it is installed here: a skip would prove nothing.
+  # setup-python gives a Python whose pip may install (the runner's system Python refuses, PEP 668).
   arrow-pyarrow:
     runs-on: ubuntu-latest
     steps:
@@ -47,17 +48,13 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-      - uses: arduino/setup-task@v2
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install pyarrow
       - name: Write the Arrow files (the cookbook suite)
-        run: task sqllogictest:cookbook
+        run: zig build sqllogictest-cookbook
       - name: Read them with PyArrow
         run: |
           python3 -c "import pyarrow; print('pyarrow', pyarrow.__version__)"
-          task verify:arrow-pyarrow
+          python3 tools/verify_arrow_output.py

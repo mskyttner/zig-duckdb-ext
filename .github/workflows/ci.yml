@@ -1,8 +1,10 @@
 name: CI
 
-# The gates a change has to pass: `task check:all` (format, build, unit tests, a fresh API coverage report) and every
-# SQL suite. `check:all` does not run the SQL suites, so they are listed here. The slower or optional checks (the
-# embedding recipe against DuckDB's static libraries, PyArrow reading the Arrow files) are in ci-extended.yml.
+# The gates a change has to pass: what `task check:all` runs (format, build, unit tests, a fresh API coverage report)
+# and every SQL suite. `check:all` does not run the SQL suites, so they are listed here. The steps call `zig build`
+# directly, so the runner needs no Task binary; the format step checks (`zig fmt --check`), where the `format` task
+# rewrites. The slower or optional checks (the embedding recipe against DuckDB's static libraries, PyArrow reading the
+# Arrow files) are in ci-extended.yml.
 
 on:
   push:
@@ -31,29 +33,33 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      - uses: arduino/setup-task@v2
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
       # The SQL suites run the pinned DuckDB CLI, which the build fetches (build.zig.zon), so they need the network.
-      - name: Quality gates (format, build, unit tests, API coverage report is current)
-        run: task check:all
+      - name: Format
+        run: zig fmt --check src/
+
+      - name: Build
+        run: zig build
+
+      - name: Unit tests
+        run: zig build test
+
+      - name: The API coverage report is current
+        run: zig build coverage-api-v2-check
 
       - name: SQL tests, v1 extension
-        run: task sqllogictest
+        run: zig build sqllogictest
 
       - name: SQL tests, v2 extension
-        run: task sqllogictest:v2
+        run: zig build sqllogictest-v2
 
       - name: SQL tests, v2 proof of concept (comptime frameworks)
-        run: task sqllogictest:v2:poc
+        run: zig build sqllogictest-v2-poc
 
       - name: SQL tests, v2 cookbook extension
-        run: task sqllogictest:cookbook
+        run: zig build sqllogictest-cookbook
 
       - name: A failing registration fails the load with its reason
-        run: task test:load-failure
+        run: zig build load-failure-v2
 
       - name: Tests of the vendored Arrow library
-        run: task test:arrow-vendor
+        run: zig build test-arrow-vendor
