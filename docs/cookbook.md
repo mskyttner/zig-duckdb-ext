@@ -32,6 +32,7 @@ if it is stale, so the gaps below are measured, not remembered.
 | Aggregate callbacks: bind (result type), bind data, user data, properties | — | `cookbook/aggregate_callbacks.zig`: `zig_cookbook_agg_sum` / `_sumsq` (one set of callbacks, user data = the power), `zig_cookbook_agg_last` (order dependent) | `AGG_ORDER_DEPENDENT` and `AGG_DISTINCT_DEPENDENT`: what the planner does with `ORDER BY` and `DISTINCT` inside the call. |
 | Parallel table function: global and local state, threads, output order | — | `cookbook/table_callbacks.zig`: `zig_cookbook_parallel_range` | `init_global` (max threads), `init_local` (a worker's state), `partition_data` (batch index), user data = block size. Without the partition data callback the rows stay in order but one worker produces them. |
 | A custom `COPY` format | — | `cookbook/copy_format.zig`: `FORMAT zig_cookbook_lines` (`DELIMITER`, `HEADER`, `NULL_TEXT`), both `COPY ... TO` and `COPY ... FROM` | TO: bind, batch size, init, batch (prepares, in parallel), flush (writes, serial), finalize. FROM: bind (the table's columns), init_global, exec (an empty chunk ends the read), progress. Values travel as text through DuckDB's own cast, so every type works. |
+| Running SQL: parse, execute, prepared statements, results | — | `cookbook/embed_sql.zig`, `zig build cookbook-embed` (needs the static libraries): a program that **embeds** DuckDB | Environment, instance, connection; `parse_sql`; lazy results read by chunk; positional and named parameters; prepared statements; error codes; one live result per connection. **Not available to an extension**: see below. |
 | Appender, building a result set | — | `lib/comptime_appender_v2.zig`, `zig_v2_appender_*_test`, `zig_v2_nethogs_trace` (PoC) | |
 | Replacement scan | — | `zig_v2_range_<N>`, the braille demo (PoC) | `SELECT * FROM zig_v2_range_5`. |
 
@@ -58,8 +59,11 @@ Taken from the generated coverage report. In the order I would write the recipes
 3. ~~A `COPY` format~~ — done (`cookbook/copy_format.zig`), with the C library for files. Left in `function/copy`: the
    unstable `RETURN_STATS` statistics callback, and reading and writing through DuckDB's file system (so that remote
    paths work), which belongs to the `filesystem` recipe.
-4. **Running SQL from an extension**: connection, prepared statements, result chunks (`connection`,
-   `prepared_statement`, `query_result`).
+4. ~~Running SQL~~ — done for a program that **embeds** DuckDB (`cookbook/embed_sql.zig`). **An extension cannot do it with
+   the v2 C API as pinned:** every query function (`parse_sql`, `statement_execute`, `prepared_statement_create`, ...)
+   takes a *connection*, an extension is handed only an extension handle and a *context*, and no call turns a context
+   into a connection (nor yields the instance to create one from). Settings, values, types and the file system are what
+   a context is for.
 5. **Custom types** (`logical_type/custom_type`), **filesystem** access, **Arrow** import and export, **logging**,
    **tokenizing and parsing SQL**.
 

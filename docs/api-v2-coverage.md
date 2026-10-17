@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-587 functions (26 unstable) in 32 spec modules, from 59 scanned source files. Referenced by the extension: **218**; by the extension or the PoC: **240**.
+587 functions (26 unstable) in 32 spec modules, from 60 scanned source files. Referenced by the extension: **253**; by the extension or the PoC: **275**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -16,11 +16,11 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | arrow | 21 | 0 | 0 | 0 | 21 |
 | catalog | 11 | 0 | 0 | 0 | 11 |
 | configuration | 11 | 0 | 11 | 11 | 0 |
-| connection | 8 | 0 | 0 | 0 | 8 |
+| connection | 8 | 0 | 2 | 2 | 6 |
 | data_chunk/column_data_collection | 15 | 0 | 10 | 11 | 4 |
 | data_chunk | 10 | 1 | 5 | 5 | 5 |
-| environment | 3 | 0 | 0 | 0 | 3 |
-| error | 6 | 0 | 2 | 2 | 4 |
+| environment | 3 | 0 | 2 | 2 | 1 |
+| error | 6 | 0 | 5 | 5 | 1 |
 | expression | 9 | 0 | 0 | 4 | 5 |
 | filesystem/file_system | 17 | 0 | 0 | 0 | 17 |
 | function/aggregate | 44 | 0 | 33 | 33 | 11 |
@@ -32,17 +32,17 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | function/signature | 2 | 0 | 2 | 2 | 0 |
 | function/table | 83 | 19 | 34 | 38 | 45 |
 | identifier | 1 | 0 | 0 | 0 | 1 |
-| instance | 13 | 0 | 0 | 0 | 13 |
+| instance | 13 | 0 | 4 | 4 | 9 |
 | logging | 1 | 0 | 0 | 0 | 1 |
 | logical_type/custom_type | 6 | 0 | 0 | 0 | 6 |
-| logical_type | 16 | 0 | 4 | 4 | 12 |
-| prepared_statement | 4 | 0 | 0 | 0 | 4 |
+| logical_type | 16 | 0 | 5 | 5 | 11 |
+| prepared_statement | 4 | 0 | 4 | 4 | 0 |
 | qname | 8 | 0 | 0 | 4 | 4 |
-| query_result | 10 | 0 | 0 | 0 | 10 |
-| schema | 3 | 0 | 0 | 0 | 3 |
-| sql_statement | 9 | 0 | 0 | 0 | 9 |
+| query_result | 10 | 0 | 6 | 6 | 4 |
+| schema | 3 | 0 | 3 | 3 | 0 |
+| sql_statement | 9 | 0 | 8 | 8 | 1 |
 | tokenizer | 4 | 0 | 0 | 0 | 4 |
-| value | 112 | 0 | 26 | 28 | 84 |
+| value | 112 | 0 | 28 | 30 | 82 |
 | vector | 21 | 0 | 10 | 10 | 11 |
 
 ## Not referenced
@@ -53,15 +53,15 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **catalog**: `connection_describe_table`, `table_description_get_qname`, `table_description_is_readonly`, `table_description_get_column_count`, `table_description_get_column`, `table_description_destroy`, `column_description_get_name`, `column_description_get_type`, `column_description_has_default`, `column_description_has_generated`, `column_description_destroy`
 
-**connection**: `connection_create`, `connection_destroy`, `connection_set_option`, `connection_get_option_by_name`, `connection_get_option_count`, `connection_get_option_by_index`, `connection_interrupt`, `connection_progress_get`
+**connection**: `connection_set_option`, `connection_get_option_by_name`, `connection_get_option_count`, `connection_get_option_by_index`, `connection_interrupt`, `connection_progress_get`
 
 **data_chunk/column_data_collection**: `column_data_collection_create_with_connection`, `column_data_collection_reset`, `column_data_collection_clear`, `column_data_collection_combine`
 
 **data_chunk**: `data_chunk_create`, `data_chunk_create_with_connection`, `data_chunk_copy_with_connection`, `data_chunk_copy_with_context`, `data_chunk_get_vector_count`
 
-**environment**: `environment_create`, `environment_destroy`, `environment_get_instance_count`
+**environment**: `environment_get_instance_count`
 
-**error**: `error_info_get_code`, `error_info_get_text`, `error_info_get_raw_text`, `error_info_destroy`
+**error**: `error_info_get_raw_text`
 
 **expression**: `expression_get_return_type`, `expression_get_child_count`, `expression_function_get_name`, `expression_function_get_qname`, `expression_cast_get_mode`
 
@@ -83,27 +83,23 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **identifier**: `identifier_render_quoted`
 
-**instance**: `instance_create`, `instance_destroy`, `instance_attach`, `instance_detach`, `instance_set_default`, `attach_options_create`, `attach_options_set`, `attach_options_destroy`, `instance_set_option`, `instance_get_option_by_name`, `instance_get_option_count`, `instance_get_option_by_index`, `library_version`
+**instance**: `instance_detach`, `instance_set_default`, `attach_options_create`, `attach_options_set`, `attach_options_destroy`, `instance_set_option`, `instance_get_option_by_name`, `instance_get_option_count`, `instance_get_option_by_index`
 
 **logging**: `context_log`
 
 **logical_type/custom_type**: `custom_type_create_with_connection`, `custom_type_create_with_extension`, `custom_type_set_name`, `custom_type_set_base_type`, `custom_type_register`, `custom_type_destroy`
 
-**logical_type**: `context_create_type_from_name`, `connection_create_type_from_id`, `connection_create_type_from_name`, `connection_create_type_from_text`, `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_name`, `logical_type_to_text`, `logical_type_get_param_count`, `logical_type_get_param`, `context_create_type_with_alias`, `connection_create_type_with_alias`
-
-**prepared_statement**: `prepared_statement_create`, `prepared_statement_execute`, `prepared_statement_reuses_plan`, `prepared_statement_destroy`
+**logical_type**: `context_create_type_from_name`, `connection_create_type_from_name`, `connection_create_type_from_text`, `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_name`, `logical_type_to_text`, `logical_type_get_param_count`, `logical_type_get_param`, `context_create_type_with_alias`, `connection_create_type_with_alias`
 
 **qname**: `qname_parse`, `qname_render`, `qname_equals`, `qname_hash`
 
-**query_result**: `statement_execute`, `result_destroy`, `result_step`, `result_fetch_chunk`, `result_wait`, `result_render_box`, `result_drain`, `result_get_result_type`, `result_get_statement_type`, `result_get_schema`
+**query_result**: `result_step`, `result_wait`, `result_render_box`, `result_get_statement_type`
 
-**schema**: `schema_get_count`, `schema_get_field`, `schema_destroy`
-
-**sql_statement**: `parse_sql`, `statement_iterator_next`, `statement_bind`, `sql_statement_get_type`, `sql_statement_get_text`, `sql_statement_get_parameter_count`, `sql_statement_get_parameter_name`, `sql_statement_destroy`, `statement_iterator_destroy`
+**sql_statement**: `sql_statement_get_text`
 
 **tokenizer**: `tokenize_sql`, `token_iterator_next`, `token_iterator_ends_unterminated`, `token_iterator_destroy`
 
-**value**: `value_create_null`, `value_get_utinyint`, `value_get_usmallint`, `value_get_uint`, `value_get_ubigint`, `value_get_uhugeint`, `value_get_hugeint`, `value_get_blob`, `value_get_date`, `value_get_time`, `value_get_time_ns`, `value_get_time_tz`, `value_get_timestamp`, `value_get_timestamp_sec`, `value_get_timestamp_ms`, `value_get_timestamp_ns`, `value_get_timestamp_tz`, `value_get_timestamp_tz_ns`, `value_get_interval`, `value_get_uuid`, `value_get_decimal`, `value_get_type`, `value_create_null_with_context`, `value_create_usmallint_with_context`, `value_create_uint_with_context`, `value_create_ubigint_with_context`, `value_create_uhugeint_with_context`, `value_create_hugeint_with_context`, `value_create_null_with_connection`, `value_create_bool_with_connection`, `value_create_utinyint_with_connection`, `value_create_usmallint_with_connection`, `value_create_uint_with_connection`, `value_create_ubigint_with_connection`, `value_create_uhugeint_with_connection`, `value_create_tinyint_with_connection`, `value_create_smallint_with_connection`, `value_create_int_with_connection`, `value_create_bigint_with_connection`, `value_create_hugeint_with_connection`, `value_create_varchar_with_connection`, `value_create_blob_with_connection`, `value_create_float_with_connection`, `value_create_double_with_connection`, `value_create_type_with_connection`, `value_create_date_with_context`, `value_create_date_with_connection`, `value_create_time_with_context`, `value_create_time_with_connection`, `value_create_time_ns_with_context`, `value_create_time_ns_with_connection`, `value_create_time_tz_with_context`, `value_create_time_tz_with_connection`, `value_create_timestamp_with_context`, `value_create_timestamp_with_connection`, `value_create_timestamp_sec_with_context`, `value_create_timestamp_sec_with_connection`, `value_create_timestamp_ms_with_context`, `value_create_timestamp_ms_with_connection`, `value_create_timestamp_ns_with_context`, `value_create_timestamp_ns_with_connection`, `value_create_timestamp_tz_with_context`, `value_create_timestamp_tz_with_connection`, `value_create_timestamp_tz_ns_with_context`, `value_create_timestamp_tz_ns_with_connection`, `value_create_interval_with_context`, `value_create_interval_with_connection`, `value_create_decimal_with_context`, `value_create_decimal_with_connection`, `value_create_uuid_with_context`, `value_create_uuid_with_connection`, `value_create_bit_with_context`, `value_create_bit_with_connection`, `value_create_bignum_with_context`, `value_create_bignum_with_connection`, `value_create_list_with_connection`, `value_create_array_with_connection`, `value_create_struct_with_connection`, `value_create_tuple_with_context`, `value_create_tuple_with_connection`, `value_create_map_with_connection`, `value_cast_with_connection`, `value_get_logical_type`, `value_to_string`
+**value**: `value_create_null`, `value_get_utinyint`, `value_get_usmallint`, `value_get_uint`, `value_get_ubigint`, `value_get_uhugeint`, `value_get_hugeint`, `value_get_blob`, `value_get_date`, `value_get_time`, `value_get_time_ns`, `value_get_time_tz`, `value_get_timestamp`, `value_get_timestamp_sec`, `value_get_timestamp_ms`, `value_get_timestamp_ns`, `value_get_timestamp_tz`, `value_get_timestamp_tz_ns`, `value_get_interval`, `value_get_uuid`, `value_get_decimal`, `value_get_type`, `value_create_null_with_context`, `value_create_usmallint_with_context`, `value_create_uint_with_context`, `value_create_ubigint_with_context`, `value_create_uhugeint_with_context`, `value_create_hugeint_with_context`, `value_create_null_with_connection`, `value_create_bool_with_connection`, `value_create_utinyint_with_connection`, `value_create_usmallint_with_connection`, `value_create_uint_with_connection`, `value_create_ubigint_with_connection`, `value_create_uhugeint_with_connection`, `value_create_tinyint_with_connection`, `value_create_smallint_with_connection`, `value_create_bigint_with_connection`, `value_create_hugeint_with_connection`, `value_create_varchar_with_connection`, `value_create_blob_with_connection`, `value_create_float_with_connection`, `value_create_double_with_connection`, `value_create_type_with_connection`, `value_create_date_with_context`, `value_create_date_with_connection`, `value_create_time_with_context`, `value_create_time_with_connection`, `value_create_time_ns_with_context`, `value_create_time_ns_with_connection`, `value_create_time_tz_with_context`, `value_create_time_tz_with_connection`, `value_create_timestamp_with_context`, `value_create_timestamp_with_connection`, `value_create_timestamp_sec_with_context`, `value_create_timestamp_sec_with_connection`, `value_create_timestamp_ms_with_context`, `value_create_timestamp_ms_with_connection`, `value_create_timestamp_ns_with_context`, `value_create_timestamp_ns_with_connection`, `value_create_timestamp_tz_with_context`, `value_create_timestamp_tz_with_connection`, `value_create_timestamp_tz_ns_with_context`, `value_create_timestamp_tz_ns_with_connection`, `value_create_interval_with_context`, `value_create_interval_with_connection`, `value_create_decimal_with_context`, `value_create_decimal_with_connection`, `value_create_uuid_with_context`, `value_create_uuid_with_connection`, `value_create_bit_with_context`, `value_create_bit_with_connection`, `value_create_bignum_with_context`, `value_create_bignum_with_connection`, `value_create_list_with_connection`, `value_create_array_with_connection`, `value_create_struct_with_connection`, `value_create_tuple_with_context`, `value_create_tuple_with_connection`, `value_create_map_with_connection`, `value_get_logical_type`, `value_to_string`
 
 **vector**: `vector_get_vector_type`, `vector_get_size`, `vector_reference`, `vector_make_constant`, `vector_make_sequence`, `vector_flat_get_validity_mutable`, `vector_constant_set_valid`, `vector_get_child_count`, `bignum_decode`, `bignum_encode`, `validate_utf8`
 

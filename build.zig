@@ -321,48 +321,36 @@ const StaticEmbed = struct {
     libgcc_path: ?[]const u8,
 };
 
-/// A program with the real zig_ext_v2 (built against the static bindings) and `extensions` (names of
-/// DuckDB's static extension archives, e.g. "json", plus the capabilities "httplib" and
-/// "loadable_extensions") registered with DuckDB before the database opens.
-fn addStaticEmbedExe(b: *std.Build, ctx: StaticEmbed, exe_name: []const u8, extensions: []const []const u8) *std.Build.Step.Compile {
-    const target = ctx.target;
-    const optimize = ctx.optimize;
-    const static_libs_dep = ctx.static_libs_dep;
-    const duckdb_full_c_mod = ctx.duckdb_full_c_mod;
-    const duckdb_static_mod = ctx.duckdb_static_mod;
-    const duckdb_v2_types_mod = ctx.duckdb_v2_types_mod;
-    const duckdb_v2_static_mod = ctx.duckdb_v2_static_mod;
-    const libstdcxx_path = ctx.libstdcxx_path;
-    const libgcc_eh_path = ctx.libgcc_eh_path;
-    const is_windows = target.result.os.tag == .windows;
-
+/// The embedding recipe (src/cookbook/embed_sql.zig): a program that hosts DuckDB through the v2 API and runs SQL.
+fn addEmbedSqlExe(b: *std.Build, ctx: StaticEmbed) *std.Build.Step.Compile {
     const exe = b.addExecutable(.{
-        .name = exe_name,
+        .name = "zig_cookbook_embed_sql",
         .use_llvm = true,
         .use_lld = true,
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/static_embed_poc_main.zig"),
-            .target = target,
-            .optimize = optimize,
+            .root_source_file = b.path("src/cookbook/embed_sql.zig"),
+            .target = ctx.target,
+            .optimize = ctx.optimize,
         }),
     });
-    // The real extension against the static backend: `get_api` is always null under static
-    // loading, and the direct-link bindings do not need it.
-    const static_graph = v2Graph(b, target, optimize, duckdb_v2_static_mod);
-    exe.root_module.addImport("duckdb_v2_types", duckdb_v2_types_mod);
-    exe.root_module.addImport("duckdb_static", duckdb_static_mod);
-    exe.root_module.addImport("duckdb_full_c", duckdb_full_c_mod);
-    exe.root_module.addImport("root_v2", b.createModule(.{
-        .root_source_file = b.path("src/root_v2.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "duckdb_v2_api", .module = duckdb_v2_static_mod },
-            .{ .name = "v2_helpers", .module = static_graph.helpers },
-            .{ .name = "comptime_scalar_v2", .module = static_graph.scalar },
-            .{ .name = "comptime_table_v2", .module = static_graph.table },
-        },
-    }));
+    const graph = v2Graph(b, ctx.target, ctx.optimize, ctx.duckdb_v2_static_mod);
+    exe.root_module.addImport("duckdb_v2_api", ctx.duckdb_v2_static_mod);
+    exe.root_module.addImport("v2_helpers", graph.helpers);
+    linkDuckdbStatic(b, exe, ctx, &.{});
+    return exe;
+}
+
+/// A program with the real zig_ext_v2 (built against the static bindings) and `extensions` (names of
+/// DuckDB's static extension archives, e.g. "json", plus the capabilities "httplib" and
+/// "loadable_extensions") registered with DuckDB before the database opens.
+/// Links `exe` against DuckDB's static libraries: libc, the C++ runtime the archives were built against, the
+/// extension archives (registered by the caller) and `libduckdb_static.a` last.
+fn linkDuckdbStatic(b: *std.Build, exe: *std.Build.Step.Compile, ctx: StaticEmbed, extensions: []const []const u8) void {
+    const static_libs_dep = ctx.static_libs_dep;
+    const libstdcxx_path = ctx.libstdcxx_path;
+    const libgcc_eh_path = ctx.libgcc_eh_path;
+    const is_windows = ctx.target.result.os.tag == .windows;
+
     exe.root_module.link_libc = true;
     // NOT `link_libcpp = true` or `linkSystemLibrary("stdc++", .{})`:
     // confirmed live this static libduckdb was built against GNU
@@ -418,6 +406,45 @@ fn addStaticEmbedExe(b: *std.Build, ctx: StaticEmbed, exe_name: []const u8, exte
         }
     }
     exe.root_module.linkSystemLibrary("duckdb_static", .{});
+}
+
+fn addStaticEmbedExe(b: *std.Build, ctx: StaticEmbed, exe_name: []const u8, extensions: []const []const u8) *std.Build.Step.Compile {
+    const target = ctx.target;
+    const optimize = ctx.optimize;
+    const duckdb_full_c_mod = ctx.duckdb_full_c_mod;
+    const duckdb_static_mod = ctx.duckdb_static_mod;
+    const duckdb_v2_types_mod = ctx.duckdb_v2_types_mod;
+    const duckdb_v2_static_mod = ctx.duckdb_v2_static_mod;
+    const is_windows = target.result.os.tag == .windows;
+
+    const exe = b.addExecutable(.{
+        .name = exe_name,
+        .use_llvm = true,
+        .use_lld = true,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/static_embed_poc_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    // The real extension against the static backend: `get_api` is always null under static
+    // loading, and the direct-link bindings do not need it.
+    const static_graph = v2Graph(b, target, optimize, duckdb_v2_static_mod);
+    exe.root_module.addImport("duckdb_v2_types", duckdb_v2_types_mod);
+    exe.root_module.addImport("duckdb_static", duckdb_static_mod);
+    exe.root_module.addImport("duckdb_full_c", duckdb_full_c_mod);
+    exe.root_module.addImport("root_v2", b.createModule(.{
+        .root_source_file = b.path("src/root_v2.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "duckdb_v2_api", .module = duckdb_v2_static_mod },
+            .{ .name = "v2_helpers", .module = static_graph.helpers },
+            .{ .name = "comptime_scalar_v2", .module = static_graph.scalar },
+            .{ .name = "comptime_table_v2", .module = static_graph.table },
+        },
+    }));
+    linkDuckdbStatic(b, exe, ctx, extensions);
 
     // The registration of each extension, generated: one `extern fn` per describe function.
     var loader: std.Io.Writer.Allocating = .init(b.allocator);
@@ -1031,6 +1058,12 @@ pub fn build(b: *std.Build) void {
         } else {
             static_embed_poc_step.dependOn(&install_static_embed_poc.step);
         }
+
+        // The embedding recipe: SQL through the v2 host API (docs/cookbook.md).
+        const embed_sql_exe = addEmbedSqlExe(b, static_embed_ctx);
+        const run_embed_sql = b.addRunArtifact(embed_sql_exe);
+        run_embed_sql.addCheck(.{ .expect_stderr_match = "embedded SQL checks passed" });
+        b.step("cookbook-embed", "Build and run the embedding recipe: SQL through the v2 host API (needs the static libraries)").dependOn(&run_embed_sql.step);
 
         // The same program with several extension archives linked: the capabilities first, then the
         // extensions, `libduckdb_static.a` last.
