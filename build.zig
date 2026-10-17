@@ -659,6 +659,34 @@ pub fn build(b: *std.Build) void {
     // Regenerates the three files above. Not part of any default step: it
     // needs a checkout of the DuckDB commit that `duckdb_headers_v2` pins,
     // and zig-yaml (a lazy path dependency, fetched only here).
+    // Which functions of the v2 C API the hand-written code references (see tools/api_v2_coverage.zig):
+    // `coverage-api-v2` rewrites docs/api-v2-coverage.md, `coverage-api-v2-check` fails if it is stale.
+    {
+        const coverage_exe = b.addExecutable(.{
+            .name = "api_v2_coverage",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/api_v2_coverage.zig"),
+                .target = b.graph.host,
+                .optimize = .ReleaseSafe,
+            }),
+        });
+        const coverage_args = [_][]const u8{ "--poc", "poc", "--poc", "examples", "src/functions", "src/lib", "src/ext" };
+        const coverage_run = b.addRunArtifact(coverage_exe);
+        coverage_run.addFileArg(b.path("docs/generated/api_v2_functions.tsv"));
+        coverage_run.addArg("docs/api-v2-coverage.md");
+        coverage_run.addArgs(&coverage_args);
+        coverage_run.has_side_effects = true;
+        b.step("coverage-api-v2", "Rewrite docs/api-v2-coverage.md: which v2 C API functions the hand-written code references").dependOn(&coverage_run.step);
+
+        const coverage_check = b.addRunArtifact(coverage_exe);
+        coverage_check.addFileArg(b.path("docs/generated/api_v2_functions.tsv"));
+        coverage_check.addArg("docs/api-v2-coverage.md");
+        coverage_check.addArg("--check");
+        coverage_check.addArgs(&coverage_args);
+        coverage_check.has_side_effects = true;
+        b.step("coverage-api-v2-check", "Fail if docs/api-v2-coverage.md is stale").dependOn(&coverage_check.step);
+    }
+
     const v2_api_spec = b.option([]const u8, "v2-api-spec", "Directory with DuckDB's v2 API spec (<duckdb checkout>/api_spec/v2), for `gen-v2-bindings`");
     const v2_api_spec_ref = b.option([]const u8, "v2-api-spec-ref", "Where the spec comes from, recorded in the generated files") orelse
         "duckdb b15358c371, v2.0.0-alpha46057";
@@ -686,6 +714,7 @@ pub fn build(b: *std.Build) void {
                 const file = "duckdb_v2_" ++ backend ++ ".zig";
                 update_generated.addCopyFileToSource(generated.path(b, file), "src/lib/" ++ file);
             }
+            update_generated.addCopyFileToSource(generated.path(b, "duckdb_v2_index.tsv"), "docs/generated/api_v2_functions.tsv");
             gen_v2_bindings_step.dependOn(&update_generated.step);
         }
     } else {

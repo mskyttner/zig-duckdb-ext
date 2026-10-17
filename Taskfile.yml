@@ -12,7 +12,7 @@ version: "3"
 tasks:
   check:all:
     desc: "Run all quality gates"
-    deps: [format, build, test:unit]
+    deps: [format, build, test:unit, coverage:api-v2:check]
     cmds:
       - echo "All checks passed!"
 
@@ -236,6 +236,16 @@ tasks:
           echo "$OUTPUT" | grep -q "all static-extension queries returned the expected result" || { echo "FAILED: $exe.exe under Wine"; exit 1; }
         done
         echo "verify:static-windows PASSED — the Windows static embedding runs under Wine with six extension archives linked"
+
+  coverage:api-v2:
+    desc: "Rewrite docs/api-v2-coverage.md: which v2 C API functions the hand-written code references"
+    cmds:
+      - zig build coverage-api-v2
+
+  coverage:api-v2:check:
+    desc: "Fail if docs/api-v2-coverage.md is stale (run by check:all)"
+    cmds:
+      - zig build coverage-api-v2-check
 
   clean:
     desc: "Remove build artifacts"
