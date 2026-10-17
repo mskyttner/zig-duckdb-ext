@@ -7,7 +7,7 @@
 ///! only proves this project's real v2 entrypoint signature casts
 ///! cleanly into the descriptor, at compile time, against a stub
 ///! callback), THIS executable actually links the real, pinned
-///! `libduckdb_static.a` for the exact same `v2.0.0-alpha46057` build
+///! `libduckdb_static.a` for the exact same `v2.0.0-alpha48730` build
 ///! this project already targets, registers the REAL `zig_ext_v2` entry
 ///! point (`root_v2.zig`'s `zig_ext_v2_init_c_api_v2` — completely
 ///! unmodified, no stub), opens a real in-memory database via plain

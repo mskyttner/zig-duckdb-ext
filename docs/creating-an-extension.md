@@ -5,8 +5,8 @@ to check what DuckDB's catalog knows about it, and where the limits are today. E
 repository; copy from it rather than from the snippets.
 
 Two C APIs are used here (see the README): **v1**, which the stable and LTS DuckDB releases ship, and **v2**, the API of
-DuckDB 2.0, pinned to the staged alpha `v2.0.0-alpha48730` (`f8f3f4dcd9`, on the branch `v2-alpha48730`; the branch
-`duckdb-v2-api` is still on `v2.0.0-alpha46057`, `b15358c371`). New work should go on v2. The steps below are
+DuckDB 2.0, pinned to the staged alpha `v2.0.0-alpha48730` (`f8f3f4dcd9`; this repository was on
+`v2.0.0-alpha46057`, `b15358c371`, before). New work should go on v2. The steps below are
 for v2 and say so where v1 differs.
 
 ## 1. A project that builds an extension
@@ -126,7 +126,7 @@ duckdb_v2_function_docs_add_category(docs, &category, err);             // e.g. 
 
 The docs describe one overload and are registered with the function.
 
-**In this repository** (on the branch `v2-alpha48730`): `helpers.Docs` and `helpers.setDocs` wrap the calls, and
+**In this repository:** `helpers.Docs` and `helpers.setDocs` wrap the calls, and
 
 ```zig
 const CtAddNumbers = comptime_scalar_v2.FunctionDocumented("ct_add_numbers", add, &.{ "a", "b" }, .{
@@ -157,8 +157,7 @@ Notes:
 
 ### Moving from the earlier alpha
 
-`v2.0.0-alpha48730` is not a drop-in replacement: it renames and restructures much of the API. The port (done on the
-branch `v2-alpha48730`) was:
+`v2.0.0-alpha48730` is not a drop-in replacement: it renames and restructures much of the API. The port was:
 
 - `*_create_with_extension` / `_with_connection` / `_with_context` become `*_create(factory, ...)`, and
   `*_register` becomes `duckdb_v2_extension_register_*(extension, function, err)`. The factory comes from

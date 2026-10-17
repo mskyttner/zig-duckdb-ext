@@ -1,7 +1,8 @@
-// Vendored verbatim from duckdb/duckdb at commit b15358c371 (the exact
-// commit the staged v2.0.0-alpha46057 "Cyanoptera" CLI reports via
+// Vendored verbatim from duckdb/duckdb at commit f8f3f4dcd9 (the exact
+// commit the staged v2.0.0-alpha48730 "Cyanoptera" CLI reports via
 // `-version`), fetched from
-// raw.githubusercontent.com/duckdb/duckdb/b15358c371/src/include/duckdb_static_extension.h
+// raw.githubusercontent.com/duckdb/duckdb/f8f3f4dcd954cea2613572e8cc40a8612698d232/src/include/duckdb_static_extension.h
+// (byte-identical to the copy from b15358c371, the commit of v2.0.0-alpha46057, which it replaces)
 // and committed directly here rather than pinned via build.zig.zon like
 // the other DuckDB headers: it's a single self-contained ~3KB file (only
 // `#include <stdint.h>`, no other DuckDB headers), it isn't bundled in

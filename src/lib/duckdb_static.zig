@@ -4,22 +4,11 @@
 ///! provenance). See docs/v2-migration-plan.md's "Static linking"
 ///! section for the full investigation this came out of.
 ///!
-///! CAUTION — type-level only, not runtime-verified: this staged
-///! v2.0.0-alpha46057 build does not publish a compiled `libduckdb`
-///! shared/static library artifact anywhere (confirmed live: only CLI
-///! binaries and a header-only `libduckdb-src.zip` are published at
-///! artifacts.duckdb.org/staged/v2.0-cyanoptera/ — a `libduckdb-*.zip`
-///! guess there 302-redirects to a URL that then 404s). Actually calling
-///! `duckdb_register_static_extension` and opening a live database would
-///! need linking against a real DuckDB build — out of reach without
-///! building DuckDB from source at the pinned commit, which this
-///! project's whole architecture (ADR-0001: pure Zig, no C++ toolchain)
-///! deliberately avoids. What IS verified here, at compile time: the
-///! header vendors and translates cleanly, and this project's real v2
-///! entrypoint signature (`fn (*const ExtensionInput) callconv(.c)
-///! void`) casts cleanly into the descriptor's generic `entry_capi_v2`
-///! slot — the specific hypothesis docs/v2-migration-plan.md flagged as
-///! unverified.
+///! NOTE — this file is type-level only: it checks, at compile time, that the header vendors and translates cleanly and
+///! that this project's real v2 entrypoint signature (`fn (*const ExtensionInput) callconv(.c) void`) casts into the
+///! descriptor's generic `entry_capi_v2` slot. It was written when no compiled DuckDB was thought to be available for
+///! the staged alpha; there is one (`duckdb-static-libs-*`, pinned in build.zig.zon), and `src/static_embed_poc_main.zig`
+///! links it, registers the real extension and runs SQL against it. Read that file for the runtime proof.
 const std = @import("std");
 const c = @import("duckdb_c_static");
 const v2_types = @import("duckdb_v2_types");

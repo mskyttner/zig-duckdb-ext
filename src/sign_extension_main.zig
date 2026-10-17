@@ -7,7 +7,7 @@
 ///!
 ///! Usage: sign_extension <input.duckdb_extension> <private_key.pem> <output.duckdb_extension> [openssl_path]
 ///!
-///! Reproduces DuckDB's own v2.0.0-alpha46057 verification algorithm
+///! Reproduces DuckDB's own verification algorithm (the same in v2.0.0-alpha46057 and alpha48730)
 ///! exactly (`src/main/extension/extension_load.cpp`'s
 ///! `CheckExtensionSignature`/`ComputeFinalHash`, confirmed by reading
 ///! that source, not guessed): split the file minus its trailing 256-byte
