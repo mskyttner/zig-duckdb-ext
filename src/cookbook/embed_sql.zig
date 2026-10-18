@@ -38,23 +38,23 @@ const helpers = @import("v2_helpers");
 
 // --- errors ---------------------------------------------------------------------------------------------------------
 
-var error_text_buf: [1024]u8 = undefined;
+pub var error_text_buf: [1024]u8 = undefined;
 /// The text and code of the last failed call: DuckDB's reason, copied before the error info is destroyed.
-var error_text: []const u8 = "";
-var error_code: v2.DUCKDB_V2_ERROR = .ERROR_NONE;
+pub var error_text: []const u8 = "";
+pub var error_code: v2.DUCKDB_V2_ERROR = .ERROR_NONE;
 
 /// One call's error slot. Pass `c.err()` as the last argument and hand the return code to `ok`: on failure the slot
 /// holds an error info that this program owns, so `ok` reads it and destroys it.
-const Call = struct {
+pub const Call = struct {
     /// Null until a call fails. The slot is declared as a non-null handle in the bindings, hence the cast.
     slot: ?v2.duckdb_v2_error_info_handle = null,
 
-    fn err(self: *Call) *v2.duckdb_v2_error_info_handle {
+    pub fn err(self: *Call) *v2.duckdb_v2_error_info_handle {
         // SAFETY: `?*T` and `*T` have the same layout, with null as the extra value.
         return @ptrCast(&self.slot);
     }
 
-    fn ok(self: *Call, code: v2.DUCKDB_V2_ERROR) error{DuckDb}!void {
+    pub fn ok(self: *Call, code: v2.DUCKDB_V2_ERROR) error{DuckDb}!void {
         if (code == .ERROR_NONE) return;
         var info = self.slot.?;
         var reason: v2.duckdb_v2_str = undefined;
@@ -69,19 +69,19 @@ const Call = struct {
     }
 };
 
-fn view(s: v2.duckdb_v2_str) []const u8 {
+pub fn view(s: v2.duckdb_v2_str) []const u8 {
     const p = s.ptr orelse return "";
     return p[0..s.len];
 }
 
-fn typeName(id: v2.DUCKDB_V2_LOGICAL_TYPE_ID) []const u8 {
+pub fn typeName(id: v2.DUCKDB_V2_LOGICAL_TYPE_ID) []const u8 {
     const tag = std.enums.tagName(v2.DUCKDB_V2_LOGICAL_TYPE_ID, id) orelse return "UNKNOWN";
     return tag["LOGICAL_TYPE_ID_".len..];
 }
 
 // --- the database --------------------------------------------------------------------------------------------------
 
-const Session = struct {
+pub const Session = struct {
     env: v2.duckdb_v2_environment_handle,
     instance: v2.duckdb_v2_instance_handle,
     conn: v2.duckdb_v2_connection_handle,
@@ -91,12 +91,18 @@ const Session = struct {
 
     /// An in-memory database. The environment is the root every instance hangs from; it detects the same file
     /// being opened twice. The instance starts empty and unstarted: attach a database, then connect.
-    fn open() !Session {
+    pub fn open() !Session {
+        return openWithOptions(&.{}, &.{});
+    }
+
+    /// The same with startup options (names and values as SQL `SET` takes them): the only way to choose one that cannot
+    /// change once the instance exists, such as `allow_unsigned_extensions`.
+    pub fn openWithOptions(names: []const v2.duckdb_v2_str, values: []const v2.duckdb_v2_str) !Session {
         var s: Session = undefined;
         var c: Call = .{};
         try c.ok(v2.duckdb_v2_environment_create(&s.env, c.err()));
         errdefer _ = v2.duckdb_v2_environment_destroy(&s.env);
-        try c.ok(v2.duckdb_v2_instance_create(s.env, &s.instance, c.err()));
+        try c.ok(v2.duckdb_v2_instance_create_with_options(s.env, if (names.len > 0) names.ptr else null, if (values.len > 0) values.ptr else null, names.len, &s.instance, c.err()));
         errdefer _ = v2.duckdb_v2_instance_destroy(&s.instance);
         const memory = helpers.str(":memory:");
         try c.ok(v2.duckdb_v2_instance_attach(s.instance, null, &memory, null, true, c.err()));
@@ -107,7 +113,7 @@ const Session = struct {
         return s;
     }
 
-    fn close(self: *Session) void {
+    pub fn close(self: *Session) void {
         _ = v2.duckdb_v2_logical_type_destroy(&self.varchar);
         _ = v2.duckdb_v2_connection_destroy(&self.conn);
         _ = v2.duckdb_v2_instance_destroy(&self.instance);
@@ -115,7 +121,7 @@ const Session = struct {
     }
 
     /// A second connection to the same instance: its own session, the same catalog.
-    fn connect(self: *Session) !v2.duckdb_v2_connection_handle {
+    pub fn connect(self: *Session) !v2.duckdb_v2_connection_handle {
         var conn: v2.duckdb_v2_connection_handle = undefined;
         var c: Call = .{};
         try c.ok(v2.duckdb_v2_connection_create(self.instance, &conn, c.err()));
@@ -126,7 +132,7 @@ const Session = struct {
 // --- results -------------------------------------------------------------------------------------------------------
 
 /// A result read to the end.
-const Table = struct {
+pub const Table = struct {
     result_type: v2.DUCKDB_V2_RESULT_TYPE,
     columns: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
@@ -136,7 +142,7 @@ const Table = struct {
     changed_rows: u64 = 0,
 
     /// "a|b" per row, rows joined by ";".
-    fn flat(self: Table, arena: std.mem.Allocator) ![]const u8 {
+    pub fn flat(self: Table, arena: std.mem.Allocator) ![]const u8 {
         var out: std.ArrayList(u8) = .empty;
         for (self.rows, 0..) |row, i| {
             if (i > 0) try out.append(arena, ';');
@@ -151,7 +157,7 @@ const Table = struct {
 
 /// Reads a result: the schema first (known before anything runs), then, for a result with rows, chunk after chunk,
 /// and for any other result the side effects are applied by draining.
-fn collect(arena: std.mem.Allocator, s: *Session, result: *v2.duckdb_v2_result_handle) !Table {
+pub fn collect(arena: std.mem.Allocator, s: *Session, result: *v2.duckdb_v2_result_handle) !Table {
     defer _ = v2.duckdb_v2_result_destroy(result);
     var c: Call = .{};
     var table: Table = .{ .result_type = undefined };
@@ -206,7 +212,7 @@ fn collect(arena: std.mem.Allocator, s: *Session, result: *v2.duckdb_v2_result_h
 }
 
 /// One cell as text: any type, through DuckDB's cast to VARCHAR.
-fn cellText(arena: std.mem.Allocator, s: *Session, chunk: v2.duckdb_v2_data_chunk_handle, col: u64, row: u64) ![]const u8 {
+pub fn cellText(arena: std.mem.Allocator, s: *Session, chunk: v2.duckdb_v2_data_chunk_handle, col: u64, row: u64) ![]const u8 {
     var c: Call = .{};
     var vec: v2.duckdb_v2_vector_handle = undefined;
     try c.ok(v2.duckdb_v2_data_chunk_get_vector(chunk, col, &vec, c.err()));
@@ -226,7 +232,7 @@ fn cellText(arena: std.mem.Allocator, s: *Session, chunk: v2.duckdb_v2_data_chun
 
 /// Parses `sql` into its statements and runs each, in order, to the end. One live result per connection, so the
 /// next statement starts only when the previous result is destroyed.
-fn runAll(arena: std.mem.Allocator, s: *Session, sql: []const u8) ![]Table {
+pub fn runAll(arena: std.mem.Allocator, s: *Session, sql: []const u8) ![]Table {
     var c: Call = .{};
     const sql_z = try arena.dupeSentinel(u8, sql, 0);
     var iterator: v2.duckdb_v2_statement_iterator_handle = undefined;
@@ -249,23 +255,23 @@ fn runAll(arena: std.mem.Allocator, s: *Session, sql: []const u8) ![]Table {
 }
 
 /// One statement that returns rows, as "a|b;c|d".
-fn query(arena: std.mem.Allocator, s: *Session, sql: []const u8) ![]const u8 {
+pub fn query(arena: std.mem.Allocator, s: *Session, sql: []const u8) ![]const u8 {
     const tables = try runAll(arena, s, sql);
     return tables[tables.len - 1].flat(arena);
 }
 
 // --- checks --------------------------------------------------------------------------------------------------------
 
-var checks: usize = 0;
+pub var checks: usize = 0;
 
-fn expectEqual(what: []const u8, expected: []const u8, actual: []const u8) !void {
+pub fn expectEqual(what: []const u8, expected: []const u8, actual: []const u8) !void {
     checks += 1;
     if (std.mem.eql(u8, expected, actual)) return;
     std.debug.print("FAILED {s}\n  expected: {s}\n  actual:   {s}\n", .{ what, expected, actual });
     return error.Mismatch;
 }
 
-fn expectInt(what: []const u8, expected: u64, actual: u64) !void {
+pub fn expectInt(what: []const u8, expected: u64, actual: u64) !void {
     checks += 1;
     if (expected == actual) return;
     std.debug.print("FAILED {s}: expected {d}, got {d}\n", .{ what, expected, actual });
@@ -273,7 +279,7 @@ fn expectInt(what: []const u8, expected: u64, actual: u64) !void {
 }
 
 /// A call that must fail, with `fragment` in DuckDB's reason and the given code.
-fn expectFailure(what: []const u8, result: anytype, code: v2.DUCKDB_V2_ERROR, fragment: []const u8) !void {
+pub fn expectFailure(what: []const u8, result: anytype, code: v2.DUCKDB_V2_ERROR, fragment: []const u8) !void {
     checks += 1;
     if (result) |_| {
         std.debug.print("FAILED {s}: expected an error\n", .{what});

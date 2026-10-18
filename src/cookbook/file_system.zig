@@ -348,6 +348,7 @@ fn registerFunction(
     input: *const v2.duckdb_v2_extension_input,
     err: Err,
     name: []const u8,
+    docs: helpers.Docs,
     params: []const Param,
     bind: anytype,
     exec: anytype,
@@ -387,18 +388,31 @@ fn registerFunction(
     if (v2.duckdb_v2_table_function_set_bind_callback(function, bind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, docs, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the two functions. A failure leaves DuckDB's error info in the entrypoint's error slot.
 pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     const err = input.err orelse return error.MissingErrorSlot;
-    try registerFunction(input, err, "zig_cookbook_fs_read", &.{
+    try registerFunction(input, err, "zig_cookbook_fs_read", .{
+        .description = "The content of a file (BLOB) read through DuckDB's file system, so file: URLs, ~ and remote file systems work; all of it, or length bytes from start.",
+        .examples = &.{.{ .sql = "SELECT * FROM zig_cookbook_fs_write('/tmp/zig_cookbook_example.txt', 'hello world'); SELECT content::VARCHAR FROM zig_cookbook_fs_read('/tmp/zig_cookbook_example.txt', start := 6);" }},
+        .categories = &.{"file"},
+    }, &.{
         .{ .name = "path", .id = .LOGICAL_TYPE_ID_VARCHAR },
         .{ .name = "start", .id = .LOGICAL_TYPE_ID_BIGINT, .default = .{ .int = 0 } },
         .{ .name = "length", .id = .LOGICAL_TYPE_ID_BIGINT, .default = .{ .int = -1 } },
     }, &readBind, &readExec);
-    try registerFunction(input, err, "zig_cookbook_fs_write", &.{
+    try registerFunction(input, err, "zig_cookbook_fs_write", .{
+        .description = "Writes text to a file through DuckDB's file system: create (truncate), append, exclusive (fails if it exists) or at an offset (start); returns the bytes written, the size and the position.",
+        .examples = &.{.{ .sql = "SELECT * FROM zig_cookbook_fs_write('/tmp/zig_cookbook_example.txt', 'hello', mode := 'create');" }},
+        .categories = &.{"file"},
+    }, &.{
         .{ .name = "path", .id = .LOGICAL_TYPE_ID_VARCHAR },
         .{ .name = "content", .id = .LOGICAL_TYPE_ID_VARCHAR },
         .{ .name = "mode", .id = .LOGICAL_TYPE_ID_VARCHAR, .default = .{ .text = "create" } },

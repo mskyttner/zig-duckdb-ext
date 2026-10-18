@@ -52,7 +52,11 @@ const State = struct {
     }
 };
 
-const CtTokenize = comptime_table_v2.Function("ct_tokenize", State);
+const CtTokenize = comptime_table_v2.FunctionDocumented("ct_tokenize", State, &.{ "input", "delim" }, .{
+    .description = "Splits the input at every occurrence of the delimiter, one row per token with its 0-based position (the comptime version of zig_tokenize).",
+    .examples = &.{.{ .sql = "SELECT * FROM ct_tokenize('a,b,c', ',');" }},
+    .categories = &.{"string"},
+});
 
 pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     return CtTokenize.register(input);

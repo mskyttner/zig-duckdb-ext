@@ -219,6 +219,14 @@ fn registerParallelRange(input: *const v2.duckdb_v2_extension_input, err: Err) !
     if (v2.duckdb_v2_function_signature_add_parameter(sig, &threads_name, bigint, default_threads, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
 
     var boxed: v2.duckdb_v2_opaque = .{ .ptr = @constCast(&block_rows), .destroy = null, .equals = null };
+    var docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_docs(function, &docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(docs, .{
+        .description = "The integers 0 to n-1 in blocks of 1000, with the block and the worker thread that produced each; up to max_threads threads, rows in order.",
+        .examples = &.{.{ .sql = "SELECT count(*), max(block) FROM zig_cookbook_parallel_range(10500);" }},
+        .categories = &.{"numeric"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_table_function_set_user_data(function, &boxed, err) != .ERROR_NONE) return error.FailedToSetUserData;
     if (v2.duckdb_v2_table_function_set_bind_callback(function, &bind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;

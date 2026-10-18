@@ -36,6 +36,17 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
+      # The first fetch of a cold cache is where a network blip fails a job (a DNS failure took down one). Listing the steps
+      # runs the build script, which asks for the dependencies, lazy ones included, and fetches them: retried here, apart from
+      # the build, so that a failure of the build itself is not retried. (`zig build --fetch` would fetch only the eager ones.)
+      - name: Fetch the dependencies (with retries)
+        run: |
+          for attempt in 1 2 3; do
+            zig build -l > /dev/null && exit 0
+            echo "fetch failed (attempt $attempt)"; sleep 20
+          done
+          exit 1
+
       # The v1 suite needs a v1 CLI on the PATH: a tagged release, so the download never changes.
       - name: Install the DuckDB v1 CLI
         run: |

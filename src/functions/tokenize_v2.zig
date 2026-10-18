@@ -233,6 +233,18 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
         return error.FailedToSetExecCallback;
     }
 
+    // What duckdb_functions() shows besides the signature.
+    var docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_docs(function, &docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(docs, .{
+        .description = "Splits the input at every occurrence of the delimiter, one row per token with its 0-based position. Empty tokens are kept; an empty delimiter gives the whole input as one token.",
+        .examples = &.{
+            .{ .sql = "SELECT * FROM zig_tokenize('a,b,c', ',');" },
+            .{ .title = "A longer delimiter", .sql = "SELECT * FROM zig_tokenize('x::y::z', '::');" },
+        },
+        .categories = &.{"string"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }

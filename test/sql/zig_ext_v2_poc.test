@@ -1608,3 +1608,15 @@ query I
 SELECT count(zig_v2_first_word_ct(CASE WHEN i % 3 = 0 THEN NULL ELSE 'w x' END)) FROM generate_series(1, 200) t(i)
 ----
 134
+
+# The comptime aggregate framework takes docs (FunctionDocumented), and real argument names.
+query T
+SELECT array_to_string(parameters, ',') || ' | ' || description || ' | ' || array_to_string(examples, ' ; ') || ' | ' || array_to_string(categories, ',')
+FROM duckdb_functions() WHERE function_name = 'zig_v2_total_len_ct'
+----
+s | The total length in bytes of the strings s, a comptime aggregate with documentation. | SELECT zig_v2_total_len_ct(s) FROM (VALUES ('ab'), ('cde')) t(s); | aggregate
+
+query I
+SELECT zig_v2_total_len_ct(s) FROM (VALUES ('ab'), ('cde')) t(s)
+----
+5

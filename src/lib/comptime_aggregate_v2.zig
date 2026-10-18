@@ -123,7 +123,7 @@ fn duckdbV2TypeId(comptime T: type) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
 /// per-row arguments (Zig function parameters carry no names at the ABI
 /// level). Use `FunctionNamed` instead for real argument names.
 pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
-    return FunctionImpl(name, State, null);
+    return FunctionImpl(name, State, null, null);
 }
 
 /// Like `Function`, but `arg_names` supplies `State.update`'s per-row
@@ -131,10 +131,16 @@ pub fn Function(comptime name: [:0]const u8, comptime State: type) type {
 /// have exactly one name per `update` argument (not counting its leading
 /// `self` parameter).
 pub fn FunctionNamed(comptime name: [:0]const u8, comptime State: type, comptime arg_names: []const [:0]const u8) type {
-    return FunctionImpl(name, State, arg_names);
+    return FunctionImpl(name, State, arg_names, null);
 }
 
-fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_names: ?[]const [:0]const u8) type {
+/// Like `FunctionNamed`, and the function also gets a description, examples and categories, which
+/// `duckdb_functions()` reports. Needs an API with the function docs calls (`v2.0.0-alpha48730` and later).
+pub fn FunctionDocumented(comptime name: [:0]const u8, comptime State: type, comptime arg_names: []const [:0]const u8, comptime docs: helpers.Docs) type {
+    return FunctionImpl(name, State, arg_names, docs);
+}
+
+fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_names: ?[]const [:0]const u8, comptime docs: ?helpers.Docs) type {
     const update_info = @typeInfo(@TypeOf(State.update)).@"fn";
     // update_info.param_types[0] is *State (self); the rest are the
     // per-row arguments to expose as the SQL function's parameters.
@@ -243,6 +249,12 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime State: type, comptime arg_
                 if (v2.duckdb_v2_aggregate_function_set_destroy_callback(function, destroyCallback, &err) != .ERROR_NONE) {
                     return error.FailedToSetDestroyCallback;
                 }
+            }
+
+            if (docs) |d| {
+                var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+                if (v2.duckdb_v2_aggregate_function_get_docs(function, &function_docs, &err) != .ERROR_NONE) return error.FailedToGetDocs;
+                helpers.setDocs(function_docs, d, &err) catch return error.FailedToSetDocs;
             }
 
             if (v2.duckdb_v2_extension_register_aggregate_function(input.extension, function, &err) != .ERROR_NONE) {

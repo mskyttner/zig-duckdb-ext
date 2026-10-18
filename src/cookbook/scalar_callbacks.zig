@@ -189,6 +189,15 @@ fn registerNegate(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_scalar_function_set_resolve_types_callback(function, &negateResolve, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_scalar_function_set_bind_callback(function, &negateBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &negateExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, .{
+        .description = "x negated; the result type follows the argument's (BIGINT stays BIGINT, DOUBLE stays DOUBLE).",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_negate(5), zig_cookbook_negate(2.5::DOUBLE);" }},
+        .categories = &.{"numeric"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
@@ -274,6 +283,15 @@ fn registerRoundTo(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     try setReturn(sig, .LOGICAL_TYPE_ID_DOUBLE, input, err);
     if (v2.duckdb_v2_scalar_function_set_bind_callback(function, &roundBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &roundExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, .{
+        .description = "x rounded to a number of digits from 0 to 15, which must be a constant (bind reads it once).",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_round_to(3.14159, 2);" }},
+        .categories = &.{"numeric"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
@@ -327,6 +345,15 @@ fn registerTimes(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
         var boxed: v2.duckdb_v2_opaque = .{ .ptr = @constCast(&factors[i]), .destroy = null, .equals = null };
         if (v2.duckdb_v2_scalar_function_set_user_data(function, &boxed, err) != .ERROR_NONE) return error.FailedToSetUserData;
         if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &timesExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+        // What duckdb_functions() shows besides the signature.
+        var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+        if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+        helpers.setDocs(function_docs, .{
+            .description = std.fmt.comptimePrint("x times {d}: one exec callback for three functions, the factor being the function's user data.", .{factors[i]}),
+            .examples = &.{.{ .sql = std.fmt.comptimePrint("SELECT zig_cookbook_times{d}(14);", .{factors[i]}) }},
+            .categories = &.{"numeric"},
+        }, err) catch return error.FailedToSetDocs;
+
         if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
     }
 }
@@ -387,6 +414,15 @@ fn registerRowNumber(input: *const v2.duckdb_v2_extension_input, err: Err) !void
     if (v2.duckdb_v2_scalar_function_set_property(function, .FUNCTION_PROPERTY_STABILITY, .FUNCTION_PROPERTY_STABILITY_VOLATILE, err) != .ERROR_NONE) return error.FailedToSetProperty;
     if (v2.duckdb_v2_scalar_function_set_init_callback(function, &rowNumberInit, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &rowNumberExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, .{
+        .description = "A number for every row, counting up in each worker thread (per-thread init data); volatile, so never folded to a constant.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_row_number() FROM range(3);" }},
+        .categories = &.{"numeric"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 

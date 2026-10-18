@@ -190,6 +190,7 @@ fn registerScalar(
     input: *const v2.duckdb_v2_extension_input,
     err: Err,
     name: []const u8,
+    docs: helpers.Docs,
     arg_ids: []const v2.DUCKDB_V2_LOGICAL_TYPE_ID,
     return_id: v2.DUCKDB_V2_LOGICAL_TYPE_ID,
     exec: anytype,
@@ -214,6 +215,11 @@ fn registerScalar(
     defer _ = v2.duckdb_v2_logical_type_destroy(&ret);
     if (v2.duckdb_v2_function_signature_set_return_type(sig, ret, err) != .ERROR_NONE) return error.FailedToSetReturnType;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, docs, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
@@ -352,6 +358,15 @@ fn registerParts(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_table_function_set_bind_callback(function, &partsBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &partsInitGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &partsExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, .{
+        .description = "The parts of a qualified name (one to three), with each part as an identifier would be written.",
+        .examples = &.{.{ .sql = "SELECT * FROM zig_cookbook_qname_parts('main.\"a.b\".t');" }},
+        .categories = &.{"sql"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
@@ -359,10 +374,30 @@ fn registerParts(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
 pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     const err = input.err orelse return error.MissingErrorSlot;
     const varchar = v2.DUCKDB_V2_LOGICAL_TYPE_ID.LOGICAL_TYPE_ID_VARCHAR;
-    try registerScalar(input, err, "zig_cookbook_quote_ident", &.{varchar}, varchar, &Scalar(1, .varchar, quoteCompute).exec);
-    try registerScalar(input, err, "zig_cookbook_qname_render", &.{varchar}, varchar, &Scalar(1, .varchar, renderCompute).exec);
-    try registerScalar(input, err, "zig_cookbook_qname_equals", &.{ varchar, varchar }, .LOGICAL_TYPE_ID_BOOLEAN, &Scalar(2, .boolean, equalsCompute).exec);
-    try registerScalar(input, err, "zig_cookbook_qname_hash", &.{varchar}, .LOGICAL_TYPE_ID_UBIGINT, &Scalar(1, .ubigint, hashCompute).exec);
-    try registerScalar(input, err, "zig_cookbook_is_utf8", &.{.LOGICAL_TYPE_ID_BLOB}, .LOGICAL_TYPE_ID_BOOLEAN, &Scalar(1, .boolean, utf8Compute).exec);
+    try registerScalar(input, err, "zig_cookbook_quote_ident", .{
+        .description = "The name as DuckDB writes an identifier: quoted only when it has to be.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_quote_ident('select'), zig_cookbook_quote_ident('abc');" }},
+        .categories = &.{"sql"},
+    }, &.{varchar}, varchar, &Scalar(1, .varchar, quoteCompute).exec);
+    try registerScalar(input, err, "zig_cookbook_qname_render", .{
+        .description = "A qualified name parsed and written back as DuckDB writes it: each part quoted only when needed.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_qname_render('Main.\"a b\".t');" }},
+        .categories = &.{"sql"},
+    }, &.{varchar}, varchar, &Scalar(1, .varchar, renderCompute).exec);
+    try registerScalar(input, err, "zig_cookbook_qname_equals", .{
+        .description = "Whether two qualified names are the same: every part matches case-insensitively.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_qname_equals('A.B', 'a.\"b\"');" }},
+        .categories = &.{"sql"},
+    }, &.{ varchar, varchar }, .LOGICAL_TYPE_ID_BOOLEAN, &Scalar(2, .boolean, equalsCompute).exec);
+    try registerScalar(input, err, "zig_cookbook_qname_hash", .{
+        .description = "A hash of a qualified name, equal for names that compare equal; not stable across processes.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_qname_hash('a.b') = zig_cookbook_qname_hash('A.B');" }},
+        .categories = &.{"sql"},
+    }, &.{varchar}, .LOGICAL_TYPE_ID_UBIGINT, &Scalar(1, .ubigint, hashCompute).exec);
+    try registerScalar(input, err, "zig_cookbook_is_utf8", .{
+        .description = "Whether the bytes are valid UTF-8 (validate_utf8): a BLOB can hold what a VARCHAR cannot.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_is_utf8('h\\xc3\\xa9llo'::BLOB), zig_cookbook_is_utf8('\\xff'::BLOB);" }},
+        .categories = &.{"sql"},
+    }, &.{.LOGICAL_TYPE_ID_BLOB}, .LOGICAL_TYPE_ID_BOOLEAN, &Scalar(1, .boolean, utf8Compute).exec);
     try registerParts(input, err);
 }

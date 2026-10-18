@@ -743,14 +743,49 @@ FROM duckdb_functions() WHERE function_name = 'zig_hello'
 ----
 name | Returns a greeting for the name; NULL for NULL. | SELECT zig_hello('world'); | string
 
-# A function without docs has none.
-query T
-SELECT coalesce(description, 'none') || ' | ' || len(examples)::VARCHAR FROM duckdb_functions() WHERE function_name = 'zig_add_numbers'
-----
-none | 0
-
 # The examples run.
 query I
 SELECT ct_add_numbers(40, 2)
 ----
 42
+
+# Every function of the extension is documented, scalar and table alike (get_docs of each kind), and its parameters have
+# real names.
+query T
+SELECT function_name || ' ' || function_type || ' (' || array_to_string(parameters, ',') || ') ' || array_to_string(categories, ',')
+FROM duckdb_functions()
+WHERE function_name IN ('zig_hello', 'zig_add_numbers', 'ct_add_numbers', 'tp_bar', 'tp_line', 'tp_treemap', 'tp_snakemap', 'zig_tokenize', 'ct_tokenize')
+ORDER BY function_name
+----
+ct_add_numbers scalar (a,b) numeric
+ct_tokenize table (input,delim) string
+tp_bar scalar (value,on,off,width) visualization
+tp_line scalar (data,height) visualization
+tp_snakemap scalar (vals,labels,groups,width,height,no_color) visualization
+tp_treemap scalar (vals,labels,width,height) visualization
+zig_add_numbers scalar (a,b) numeric
+zig_hello scalar (name) string
+zig_tokenize table (input,delim) string
+
+query I
+SELECT count(*) FROM duckdb_functions()
+WHERE function_name IN ('zig_hello', 'zig_add_numbers', 'ct_add_numbers', 'tp_bar', 'tp_line', 'tp_treemap', 'tp_snakemap', 'zig_tokenize', 'ct_tokenize')
+  AND (description IS NULL OR len(examples) = 0)
+----
+0
+
+query T
+SELECT array_to_string(examples, ' ; ') FROM duckdb_functions() WHERE function_name = 'zig_tokenize'
+----
+SELECT * FROM zig_tokenize('a,b,c', ','); ; SELECT * FROM zig_tokenize('x::y::z', '::');
+
+# Examples are meant to run.
+query I
+SELECT count(*) FROM zig_tokenize('x::y::z', '::')
+----
+3
+
+query T
+SELECT tp_bar(0.25, "on" := '#', "off" := '-', width := 8)
+----
+##------

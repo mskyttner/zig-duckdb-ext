@@ -291,6 +291,19 @@ fn registerConversion(input: *const v2.duckdb_v2_extension_input, err: Err, name
     if (v2.duckdb_v2_function_signature_add_parameter(sig, &param, if (to_fahrenheit) celsius else double, null, .FUNCTION_PARAMETER_KIND_STANDARD, err) != .ERROR_NONE) return error.FailedToAddParameter;
     if (v2.duckdb_v2_function_signature_set_return_type(sig, if (to_fahrenheit) double else celsius, err) != .ERROR_NONE) return error.FailedToSetReturnType;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &convertExec(to_fahrenheit), err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, if (to_fahrenheit) .{
+        .description = "A temperature of the custom type zig_cookbook_celsius in degrees Fahrenheit, as DOUBLE; a string such as '100C' casts to the type.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_to_fahrenheit('100C');" }},
+        .categories = &.{"temperature"},
+    } else .{
+        .description = "A temperature in degrees Fahrenheit (DOUBLE) as the custom type zig_cookbook_celsius.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_from_fahrenheit(212.0)::DOUBLE;" }},
+        .categories = &.{"temperature"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 

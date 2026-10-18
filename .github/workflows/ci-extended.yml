@@ -4,13 +4,24 @@ name: CI (extended)
 # on demand, and when the files they cover change.
 
 on:
+  # On main too, so that main has the Zig cache these jobs restore: a cache saved on a pull request branch is not visible to
+  # another branch, and the first run of a new branch would fetch everything cold.
+  push:
+    branches: [main]
+    paths:
+      - "src/cookbook/**"
+      - "third_party/**"
+      - "tools/**"
+      - "build.zig"
+      - "build.zig.zon"
+      - "test/data/arrow/**"
+      - ".github/workflows/ci-extended.yml"
   schedule:
     - cron: "17 4 * * 1"
   workflow_dispatch:
   pull_request:
     paths:
-      - "src/cookbook/embed_sql.zig"
-      - "src/cookbook/arrow_*.zig"
+      - "src/cookbook/**"
       - "third_party/**"
       - "tools/**"
       - "build.zig"
@@ -38,7 +49,21 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+
+      # The first fetch of a cold cache is where a network blip fails a job (a DNS failure took down one). Listing the steps
+      # runs the build script, which asks for the dependencies, lazy ones included, and fetches them: retried here, apart from
+      # the build, so that a failure of the build itself is not retried. (`zig build --fetch` would fetch only the eager ones.)
+      - name: Fetch the dependencies (with retries)
+        run: |
+          for attempt in 1 2 3; do
+            zig build -l > /dev/null && exit 0
+            echo "fetch failed (attempt $attempt)"; sleep 20
+          done
+          exit 1
       - run: zig build cookbook-embed
+      # Instances, attach, the catalog, and the documentation audit of the two v2 extensions (every function described, with
+      # examples and categories, real parameter names, and every example runs).
+      - run: zig build cookbook-embed-instance
 
   # The release's v2 tree, without publishing: every target cross-compiles, and the Linux amd64 build installs from the
   # tree into the alpha CLI and works (release.yml does the same before it deploys).
@@ -49,6 +74,17 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+
+      # The first fetch of a cold cache is where a network blip fails a job (a DNS failure took down one). Listing the steps
+      # runs the build script, which asks for the dependencies, lazy ones included, and fetches them: retried here, apart from
+      # the build, so that a failure of the build itself is not retried. (`zig build --fetch` would fetch only the eager ones.)
+      - name: Fetch the dependencies (with retries)
+        run: |
+          for attempt in 1 2 3; do
+            zig build -l > /dev/null && exit 0
+            echo "fetch failed (attempt $attempt)"; sleep 20
+          done
+          exit 1
       - run: zig build dist-v2 -Doptimize=ReleaseSafe
       - run: zig build verify-dist-v2
 
@@ -62,6 +98,17 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+
+      # The first fetch of a cold cache is where a network blip fails a job (a DNS failure took down one). Listing the steps
+      # runs the build script, which asks for the dependencies, lazy ones included, and fetches them: retried here, apart from
+      # the build, so that a failure of the build itself is not retried. (`zig build --fetch` would fetch only the eager ones.)
+      - name: Fetch the dependencies (with retries)
+        run: |
+          for attempt in 1 2 3; do
+            zig build -l > /dev/null && exit 0
+            echo "fetch failed (attempt $attempt)"; sleep 20
+          done
+          exit 1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

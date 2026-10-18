@@ -203,7 +203,10 @@ fn sumFinalize(info: v2.duckdb_v2_aggregate_function_finalize_info_handle, err: 
 }
 
 fn registerSum(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
-    inline for (.{ .{ "zig_cookbook_agg_sum", 0 }, .{ "zig_cookbook_agg_sumsq", 1 } }) |spec| {
+    inline for (.{
+        .{ "zig_cookbook_agg_sum", 0, "The sum of x, in the type of x (BIGINT stays BIGINT, DOUBLE stays DOUBLE): one set of callbacks, with the power 1 as user data.", "SELECT zig_cookbook_agg_sum(i) FROM range(10) t(i);" },
+        .{ "zig_cookbook_agg_sumsq", 1, "The sum of the squares of x, in the type of x: the same callbacks as zig_cookbook_agg_sum, with the power 2 as user data.", "SELECT zig_cookbook_agg_sumsq(i) FROM range(10) t(i);" },
+    }) |spec| {
         var function: v2.duckdb_v2_aggregate_function_handle = undefined;
         if (v2.duckdb_v2_aggregate_function_create(helpers.factory(input.context, err) orelse return error.FailedToGetFactory, &function, err) != .ERROR_NONE) return error.FailedToCreateFunction;
         defer _ = v2.duckdb_v2_aggregate_function_destroy(&function);
@@ -224,6 +227,11 @@ fn registerSum(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
         if (v2.duckdb_v2_aggregate_function_set_user_data(function, &boxed, err) != .ERROR_NONE) return error.FailedToSetUserData;
         // The order of the rows does not change a sum, so `sum(x ORDER BY y)` need not sort first.
         if (v2.duckdb_v2_aggregate_function_set_property(function, .FUNCTION_PROPERTY_AGG_ORDER_DEPENDENT, .FUNCTION_PROPERTY_AGG_ORDER_DEPENDENT_NO, err) != .ERROR_NONE) return error.FailedToSetProperty;
+
+        // What duckdb_functions() shows: the aggregate's own docs, like a scalar's or a table function's.
+        var docs: v2.duckdb_v2_function_docs_handle = undefined;
+        if (v2.duckdb_v2_aggregate_function_get_docs(function, &docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+        helpers.setDocs(docs, .{ .description = spec[2], .examples = &.{.{ .sql = spec[3] }}, .categories = &.{"aggregate"} }, err) catch return error.FailedToSetDocs;
 
         if (v2.duckdb_v2_aggregate_function_set_bind_callback(function, &sumBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
         if (v2.duckdb_v2_aggregate_function_set_size_callback(function, &sumSize, err) != .ERROR_NONE) return error.FailedToSetCallback;
@@ -335,6 +343,14 @@ fn registerLast(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_aggregate_function_set_update_callback(function, &lastUpdate, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_aggregate_function_set_combine_callback(function, &lastCombine, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_aggregate_function_set_finalize_callback(function, &lastFinalize, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    var docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_aggregate_function_get_docs(function, &docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(docs, .{
+        .description = "The last non-NULL value of x in the order the rows arrive, so ORDER BY inside the call is kept.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_agg_last(i ORDER BY i) FROM range(10) t(i);" }},
+        .categories = &.{"aggregate"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_aggregate_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 

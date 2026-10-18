@@ -109,6 +109,15 @@ fn registerOption(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v2
     if (v2.duckdb_v2_function_signature_set_return_type(sig, varchar_type, err) != .ERROR_NONE) return error.FailedToSetReturnType;
 
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &optionExec, err) != .ERROR_NONE) return error.FailedToSetExecCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, .{
+        .description = "The current setting of a DuckDB option, as text: the connection's SET override, else the global value, else the default; aliases resolve.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_option('threads');" }},
+        .categories = &.{"configuration"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
@@ -282,6 +291,15 @@ fn registerOptions(input: *const v2.duckdb_v2_extension_input, err: *v2.duckdb_v
     if (v2.duckdb_v2_table_function_set_bind_callback(function, &bind, err) != .ERROR_NONE) return error.FailedToSetBindCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) return error.FailedToSetInitGlobalCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) return error.FailedToSetExecCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, .{
+        .description = "Every DuckDB option with its setting, default, description, default scope and aliases, read through the config.",
+        .examples = &.{.{ .sql = "SELECT name, setting, scope FROM zig_cookbook_options() WHERE name = 'threads';" }},
+        .categories = &.{"configuration"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
