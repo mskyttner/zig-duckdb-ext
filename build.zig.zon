@@ -32,8 +32,12 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
+        // An archive of the commit rather than `git+https://…#<commit>`: the same tree (the same hash, checked), but one HTTP
+        // download instead of the git protocol's capability discovery and pack fetch, whose failure mode in CI was a
+        // `NameServerFailure` on the first step. Not lazy, although only the v1 build and the header translation use it:
+        // build.zig imports its module (`@import("translate_c")`), and a build script cannot import a lazy dependency.
         .translate_c = .{
-            .url = "git+https://codeberg.org/ziglang/translate-c#875969d3493e245e01bf5d7860f792d8f3eb9ef5",
+            .url = "https://codeberg.org/ziglang/translate-c/archive/875969d3493e245e01bf5d7860f792d8f3eb9ef5.tar.gz",
             .hash = "translate_c-0.0.0-Q_BUWoFOBwAhz77Zd15HCVuhTKzdUKc94kezmCeJ7IC_",
         },
         // Pinned, content-hashed DuckDB v2.0 alpha CLI binaries — replaces
