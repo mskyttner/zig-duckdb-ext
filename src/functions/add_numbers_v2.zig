@@ -119,6 +119,15 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
         return error.FailedToSetExecCallback;
     }
 
+    // What duckdb_functions() shows besides the signature.
+    var docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(docs, .{
+        .description = "Adds two BIGINT values. NULL if either is NULL; a sum that does not fit is an error of the query.",
+        .examples = &.{.{ .sql = "SELECT zig_add_numbers(40, 2);" }},
+        .categories = &.{"numeric"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }

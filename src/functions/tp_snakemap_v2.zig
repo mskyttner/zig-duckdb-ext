@@ -198,6 +198,15 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
         return error.FailedToSetExecCallback;
     }
 
+    // What duckdb_functions() shows besides the signature.
+    var docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(docs, .{
+        .description = "Renders values, labels and groups as a text treemap whose cells snake back and forth through each group; no_color leaves out the ANSI colors.",
+        .examples = &.{.{ .sql = "SELECT tp_snakemap([10.0, 20.0, 30.0], ['a', 'b', 'c'], ['G1', 'G1', 'G2'], width := 40, height := 12, no_color := true);" }},
+        .categories = &.{"visualization"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }

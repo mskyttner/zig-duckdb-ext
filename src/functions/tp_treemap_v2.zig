@@ -177,6 +177,15 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
         return error.FailedToSetExecCallback;
     }
 
+    // What duckdb_functions() shows besides the signature.
+    var docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(docs, .{
+        .description = "Renders values and their labels as a text treemap, width by height characters.",
+        .examples = &.{.{ .sql = "SELECT tp_treemap([5.0, 10.0, 15.0], ['small', 'medium', 'large'], width := 40, height := 12);" }},
+        .categories = &.{"visualization"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) {
         return error.FailedToRegisterFunction;
     }
