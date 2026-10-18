@@ -388,14 +388,37 @@ const StaticEmbed = struct {
     libgcc_path: ?[]const u8,
 };
 
+/// The registration of each linked extension archive (or capability), generated: one `extern fn` per describe function,
+/// as the module `static_extensions` with `registerAll()`.
+fn addExtensionLoader(b: *std.Build, exe: *std.Build.Step.Compile, duckdb_static_mod: *std.Build.Module, extensions: []const []const u8) void {
+    // The registration of each extension, generated: one `extern fn` per describe function.
+    var loader: std.Io.Writer.Allocating = .init(b.allocator);
+    loader.writer.writeAll("const duckdb_static = @import(\"duckdb_static\");\nconst D = duckdb_static.ExtensionDescriptor;\n") catch @panic("OOM");
+    for (extensions) |ext| loader.writer.print("extern fn duckdb_extension_{s}_describe(*D) callconv(.c) i32;\n", .{ext}) catch @panic("OOM");
+    loader.writer.writeAll("\n/// Registers every extension linked into the program, in the order given to the build; a failing\n/// registration does not stop the rest. Returns 0 if all succeeded.\npub fn registerAll() i32 {\n    var result: i32 = 0;\n    _ = &result;\n") catch @panic("OOM");
+    for (extensions) |ext| loader.writer.print("    if (duckdb_static.registerStaticExtension(@ptrCast(&duckdb_extension_{s}_describe)) != 0) result = 1;\n", .{ext}) catch @panic("OOM");
+    loader.writer.writeAll("    return result;\n}\n") catch @panic("OOM");
+    const generated = b.addWriteFiles();
+    const loader_path = generated.add("static_extensions.zig", loader.written());
+    const loader_mod = b.createModule(.{ .root_source_file = loader_path });
+    loader_mod.addImport("duckdb_static", duckdb_static_mod);
+    exe.root_module.addImport("static_extensions", loader_mod);
+}
+
 /// The embedding recipe (src/cookbook/embed_sql.zig): a program that hosts DuckDB through the v2 API and runs SQL.
 fn addEmbedSqlExe(b: *std.Build, ctx: StaticEmbed) *std.Build.Step.Compile {
+    return addEmbedExe(b, ctx, "zig_cookbook_embed_sql", "src/cookbook/embed_sql.zig", &.{});
+}
+
+/// A recipe that hosts DuckDB: `source` against the static bindings, linked with the static libraries and `extensions`
+/// (capabilities such as "loadable_extensions", which `LOAD 'file.duckdb_extension'` needs).
+fn addEmbedExe(b: *std.Build, ctx: StaticEmbed, name: []const u8, source: []const u8, extensions: []const []const u8) *std.Build.Step.Compile {
     const exe = b.addExecutable(.{
-        .name = "zig_cookbook_embed_sql",
+        .name = name,
         .use_llvm = true,
         .use_lld = true,
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cookbook/embed_sql.zig"),
+            .root_source_file = b.path(source),
             .target = ctx.target,
             .optimize = ctx.optimize,
         }),
@@ -403,7 +426,8 @@ fn addEmbedSqlExe(b: *std.Build, ctx: StaticEmbed) *std.Build.Step.Compile {
     const graph = v2Graph(b, ctx.target, ctx.optimize, ctx.duckdb_v2_static_mod);
     exe.root_module.addImport("duckdb_v2_api", ctx.duckdb_v2_static_mod);
     exe.root_module.addImport("v2_helpers", graph.helpers);
-    linkDuckdbStatic(b, exe, ctx, &.{});
+    linkDuckdbStatic(b, exe, ctx, extensions);
+    if (extensions.len > 0) addExtensionLoader(b, exe, ctx.duckdb_static_mod, extensions);
     return exe;
 }
 
@@ -513,18 +537,7 @@ fn addStaticEmbedExe(b: *std.Build, ctx: StaticEmbed, exe_name: []const u8, exte
     }));
     linkDuckdbStatic(b, exe, ctx, extensions);
 
-    // The registration of each extension, generated: one `extern fn` per describe function.
-    var loader: std.Io.Writer.Allocating = .init(b.allocator);
-    loader.writer.writeAll("const duckdb_static = @import(\"duckdb_static\");\nconst D = duckdb_static.ExtensionDescriptor;\n") catch @panic("OOM");
-    for (extensions) |ext| loader.writer.print("extern fn duckdb_extension_{s}_describe(*D) callconv(.c) i32;\n", .{ext}) catch @panic("OOM");
-    loader.writer.writeAll("\n/// Registers every extension linked into the program, in the order given to the build; a failing\n/// registration does not stop the rest. Returns 0 if all succeeded.\npub fn registerAll() i32 {\n    var result: i32 = 0;\n    _ = &result;\n") catch @panic("OOM");
-    for (extensions) |ext| loader.writer.print("    if (duckdb_static.registerStaticExtension(@ptrCast(&duckdb_extension_{s}_describe)) != 0) result = 1;\n", .{ext}) catch @panic("OOM");
-    loader.writer.writeAll("    return result;\n}\n") catch @panic("OOM");
-    const generated = b.addWriteFiles();
-    const loader_path = generated.add("static_extensions.zig", loader.written());
-    const loader_mod = b.createModule(.{ .root_source_file = loader_path });
-    loader_mod.addImport("duckdb_static", duckdb_static_mod);
-    exe.root_module.addImport("static_extensions", loader_mod);
+    addExtensionLoader(b, exe, duckdb_static_mod, extensions);
     const names = b.addOptions();
     names.addOption([]const []const u8, "extensions", extensions);
     exe.root_module.addOptions("static_embed_options", names);
@@ -1177,6 +1190,15 @@ pub fn build(b: *std.Build) void {
         const run_embed_sql = b.addRunArtifact(embed_sql_exe);
         run_embed_sql.addCheck(.{ .expect_stderr_match = "embedded SQL checks passed" });
         b.step("cookbook-embed", "Build and run the embedding recipe: SQL through the v2 host API (needs the static libraries)").dependOn(&run_embed_sql.step);
+
+        // Instances, the catalog, and an audit of the documentation of the functions of the two v2 extensions, which
+        // the program loads from their files (hence the `loadable_extensions` capability and the extensions as arguments).
+        const embed_instance_exe = addEmbedExe(b, static_embed_ctx, "zig_cookbook_embed_instance", "src/cookbook/embed_instance.zig", &.{ "core_functions", "loadable_extensions" });
+        const run_embed_instance = b.addRunArtifact(embed_instance_exe);
+        run_embed_instance.addFileArg(ext_v2_output);
+        run_embed_instance.addFileArg(ext_cookbook_output);
+        run_embed_instance.addCheck(.{ .expect_stderr_match = "instance and catalog checks passed" });
+        b.step("cookbook-embed-instance", "Build and run the instance, catalog and documentation-audit recipe (needs the static libraries)").dependOn(&run_embed_instance.step);
 
         // The same program with several extension archives linked: the capabilities first, then the
         // extensions, `libduckdb_static.a` last.

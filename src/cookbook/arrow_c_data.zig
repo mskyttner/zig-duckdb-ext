@@ -629,6 +629,15 @@ fn registerLive(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_table_function_set_bind_callback(function, &liveBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &liveExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, .{
+        .description = "How many of the hand-built Arrow arrays of zig_cookbook_arrow_import are not released yet: 0 when every one was released exactly once.",
+        .examples = &.{.{ .sql = "SELECT * FROM zig_cookbook_arrow_live_arrays();" }},
+        .categories = &.{"arrow"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
@@ -636,6 +645,7 @@ fn registerFunction(
     input: *const v2.duckdb_v2_extension_input,
     err: Err,
     name: []const u8,
+    docs: helpers.Docs,
     second_parameter: ?[]const u8,
     bind: anytype,
     exec: anytype,
@@ -665,13 +675,29 @@ fn registerFunction(
     if (v2.duckdb_v2_table_function_set_bind_callback(function, bind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, docs, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 
 /// Registers the two functions. A failure leaves DuckDB's error info in the entrypoint's error slot.
 pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
     const err = input.err orelse return error.MissingErrorSlot;
-    try registerFunction(input, err, export_name, null, &exportBind, &exportExec);
-    try registerFunction(input, err, import_name, "copy", &importBind, &importExec);
+    try registerFunction(input, err, export_name, .{
+        .description = "n rows of (BIGINT, VARCHAR with NULLs, BOOLEAN) fed to an Arrow exporter in chunks, reported per exported ArrowArray and column: format, length, null count, buffer count and a checksum read from the raw buffers.",
+        .examples = &.{.{ .sql = "SELECT * FROM zig_cookbook_arrow_export(2500);" }},
+        .categories = &.{"arrow"},
+    }, null, &exportBind, &exportExec);
+    try registerFunction(input, err, import_name, .{
+        .description = "n rows (id, label, day) from an Arrow schema and array built by hand and imported zero-copy, or copied with copy := true.",
+        .examples = &.{
+            .{ .sql = "SELECT * FROM zig_cookbook_arrow_import(5);" },
+            .{ .title = "Copied instead of imported in place", .sql = "SELECT * FROM zig_cookbook_arrow_import(5, copy := true);" },
+        },
+        .categories = &.{"arrow"},
+    }, "copy", &importBind, &importExec);
     try registerLive(input, err);
 }

@@ -8,19 +8,19 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-609 functions (27 unstable) in 38 spec modules, from 69 scanned source files. Referenced by the extension: **337**; by the extension or the PoC: **347**.
+609 functions (27 unstable) in 38 spec modules, from 70 scanned source files. Referenced by the extension: **356**; by the extension or the PoC: **366**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
 | arena | 1 | 0 | 1 | 1 | 0 |
 | arrow | 21 | 0 | 14 | 14 | 7 |
-| catalog | 11 | 0 | 0 | 0 | 11 |
+| catalog | 11 | 0 | 11 | 11 | 0 |
 | configuration | 17 | 0 | 11 | 11 | 6 |
 | configuration/custom_option | 17 | 0 | 0 | 0 | 17 |
 | connection | 4 | 0 | 2 | 2 | 2 |
 | data_chunk/column_data_collection | 14 | 0 | 10 | 11 | 3 |
 | data_chunk | 8 | 1 | 5 | 5 | 3 |
-| environment | 3 | 0 | 2 | 2 | 1 |
+| environment | 3 | 0 | 3 | 3 | 0 |
 | error | 6 | 0 | 5 | 5 | 1 |
 | expression | 9 | 0 | 5 | 5 | 4 |
 | factory | 3 | 0 | 2 | 2 | 1 |
@@ -37,11 +37,11 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | function/signature | 2 | 0 | 2 | 2 | 0 |
 | function/table | 84 | 19 | 49 | 49 | 35 |
 | identifier | 1 | 0 | 1 | 1 | 0 |
-| instance | 10 | 0 | 4 | 4 | 6 |
+| instance | 10 | 0 | 10 | 10 | 0 |
 | logging/log_sink | 12 | 0 | 0 | 0 | 12 |
 | logging | 3 | 0 | 1 | 1 | 2 |
 | logical_type/custom_type | 6 | 0 | 5 | 5 | 1 |
-| logical_type | 13 | 1 | 6 | 6 | 7 |
+| logical_type | 13 | 1 | 7 | 7 | 6 |
 | prepared_statement | 4 | 0 | 4 | 4 | 0 |
 | qname | 8 | 0 | 8 | 8 | 0 |
 | query_result | 10 | 0 | 6 | 6 | 4 |
@@ -57,8 +57,6 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **arrow**: `prepared_statement_execute_arrow`, `arrow_result_step`, `arrow_result_wait`, `arrow_result_drain`, `arrow_result_get_result_type`, `arrow_result_get_statement_type`, `arrow_result_to_arrow_c_stream`
 
-**catalog**: `connection_describe_table`, `table_description_get_qname`, `table_description_is_readonly`, `table_description_get_column_count`, `table_description_get_column`, `table_description_destroy`, `column_description_get_name`, `column_description_get_type`, `column_description_has_default`, `column_description_has_generated`, `column_description_destroy`
-
 **configuration**: `instance_get_config`, `connection_get_config`, `config_set_option_value`, `config_set_option_text`, `config_get_option_by_name`, `option_supports_scope`
 
 **configuration/custom_option**: `custom_option_create`, `custom_option_set_name`, `custom_option_set_type`, `custom_option_set_default_value`, `custom_option_set_description`, `custom_option_set_default_scope`, `custom_option_set_supports_scope`, `custom_option_set_user_data`, `custom_option_set_update_callback`, `custom_option_update_get_user_data`, `custom_option_update_get_value`, `custom_option_update_set_value`, `custom_option_update_get_scope`, `custom_option_update_is_reset`, `connection_register_custom_option`, `extension_register_custom_option`, `custom_option_destroy`
@@ -68,8 +66,6 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 **data_chunk/column_data_collection**: `column_data_collection_reset`, `column_data_collection_clear`, `column_data_collection_combine`
 
 **data_chunk**: `data_chunk_copy`, `data_chunk_clear`, `data_chunk_get_vector_count`
-
-**environment**: `environment_get_instance_count`
 
 **error**: `error_info_get_raw_text`
 
@@ -95,15 +91,13 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **function/table**: `table_function_init_global_get_user_data`, `table_function_init_local_get_user_data`, `table_function_init_local_get_bind_data`, `table_function_init_local_get_column_count`, `table_function_init_local_get_column_index`, `table_function_progress_get_user_data`, `table_function_progress_get_global_state`, `table_function_filter_pushdown_get_user_data`, `table_function_filter_pushdown_get_column_count`, `table_function_partition_data_get_user_data`, `table_function_partition_data_get_bind_data`, `table_function_partition_data_get_global_state`, `table_function_partition_data_requires_batch_index`, `table_function_partitioning_get_user_data`, `table_function_partitioning_get_bind_data`, `connection_register_table_function`, `table_function_set_claim_batch_callback` *(u)*, `table_function_claim_batch_get_user_data` *(u)*, `table_function_claim_batch_get_bind_data` *(u)*, `table_function_claim_batch_get_global_state` *(u)*, `table_function_claim_batch_get_local_state` *(u)*, `table_function_claim_batch_set_claimed` *(u)*, `table_function_set_get_bind_info_callback` *(u)*, `table_function_get_bind_info_get_user_data` *(u)*, `table_function_get_bind_info_get_bind_data` *(u)*, `table_function_get_bind_info_set_column_identifier` *(u)*, `table_function_get_bind_info_set_option` *(u)*, `multi_file_function_create` *(u)*, `multi_file_function_set_name` *(u)*, `multi_file_function_set_single_file_function` *(u)*, `multi_file_function_set_reader_type` *(u)*, `multi_file_function_set_file_extension` *(u)*, `connection_register_multi_file_function` *(u)*, `extension_register_multi_file_function` *(u)*, `multi_file_function_destroy` *(u)*
 
-**instance**: `instance_create_with_options`, `instance_detach`, `instance_set_default`, `attach_options_create`, `attach_options_set`, `attach_options_destroy`
-
 **logging/log_sink**: `log_sink_create`, `log_sink_set_name`, `log_sink_set_user_data`, `log_sink_set_write_callback`, `log_sink_set_flush_callback`, `log_sink_write_info_get_connection_id`, `log_sink_write_info_get_transaction_id`, `log_sink_write_info_get_query_id`, `log_sink_write_info_get_thread_id`, `instance_register_log_sink`, `extension_register_log_sink`, `log_sink_destroy`
 
 **logging**: `instance_log`, `connection_log`
 
 **logical_type/custom_type**: `connection_register_custom_type`
 
-**logical_type**: `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_name`, `logical_type_to_text`, `logical_type_get_param_count`, `logical_type_get_param`, `factory_create_common_type` *(u)*
+**logical_type**: `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_name`, `logical_type_get_param_count`, `logical_type_get_param`, `factory_create_common_type` *(u)*
 
 **query_result**: `result_step`, `result_wait`, `result_render_box`, `result_get_statement_type`
 

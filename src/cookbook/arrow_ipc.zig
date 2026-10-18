@@ -937,6 +937,15 @@ fn registerRead(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
     if (v2.duckdb_v2_table_function_set_bind_callback(function, &readBind, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &readInitGlobal, err) != .ERROR_NONE) return error.FailedToSetCallback;
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &readExec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_table_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, .{
+        .description = "Reads an Arrow IPC stream or file, with the columns and types of the file's own schema (the reader of the zig_cookbook_arrow_ipc COPY format).",
+        .examples = &.{.{ .sql = "COPY (SELECT 42 AS id, 'duck' AS name) TO '/tmp/zig_cookbook_example.arrows' (FORMAT zig_cookbook_arrow_ipc); SELECT * FROM zig_cookbook_read_arrow('/tmp/zig_cookbook_example.arrows');" }},
+        .categories = &.{"arrow"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
 

@@ -124,5 +124,14 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
 
     if (v2.duckdb_v2_scalar_function_set_property(function, .FUNCTION_PROPERTY_STABILITY, .FUNCTION_PROPERTY_STABILITY_VOLATILE, err) != .ERROR_NONE) return error.FailedToSetProperty;
     if (v2.duckdb_v2_scalar_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) return error.FailedToSetCallback;
+    // What duckdb_functions() shows besides the signature.
+    var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
+    if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, err) != .ERROR_NONE) return error.FailedToGetDocs;
+    helpers.setDocs(function_docs, .{
+        .description = "Writes message to DuckDB's log at the level (trace, debug, info, warning, error or fatal) under log_type, and returns it; whether it is recorded depends on the log configuration.",
+        .examples = &.{.{ .sql = "SELECT zig_cookbook_log('info', 'my_extension', 'hello');" }},
+        .categories = &.{"debug"},
+    }, err) catch return error.FailedToSetDocs;
+
     if (v2.duckdb_v2_extension_register_scalar_function(input.extension, function, err) != .ERROR_NONE) return error.FailedToRegisterFunction;
 }
