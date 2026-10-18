@@ -151,8 +151,9 @@ Notes:
 
 - The example's **title is not shown**: `examples` holds only the example text. Where a title surfaces, if anywhere, I did
   not find.
-- Only the scalar framework has `FunctionDocumented` so far. Table and aggregate functions have the same `get_docs` call
-  (not tried), but their frameworks do not take docs yet.
+- `FunctionDocumented` exists in the scalar, table and aggregate frameworks. A hand-written function calls
+  `<kind>_function_get_docs` and `helpers.setDocs` before it registers; a **macro** has `macro_function_get_docs`
+  (`src/cookbook/macros.zig`, which also shows how to register a macro without running SQL).
 - A standalone spike in C against that alpha's headers is in `docs/spikes/function_docs_alpha48730.c`.
 
 ### Moving from the earlier alpha

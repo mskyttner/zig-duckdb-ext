@@ -904,7 +904,7 @@ const ArgMaxCt = comptime_aggregate_v2.Function("zig_v2_arg_max_ct", struct {
 
 /// Proves VARCHAR as an aggregate `update` argument through the generic
 /// framework path: total character count across a group's strings.
-const TotalLenCt = comptime_aggregate_v2.Function("zig_v2_total_len_ct", struct {
+const TotalLenCt = comptime_aggregate_v2.FunctionDocumented("zig_v2_total_len_ct", struct {
     len: i64,
     pub fn init() @This() {
         return .{ .len = 0 };
@@ -918,6 +918,10 @@ const TotalLenCt = comptime_aggregate_v2.Function("zig_v2_total_len_ct", struct 
     pub fn finalize(self: @This()) i64 {
         return self.len;
     }
+}, &.{"s"}, .{
+    .description = "The total length in bytes of the strings s, a comptime aggregate with documentation.",
+    .examples = &.{.{ .sql = "SELECT zig_v2_total_len_ct(s) FROM (VALUES ('ab'), ('cde')) t(s);" }},
+    .categories = &.{"aggregate"},
 });
 
 /// Proves VARCHAR as an aggregate `finalize` return type through the

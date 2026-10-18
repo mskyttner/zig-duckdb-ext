@@ -2007,3 +2007,429 @@ statement error
 SELECT zig_cookbook_clamp([1], 0, 1)
 ----
 Binder Error
+
+# ── filter, projection and partitioning pushdown: zig_cookbook_range (src/cookbook/table_pushdown.zig) ──────────────
+# zig_cookbook_range_stats() says what the scans did since its last reset: filters offered, filters accepted, rows
+# produced, the columns asked for (1 value, 2 bucket, 4 square), batches and partition values reported.
+
+query IIII
+SELECT count(*), sum(value), sum(bucket), sum(square) FROM zig_cookbook_range(5000)
+----
+5000
+12497500
+10000
+41654167500
+
+query I
+SELECT count(*) FROM (
+    SELECT * FROM zig_cookbook_range(5000) EXCEPT SELECT i, i // 1000, i * i FROM range(5000) t(i)
+)
+----
+0
+
+# Rows come in the order of the values although four threads produce them: the batch index lets a table take them
+# in order (rowid is the position in the table).
+statement ok
+CREATE TABLE range_in_order AS SELECT * FROM zig_cookbook_range(20000)
+
+query I
+SELECT bool_and(value = rowid) FROM range_in_order
+----
+true
+
+# -- filters ------------------------------------------------------------------------------------------------------
+
+# Two comparisons on different columns are both accepted: the scan produces 9000 .. 11999 and no more. The result is the
+# same as when the engine filters.
+query I
+SELECT count(*) FROM zig_cookbook_range_stats(reset := true)
+----
+1
+
+query I
+SELECT count(*) FROM zig_cookbook_range(20000) WHERE value >= 9000 AND bucket < 12
+----
+3000
+
+# (The columns the filters read are no longer read: count(*) needs only one.)
+query IIII
+SELECT filters_offered, filters_accepted, rows_produced, columns_mask FROM zig_cookbook_range_stats(reset := true)
+----
+2
+2
+3000
+1
+
+# A bucket is a block of values: bucket = 7 is 7000 .. 7999, and only those are produced.
+query III
+SELECT count(*), min(value), max(value) FROM zig_cookbook_range(1000000) WHERE bucket = 7
+----
+1000
+7000
+7999
+
+query III
+SELECT filters_offered, filters_accepted, rows_produced FROM zig_cookbook_range_stats(reset := true)
+----
+1
+1
+1000
+
+# The column on the other side: the optimizer turns 90 < value into value > 90, so the callback only sees the one form.
+query II
+SELECT count(*), min(value) FROM zig_cookbook_range(100) WHERE 90 < value
+----
+9
+91
+
+query III
+SELECT filters_offered, filters_accepted, rows_produced FROM zig_cookbook_range_stats(reset := true)
+----
+1
+1
+9
+
+# Every comparison, against a oracle that does not push anything down (rows from range()).
+query I
+SELECT count(*) FROM (
+    SELECT i FROM range(3000) t(i) WHERE i = 1234 OR (i < 17) OR (i <= 2100 AND i > 2000) OR i >= 2990
+    EXCEPT
+    SELECT value FROM zig_cookbook_range(3000) WHERE value = 1234 OR (value < 17) OR (value <= 2100 AND value > 2000) OR value >= 2990
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+    SELECT * FROM zig_cookbook_range(5000) WHERE bucket <= 1 AND value > 1500
+    EXCEPT
+    SELECT i, i // 1000, i * i FROM range(5000) t(i) WHERE i // 1000 <= 1 AND i > 1500
+)
+----
+0
+
+query IIII
+SELECT count(*), min(value), max(value), sum(bucket) FROM zig_cookbook_range(5000) WHERE bucket <= 1 AND value > 1500
+----
+499
+1501
+1999
+499
+
+query I
+SELECT count(*) FROM zig_cookbook_range_stats(reset := true)
+----
+1
+
+# What it does not answer is left to the engine, which still returns the right rows: a predicate on square, on an
+# expression, an OR, IN. Nothing is accepted, and the whole range is produced.
+query I
+SELECT count(*) FROM zig_cookbook_range(10000) WHERE square = 49
+----
+1
+
+query III
+SELECT filters_offered, filters_accepted, rows_produced FROM zig_cookbook_range_stats(reset := true)
+----
+1
+0
+10000
+
+query I
+SELECT count(*) FROM zig_cookbook_range(10000) WHERE value % 2 = 0 OR value IN (1, 3) OR value = 9999
+----
+5003
+
+query III
+SELECT filters_offered > 0, filters_accepted, rows_produced FROM zig_cookbook_range_stats(reset := true)
+----
+true
+0
+10000
+
+# One accepted, one not: the engine applies the rest above the scan.
+query I
+SELECT count(*) FROM zig_cookbook_range(10000) WHERE value % 2 = 0 AND bucket = 2
+----
+500
+
+query III
+SELECT filters_offered, filters_accepted, rows_produced FROM zig_cookbook_range_stats(reset := true)
+----
+2
+1
+1000
+
+# BETWEEN reaches the callback as one predicate whose bounds' inclusion the API does not tell, so it is not accepted
+# (an exact promise is not possible). The result is right all the same.
+query III
+SELECT count(*), min(value), max(value) FROM zig_cookbook_range(100) WHERE value BETWEEN 10 AND 20
+----
+11
+10
+20
+
+query II
+SELECT filters_accepted, rows_produced FROM zig_cookbook_range_stats(reset := true)
+----
+0
+100
+
+# Constants that are not BIGINT make the comparison one of another type (the column is cast), so nothing is accepted
+# and nothing is truncated: 5.5 is not 5, and 2^64 is not 0.
+query I
+SELECT count(*) FROM zig_cookbook_range(100) WHERE value = 5.5
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_range(100) WHERE value < 5.5
+----
+6
+
+query I
+SELECT count(*) FROM zig_cookbook_range(100) WHERE value = 18446744073709551616::HUGEINT
+----
+0
+
+query II
+SELECT filters_accepted, rows_produced FROM zig_cookbook_range_stats(reset := true)
+----
+0
+300
+
+# The bounds of BIGINT, and bounds that leave nothing.
+query I
+SELECT count(*) FROM zig_cookbook_range(100) WHERE value < 9223372036854775807
+----
+100
+
+query I
+SELECT count(*) FROM zig_cookbook_range(100) WHERE bucket > 9223372036854775807
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_range(100) WHERE value = -3 OR value < 0
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_range(100) WHERE value < -9223372036854775807 - 1
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_range(100) WHERE value >= 50 AND bucket = 0 AND value < 50
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_range(0)
+----
+0
+
+# Each scan has its own range: the same function twice in one statement.
+query I
+SELECT count(*) FROM zig_cookbook_range_stats(reset := true)
+----
+1
+
+query I
+SELECT count(*) FROM zig_cookbook_range(3000) a JOIN zig_cookbook_range(3000) b USING (value) WHERE a.bucket = 1 AND b.value >= 1500
+----
+500
+
+query III
+SELECT filters_accepted >= 2, rows_produced <= 3500, rows_produced >= 1500 FROM zig_cookbook_range_stats(reset := true)
+----
+true
+true
+true
+
+# -- projection ---------------------------------------------------------------------------------------------------
+
+# The scan is asked for the columns the query uses, and fills only those.
+query I
+SELECT sum(value) FROM zig_cookbook_range(10000)
+----
+49995000
+
+query I
+SELECT columns_mask FROM zig_cookbook_range_stats(reset := true)
+----
+1
+
+query I
+SELECT count(DISTINCT bucket) FROM zig_cookbook_range(10000)
+----
+10
+
+query I
+SELECT columns_mask FROM zig_cookbook_range_stats(reset := true)
+----
+2
+
+query I
+SELECT sum(square) FROM zig_cookbook_range(10000)
+----
+333283335000
+
+query I
+SELECT columns_mask FROM zig_cookbook_range_stats(reset := true)
+----
+4
+
+# In another order than declared, and a column that only a filter reads is still read.
+query II
+SELECT square, value FROM zig_cookbook_range(5) ORDER BY value
+----
+0
+0
+1
+1
+4
+2
+9
+3
+16
+4
+
+query I
+SELECT columns_mask FROM zig_cookbook_range_stats(reset := true)
+----
+5
+
+query T
+SELECT string_agg(value::VARCHAR, ',' ORDER BY value) FROM zig_cookbook_range(5000) WHERE square = 4 OR square = 16
+----
+2,4
+
+query I
+SELECT columns_mask FROM zig_cookbook_range_stats(reset := true)
+----
+5
+
+query I
+SELECT sum(value + bucket + square) FROM zig_cookbook_range(10000)
+----
+333333375000
+
+query I
+SELECT columns_mask FROM zig_cookbook_range_stats(reset := true)
+----
+7
+
+# -- partitioning -------------------------------------------------------------------------------------------------------
+
+# GROUP BY bucket: a partition has one bucket, so the aggregate runs per partition, and the scan reports each batch's
+# bucket together with its batch index.
+query II
+SELECT bucket, count(*) FROM zig_cookbook_range(5500) GROUP BY bucket ORDER BY bucket
+----
+0
+1000
+1
+1000
+2
+1000
+3
+1000
+4
+1000
+5
+500
+
+query III
+SELECT batches >= 6, partition_values >= 6, partition_values = batches FROM zig_cookbook_range_stats(reset := true)
+----
+true
+true
+true
+
+# The same grouping with the filter pushed too, the result against range().
+query I
+SELECT count(*) FROM (
+    SELECT bucket, count(*) AS c, sum(value) AS s FROM zig_cookbook_range(20000) WHERE bucket >= 3 AND value < 12345 GROUP BY bucket
+    EXCEPT
+    SELECT i // 1000, count(*), sum(i) FROM range(20000) t(i) WHERE i // 1000 >= 3 AND i < 12345 GROUP BY i // 1000
+)
+----
+0
+
+query I
+SELECT count(*) FROM zig_cookbook_range_stats(reset := true)
+----
+1
+
+# Other groupings are not claimed: a hash aggregate, no partition values.
+query II
+SELECT value % 3, count(*) FROM zig_cookbook_range(9000) GROUP BY value % 3 ORDER BY 1
+----
+0
+3000
+1
+3000
+2
+3000
+
+query I
+SELECT partition_values FROM zig_cookbook_range_stats(reset := true)
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT bucket, value, count(*) FROM zig_cookbook_range(3000) GROUP BY bucket, value)
+----
+3000
+
+query I
+SELECT partition_values FROM zig_cookbook_range_stats(reset := true)
+----
+0
+
+# -- the catalog ---------------------------------------------------------------------------------------------------------
+
+query T
+SELECT function_name || ' ' || function_type || ' (' || array_to_string(parameters, ',') || ') ' || description
+FROM duckdb_functions() WHERE function_name IN ('zig_cookbook_range', 'zig_cookbook_range_stats') ORDER BY function_name
+----
+zig_cookbook_range table (n) The integers 0 to n-1 as value, with bucket (value // 1000) and square. Takes filters on value and bucket, and the columns a query uses, and partitions by bucket.
+zig_cookbook_range_stats table (reset) What the scans of zig_cookbook_range did since the last reset: filters offered and accepted, rows produced, the columns asked for (1 value, 2 bucket, 4 square), batches and partition values reported.
+
+statement error
+SELECT * FROM zig_cookbook_range(-1)
+----
+n must not be negative, got -1
+
+# ── documentation of table and aggregate functions (get_docs of each kind) ────────────────────────────────────────────
+query T
+SELECT function_name || ' ' || function_type || ' | ' || array_to_string(categories, ',') || ' | ' || array_to_string(examples, ' ; ')
+FROM duckdb_functions()
+WHERE function_name IN ('zig_cookbook_agg_sum', 'zig_cookbook_agg_sumsq', 'zig_cookbook_agg_last', 'zig_cookbook_parallel_range')
+ORDER BY function_name
+----
+zig_cookbook_agg_last aggregate | aggregate | SELECT zig_cookbook_agg_last(i ORDER BY i) FROM range(10) t(i);
+zig_cookbook_agg_sum aggregate | aggregate | SELECT zig_cookbook_agg_sum(i) FROM range(10) t(i);
+zig_cookbook_agg_sumsq aggregate | aggregate | SELECT zig_cookbook_agg_sumsq(i) FROM range(10) t(i);
+zig_cookbook_parallel_range table | numeric | SELECT count(*), max(block) FROM zig_cookbook_parallel_range(10500);
+
+query I
+SELECT count(*) FROM duckdb_functions()
+WHERE function_name IN ('zig_cookbook_agg_sum', 'zig_cookbook_agg_sumsq', 'zig_cookbook_agg_last', 'zig_cookbook_parallel_range') AND description IS NULL
+----
+0
+
+# The examples run.
+query III
+SELECT zig_cookbook_agg_sum(i), zig_cookbook_agg_sumsq(i), zig_cookbook_agg_last(i ORDER BY i) FROM range(10) t(i)
+----
+45
+285
+9
+
+query II
+SELECT count(*), max(block) FROM zig_cookbook_parallel_range(10500)
+----
+10500
+10

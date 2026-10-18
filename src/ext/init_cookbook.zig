@@ -16,6 +16,7 @@ const file_system = @import("../cookbook/file_system.zig");
 const logging = @import("../cookbook/logging.zig");
 const names = @import("../cookbook/names.zig");
 const macros = @import("../cookbook/macros.zig");
+const table_pushdown = @import("../cookbook/table_pushdown.zig");
 
 export fn zig_ext_cookbook_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
     if (!helpers.init(input, "v2.0.0")) return;
@@ -32,4 +33,5 @@ export fn zig_ext_cookbook_init_c_api_v2(input: *const v2.duckdb_v2_extension_in
     logging.register(input) catch return;
     names.register(input) catch return;
     macros.register(input) catch return;
+    table_pushdown.register(input) catch return;
 }
