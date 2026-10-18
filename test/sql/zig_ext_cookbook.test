@@ -1925,3 +1925,85 @@ true
 true
 true
 false
+
+# Macros registered from the extension (src/cookbook/macros.zig): SQL text with parameters, expanded where it is called.
+query IIII
+SELECT zig_cookbook_clamp(1.7), zig_cookbook_clamp(-3), zig_cookbook_clamp(15, lo := 10, hi := 12), zig_cookbook_clamp(7, 5, 6)
+----
+1.0
+0
+12
+6
+
+# Any type that least and greatest take, and a column as the argument.
+query T
+SELECT zig_cookbook_clamp('b', 'a', 'c') || zig_cookbook_clamp('z', 'a', 'c') || zig_cookbook_clamp('0', 'a', 'c')
+----
+bca
+
+query T
+SELECT string_agg(zig_cookbook_clamp(i - 5, lo := -2, hi := 2)::VARCHAR, ',' ORDER BY i) FROM range(11) t(i)
+----
+-2,-2,-2,-2,-1,0,1,2,2,2,2
+
+query T
+SELECT zig_cookbook_clamp(DATE '2030-01-01', DATE '2020-01-01', DATE '2025-01-01')
+----
+2025-01-01
+
+# Defaults and names: the table macro.
+query II
+SELECT * FROM zig_cookbook_squares()
+----
+0
+0
+1
+1
+2
+4
+3
+9
+4
+16
+
+query I
+SELECT sum(square) FROM zig_cookbook_squares(n := 100)
+----
+328350
+
+query I
+SELECT max(square) FROM zig_cookbook_squares(10) WHERE i < 8
+----
+49
+
+# In the catalog: macros, with their parameters and bodies (the body is the parsed SQL, printed back), and the docs.
+query T
+SELECT replace(function_name || ' ' || function_type || ' (' || array_to_string(parameters, ',') || ') ' || macro_definition, '"', '#')
+FROM duckdb_functions() WHERE function_name IN ('zig_cookbook_clamp', 'zig_cookbook_squares') ORDER BY function_name
+----
+zig_cookbook_clamp macro (x,lo,hi) least(greatest(x, lo), hi)
+zig_cookbook_squares table_macro (n) SELECT i, (i * i) AS square FROM #range#(n) AS t(i)
+
+query T
+SELECT function_name || ' | ' || description || ' | ' || array_to_string(examples, ' ; ') || ' | ' || array_to_string(categories, ',')
+FROM duckdb_functions() WHERE function_name IN ('zig_cookbook_clamp', 'zig_cookbook_squares') ORDER BY function_name
+----
+zig_cookbook_clamp | x limited to the range from lo to hi (0 and 1 unless given), of any type that least and greatest take. | SELECT zig_cookbook_clamp(1.7); ; SELECT zig_cookbook_clamp(15, lo := 10, hi := 12); | numeric
+zig_cookbook_squares | The first n integers (5 unless given) from 0, with their squares. | SELECT * FROM zig_cookbook_squares(); ; SELECT sum(square) FROM zig_cookbook_squares(n := 100); | numeric
+
+# A call that does not fit lists the candidate with its defaults.
+statement error
+SELECT zig_cookbook_clamp()
+----
+zig_cookbook_clamp(x, lo := CAST(0 AS BIGINT), hi := CAST(1 AS BIGINT))
+
+statement error
+SELECT zig_cookbook_clamp(1, nope := 2)
+----
+does not support the supplied arguments
+
+# The body is resolved when the macro is called, as the parameters are: a wrong type is the error of the call.
+statement error
+SELECT zig_cookbook_clamp([1], 0, 1)
+----
+Binder Error
