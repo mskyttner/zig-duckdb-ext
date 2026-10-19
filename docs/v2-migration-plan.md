@@ -4022,3 +4022,87 @@ the real `v2.0.0`, and reconsidering (separately, per ADR-0004 §5)
 whether an actual community-extensions submission is worth pursuing now
 that both the metadata schema (`description.yml`, already adopted here)
 and a firm release date exist.
+
+## Backfill: function docs, two more cookbook recipes, and CI resilience (done, 2026-10-18)
+
+Five commits (`a29fc3a`, `f9587db`, `18707a0`, `f94de59`, `7c4e9c1`),
+merged into `main` via PR #4 (`docs-macro-pushdown`), landed without an
+entry here at the time — picked up and recorded now rather than left
+as a gap in this doc's own "every substantive change gets logged"
+convention.
+
+**Function docs for all nine `zig_ext_v2` functions** (`a29fc3a`). v2's
+docs API (`duckdb_v2_scalar_function_get_docs`/`_table_function_get_docs`/
+`_aggregate_function_get_docs`, confirmed usable as of the now-pinned
+`v2.0.0-alpha48730`) was already wired into the scalar comptime
+framework; this commit added the same `get_docs`/`helpers.setDocs`
+call to `comptime_table_v2.zig`'s and `comptime_aggregate_v2.zig`'s
+registration paths, each behind a new `FunctionDocumented(name, State,
+arg_names, docs)` entry point alongside the existing `Function`/
+`FunctionNamed` (which stay docs-free, since not every caller has
+description/examples/categories to hand). All nine real functions
+(`add_numbers_v2`, `ct_tokenize_v2`, `tokenize_v2`, `tp_bar_v2`,
+`tp_line_v2`, `tp_snakemap_v2`, `tp_treemap_v2`, plus the table/aggregate
+ones) switched to it with real text; `test/sql/zig_ext_v2.test` gained
+assertions that `duckdb_functions()` now reports non-null docs for
+every one of them.
+
+**Macros cookbook** (`f9587db`): `src/cookbook/macros.zig`, a new
+recipe for registering a SQL macro from an extension via the v2 C API
+(`function/macro`: `macro_function_create`/`_set_name`/`_set_body`,
+`extension_register_macro_function`) — a scalar macro
+(`zig_cookbook_clamp(x, lo := 0, hi := 1)`) and a table macro
+(`zig_cookbook_squares(n := 5)`). Its own doc comment states plainly
+what this replaces: v1 extensions had no macro-registration API at
+all, so named parameters/defaults needed the "register a hidden
+function, then run `CREATE OR REPLACE MACRO` over it at load time"
+workaround `functions/tp_bar.zig` already uses — v2 can register a
+real macro directly, with named/optional parameters and no SQL
+execution required at load time.
+
+**Table-function pushdown/partitioning cookbook** (`18707a0`): a new
+548-line `src/cookbook/table_pushdown.zig` — `zig_cookbook_range(n) ->
+(value, bucket, square)` demonstrating all three of filter pushdown
+(`set_filter_pushdown_callback`, narrowing which rows get produced —
+e.g. `bucket = 7` narrows to `value` in `[7000, 8000)`, a predicate on
+one column answered through another), projection pushdown
+(`set_projection_pushdown`, skipping computing columns the query
+doesn't read), and partitioning (`set_partitioning_callback` +
+`set_partition_data_callback`, letting a `GROUP BY` on `bucket` run as
+a `PARTITIONED_AGGREGATE` with no hash table, since a scan block
+provably lies inside one bucket). A companion
+`zig_cookbook_range_stats()` exposes from SQL what was offered,
+accepted, and produced — the mechanism the 426-block test addition
+actually exercises each promise against, not just checks the function
+runs.
+
+**Instances/attach/catalog cookbook, from a host** (`f94de59`): a new
+463-line `src/cookbook/embed_instance.zig` (`zig build
+cookbook-embed-instance`) — the host-side counterpart to
+`embed_sql.zig`, since an extension is only ever handed a context, never
+an instance/connection/environment directly; a host creates and manages
+those itself (`environment_get_instance_count`,
+`instance_create_with_options`, `instance_attach`/`_detach`/
+`_set_default`, `connection_describe_table`). Also ships the
+**documentation-coverage audit** this round of work was building toward:
+walks `duckdb_functions()` for every function of a live instance,
+reports per-extension counts of how many have descriptions/examples/
+categories/real parameter names (not `col0`/`a0`), asserts both of this
+project's own v2 extensions are now fully documented, and **runs every
+one of their doc examples for real** rather than just checking the text
+exists.
+
+**CI resilience** (`7c4e9c1`): pins `translate_c`'s dependency to a
+GitHub archive-tarball URL alongside its existing `git+...` pin (same
+content hash either way, confirmed — one HTTP fetch instead of the git
+protocol; has to stay the eager pin specifically, since `build.zig`
+imports its module directly, which a lazy dependency can't satisfy from
+inside a build script). Wraps the dependency-fetch step
+(`zig build -l`, which forces every dependency to resolve, lazy ones
+included — not `zig build --fetch`, which only fetches the eager ones)
+in a 3-attempt retry with a 20s backoff in every CI job, isolating
+transient network failures (the stated trigger: a DNS blip had taken a
+job down) from genuine build failures, which still fail immediately
+with no retry. Also makes `ci-extended.yml` run on pushes to `main`,
+not just PRs/schedule, so `main` itself keeps the shared Zig cache warm
+for whatever branch restores from it next.
