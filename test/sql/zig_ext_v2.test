@@ -789,3 +789,23 @@ query T
 SELECT tp_bar(0.25, "on" := '#', "off" := '-', width := 8)
 ----
 ##------
+
+# ── row-wise (tab-separated) query results ──────────────────────────────
+# Real DuckDB .test files commonly use one tab-separated line per ROW,
+# not one value per line (confirmed against DuckDB's own suite) — the
+# runner must support both, since a file might mix them.
+
+query II
+SELECT 1, 2 UNION ALL SELECT 3, 4 ORDER BY 1
+----
+1	2
+3	4
+
+# Row-wise and value-wise mixed within the same expected block — one
+# row tab-separated, the other as two separate value-per-line entries.
+query II
+SELECT ct_add_numbers(1, 2), ct_add_numbers(3, 4) UNION ALL SELECT ct_add_numbers(5, 6), ct_add_numbers(7, 8) ORDER BY 1
+----
+3	7
+11
+15

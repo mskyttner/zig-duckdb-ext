@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed. Nothing in this document is implemented. The observations come from writing about 900 test blocks (four suites) against the
+Proposed, with one item done (row-wise result parsing — see "Format compatibility with the real tool" below). The
+rest of this document is unimplemented. The observations come from writing about 900 test blocks (four suites) against the
 runner (`src/sqllogictest_main.zig`, 418 lines); the proposals are ordered by how much each would have saved.
 
 ## Context
@@ -64,6 +65,49 @@ In order; the first five are about a day together and remove most of the frictio
 11. **Reusable by authors.** With ADR-0005 the runner is part of the package (`addSqlLogicTests`); the directives it supports and
     those it does not (`skipif`, `onlyif`, `halt`, `loop`, regular-expression results) belong in the package README, with the
     list of differences from DuckDB's own runner, since an author will know the format from that one.
+
+## Format compatibility with the real tool
+
+Prompted by a goal the proposals above didn't optimize for: staying close to the format and behavior of DuckDB's
+own sqllogictest tooling, not just to what saved the most time writing this project's own four suites, so that a
+`.test` file could plausibly move between the two without rewriting. Checked against the real source, not the
+docs page alone (the docs page undersells this, as the next paragraph found) — `test/sqlite/sqllogic_parser.cpp`,
+the real DuckDB C++ parser, and real files from DuckDB's own suite.
+
+**The real top-level directive set is far larger than the 4 this runner parses**
+(`require`/`statement`/`query`/the marker-only form of `require`): `skipif`, `onlyif`, `statement`, `query`,
+`hash-threshold`, `halt`, `mode`, `set`, `reset`, `loop`, `concurrentloop`, `foreach`, `concurrentforeach`,
+`endloop`, `require`, `require-env`, `require-env-not`, `test-env`, `load`, `restart`, `reconnect`, `sleep`,
+`unzip`, `tags`, `continue`, `include` — 26 total, confirmed by reading the parser's own token switch, not
+guessed from the docs.
+
+**Done: row-wise (tab-separated) result parsing.** A real file from DuckDB's own suite
+(`test/sql/function/string/test_substring.test`) has `query TT` / `----` / `(empty)<TAB>(empty)` — one
+tab-separated line per ROW, not one value per line. This runner's own doc comment had claimed value-per-line was
+"the true sqllogictest convention" — wrong, or at least incomplete: row-wise is the dominant form in DuckDB's own
+suite, and the real format supports both (even mixed within one query's expected block). `appendExpectedLine`
+now distinguishes them per line, by whether the line contains a tab (confirmed no existing `.test` file in this
+project has a literal tab in an expected value, so the two forms can't collide) — folded into proposal 7 above
+rather than kept as a separate item, since it's the same "row-wise" work that proposal already called for, just
+done for compatibility reasons first and `rowsort` after.
+
+**Checked, then deliberately not pursued: `skipif`/`onlyif`.** The classic SQLite-sqllogictest form
+(`skipif mysql`, conditioning on which database engine is under test) does not appear anywhere in DuckDB's current
+suite — a real search found zero hits. What DuckDB's suite actually uses instead:
+`skipif threadid=0`, `skipif external=true`/`external=false`, `skipif i<1` — conditions evaluated against
+`loop`/`concurrentloop`/`foreach` variable bindings, not database-engine identity. Supporting `skipif`/`onlyif` in
+a way that would actually let a real DuckDB `.test` file run unmodified needs loop-variable support first, not
+instead — a shallower version (e.g. gating on a fixed "platform" label this runner invents) would not match real
+usage and would not serve the compatibility goal that prompted checking this at all. Revisit together with
+`loop`/`foreach`/`endloop` (proposal 11's area), not before them.
+
+**Deliberately out of scope, stated rather than silently dropped**: `concurrentloop`/`concurrentforeach`
+(multi-threaded test execution — this project's suites don't need it), `unzip`/`test-env`/`require-env`/
+`require-env-not` (download/environment-variable fixtures DuckDB's own CI needs, not a small extension's),
+`sleep`/`reconnect`/`restart` (connection-lifecycle testing), `tags`/`continue`/`include` (suite-organization
+features for a test tree far larger than this project's four files), `mode`/`set`/`reset`/`hash-threshold`
+(verification-mode and global-option directives). None of these are planned; this project's own runner's doc
+comment says so explicitly, the same way it already documents what it doesn't support and why.
 
 ## What is not proposed
 
