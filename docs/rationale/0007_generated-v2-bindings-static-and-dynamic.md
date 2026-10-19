@@ -95,18 +95,18 @@ stand-in — against the static backend: `LOAD zig_ext_v2` now actually register
 - Static linking's remaining limitation (the real extension's functions need the direct-link backend, which the
   original architecture could not produce at all) is closed for the functions this project already uses — proven
   with the real `zig_ext_v2` entrypoint, not a one-function demo.
-- New dependency: a build-time-only, lazy dependency on a locally patched `kubkon/zig-yaml`
-  (`../zig-yaml`, a sibling checkout — not yet a stable pinned URL; see Open questions).
+- New dependency: a build-time-only, lazy dependency on a locally patched `kubkon/zig-yaml`, pinned via
+  `git+https://codeberg.org/mskyttner/zig-yaml#09ae7053845155aa14dbe0322bd21c7b07e536fe` — a fork's `master`
+  branch carrying the block-scalar/flow-map additions upstream doesn't have, the same pinning convention every
+  other git dependency in `build.zig.zon` already uses. Re-running the generator against this pin reproduces the
+  committed `duckdb_v2_{types,static,dynamic}.zig`/`duckdb_v2_index.tsv` byte-for-byte — confirmed directly, not
+  assumed.
 - The generated files are large (`duckdb_v2_static.zig` and `duckdb_v2_dynamic.zig` are ~9k and ~11k lines) and
   are not meant to be hand-edited; the generator and the spec are the source of truth, the committed files are
   its build artifact, kept in the repository only so a normal build needs neither.
 
 ## Open questions
 
-- **The `zig-yaml` pin.** A local path dependency to a sibling checkout works for this repository's own
-  development but cannot be what a published package (ADR-0005) depends on. Needs a real pin — a fork with the
-  block-scalar/flow-map fixes, pinned by commit, the same way every other git dependency here already is — before
-  `gen-v2-bindings` could be offered to a consumer rather than kept as a maintainer-only step.
 - **Static linking as a first-class, documented product path.** `v2-static-embed-poc` proves the mechanism;
   nothing yet packages "build the whole extension statically for host embedding" as a supported `addExtension`-style
   step the way ADR-0005 sketches for the dynamic case. Natural next step once that package work starts.
