@@ -4106,3 +4106,71 @@ job down) from genuine build failures, which still fail immediately
 with no retry. Also makes `ci-extended.yml` run on pushes to `main`,
 not just PRs/schedule, so `main` itself keeps the shared Zig cache warm
 for whatever branch restores from it next.
+
+## Researched: relation-valued ("table in, table out") function arguments — not possible via the v2 C API (2026-10-19)
+
+Prompted by a concrete example from `query.farm`'s `inflector`
+community extension: `FROM inflect('snake', (FROM
+read_csv('https://example.com/users.csv')));` — a table function whose
+second positional argument is itself a relation (the parenthesized
+`(FROM ...)` subquery), returning that relation's rows with every
+column renamed to the given case convention. Checked whether this
+project's own comptime table-function framework could support the same
+pattern.
+
+**Confirmed, from the real DuckDB C++ source at the pinned commit
+(`src/include/duckdb/function/table_function.hpp`)**: this is a real,
+named mechanism — `TableFunctionBindInput` carries `input_table_types`/
+`input_table_names` fields the binder populates when a `(FROM ...)`
+argument is detected, and `TableFunction` separately has
+`table_function_bind_replace_t bind_replace` (returns a `TableRef`,
+letting the function rewrite the whole call before normal binding) and
+`table_in_out_function_t in_out_function` (a streaming-operator variant
+that pulls input chunks from the plan rather than scanning the data
+source itself). All three are fields on the internal C++
+`TableFunction` struct used by DuckDB's own built-in/in-tree functions
+— not candidates this project could reach through the extension API at
+all.
+
+**Checked whether the v2 C extension API exposes any of this, from
+three independent angles, not just one grep**:
+1. `duckdb_v2.h` itself (the full header, stable + unstable): no
+   `input_table_types`/`input_table_names`, no `bind_replace`, no
+   `in_out_function`, and no `TABLE`/`RELATION` entry anywhere in
+   `DUCKDB_V2_LOGICAL_TYPE_ID` — `duckdb_v2_function_bind_info` (what
+   every bind callback receives, scalar/table/aggregate alike) only
+   exposes plain scalar argument introspection
+   (`get_arg_count`/`_type`/`_value`/`_name`/`_index`).
+2. The real `api_spec/v2/function/signature.yaml` (the generator's own
+   source of truth): no mention of "table"/"relation"/"subquery" as a
+   parameter concept anywhere.
+3. This project's own generated `docs/api-v2-coverage.md` — the
+   exhaustive, machine-produced inventory of all 609 real v2 API
+   functions (27 unstable), built directly from the spec. `function/table`
+   lists 84 functions total, referenced and not; none of them, in
+   either list, is a relation-argument accessor. If the mechanism
+   existed anywhere in the spec at all, this doc's own "not referenced"
+   list would show it as an unused-but-available function, the same
+   way it already surfaces other genuinely-unused unstable surface
+   (`multi_file_function_*`, `table_function_claim_batch_*`, etc.) — it
+   doesn't, because there's nothing to list.
+
+**Conclusion**: a `zig_cookbook`/`zig_ext_v2` equivalent of `inflect()`
+accepting an arbitrary `(FROM ...)` relation as an argument is not
+buildable against the v2 C extension API today, stable or unstable —
+this is a genuine capability gap between DuckDB's C++-internal
+function-registration surface and what the v2 C API exposes, not
+something this project is missing or could unlock with more comptime
+machinery. Nothing here is a limitation of `comptime_table_v2.zig`'s
+own design; the engine itself gives C extensions no way to ask for a
+relation-shaped argument, full stop. If DuckDB's v2 C API ever grows
+this (a plausible, not-yet-committed future addition, given
+`input_table_types`/`input_table_names` already exist as a clean,
+small surface on the C++ side), the natural shape to wrap would mirror
+this project's existing table-function cookbook pattern
+(`table_pushdown.zig`): a new `comptime_table_v2` entry point taking an
+additional `input_columns: []const [:0]const u8` (or similar) derived
+from the new bind-input accessor, with the relation's rows delivered
+through the ordinary `init_local`/`exec` pull-iterator shape already in
+place for every other table function. Not started, since there is
+currently nothing on the C API side to wrap.
