@@ -8,7 +8,8 @@ standard library (`std.Build.isRoot`, lazy dependencies, `.paths`); the consumer
 ## Context
 
 Everything an author needs to write a DuckDB extension in Zig exists in this repository: generated bindings for the v2 C API
-(`src/lib/duckdb_v2_{types,static,dynamic}.zig`), helpers (`v2_helpers`), comptime frameworks that turn a plain Zig function
+(`src/lib/duckdb_v2_{types,static,dynamic}.zig`, ADR-0007 — generated from DuckDB's own `api_spec/v2`, with a dynamic
+and a direct-link static backend selected per build), helpers (`v2_helpers`), comptime frameworks that turn a plain Zig function
 into a registered scalar, table, aggregate, cast or appender function, a build that appends the metadata footer, cross-compiles
 and packs a repository tree, a SQL test runner, the pinned DuckDB CLI, and a release workflow. None of it can be used without
 copying it.
