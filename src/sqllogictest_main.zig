@@ -9,11 +9,16 @@
 ///! use: `require <name>`, `statement ok`, `statement error` (+ `----` +
 ///! expected error text, matched as a SUBSTRING of the actual error per
 ///! DuckDB's own doc on this — https://duckdb.org/docs/current/dev/sqllogictest/result_verification —
-///! not a full match), and `query <types>` (+ `----` + expected result,
-///! one VALUE per line, row-major across all columns — the true
-///! sqllogictest convention, not "one row per line": a 3-row, 2-column
-///! result is 6 expected lines). `NULL` is written as the literal text
-///! `NULL` (DuckDB's own convention).
+///! not a full match), and `query <types>` (+ `----` + expected result, in
+///! either of the two real sqllogictest layouts: one line per VALUE
+///! (row-major, so a 3-row 2-column result is 6 expected lines), or one
+///! TAB-SEPARATED line per ROW (`(empty)\t(empty)` for one 2-column row)
+///! — the dominant form in DuckDB's own test suite, confirmed directly
+///! against a real file there, not assumed from the docs page's prose.
+///! `appendExpectedLine` distinguishes the two per line, by whether it
+///! contains a tab; the two layouts can be mixed within one query, same
+///! as real sqllogictest. `NULL` is written as the literal text `NULL`
+///! (DuckDB's own convention).
 ///!
 ///! Queries run through the CLI's `-jsonlines` output mode (one JSON
 ///! object per output row, e.g. `{"a":1,"b":"x"}`), not `-csv` — this
@@ -42,16 +47,33 @@
 ///! `(empty)` instead, DuckDB's own convention, reproduced verbatim by
 ///! `extractJsonRowValues`.
 ///!
-///! NOT supported (no current `.test` file needs them — add if one ever
-///! does): nested JSON values (a result column that's a LIST/STRUCT/MAP
-///! would need actual JSON parsing, not `extractJsonRowValues`'s flat
-///! scalar-only scan); `<REGEX>:`/`<!REGEX>:`/`<FILE>:` result forms;
-///! hash-based results (`N values
-///! hashing to ...` — also unnecessary now, see the `md5(...)` note
-///! above, which gets the same effect as an ordinary SQL expression
-///! instead of dedicated format support); shared query labels; `nosort`/
-///! `rowsort`/`valuesort`; `skipif`/`onlyif`/`halt`/`hash-threshold`. The
-///! format's full grammar traces back to SQLite's own sqllogictest
+///! DuckDB's real parser (`test/sqlite/sqllogic_parser.cpp`) recognizes 26
+///! top-level directives; this runner parses 4 of them (`require`,
+///! `statement`, `query`, and the implicit block-separator forms).
+///! Deliberately out of scope, not silently dropped — no current `.test`
+///! file needs them, and this project's four suites don't need DuckDB's
+///! own CI's reasons for having them:
+///! `concurrentloop`/`concurrentforeach` (multi-threaded execution);
+///! `unzip`/`test-env`/`require-env`/`require-env-not` (download/env-var
+///! fixtures); `sleep`/`reconnect`/`restart` (connection-lifecycle
+///! testing); `tags`/`continue`/`include` (organizing a test tree far
+///! larger than this one); `mode`/`set`/`reset`/`hash-threshold`
+///! (verification-mode and global-option directives); nested JSON result
+///! values (a LIST/STRUCT/MAP column would need actual JSON parsing, not
+///! `extractJsonRowValues`'s flat scalar-only scan); `<REGEX>:`/
+///! `<!REGEX>:`/`<FILE>:` result forms; shared query labels; `nosort`/
+///! `rowsort`/`valuesort` (an expected block's own line order is compared
+///! as-is — see docs/rationale/0006 for the `rowsort` proposal).
+///! `skipif`/`onlyif`/`halt` are checked and deliberately deferred, not
+///! just unimplemented: a real search of DuckDB's own suite found the
+///! classic `skipif <dbms-name>` form (e.g. `skipif mysql`) doesn't
+///! appear anywhere there — real usage conditions on `loop`/
+///! `concurrentloop`/`foreach` variable bindings instead (`skipif
+///! threadid=0`, `skipif external=true`), so supporting these
+///! meaningfully needs loop-variable support first, not a shallower
+///! stand-in that wouldn't match real files anyway (see
+///! docs/rationale/0006). The format's full grammar traces back to
+///! SQLite's own sqllogictest
 ///! (https://sqlite.org/sqllogictest/doc/trunk/about.wiki); DuckDB
 ///! extends it with `require`/named extension loading. See
 ///! https://github.com/Mytherin/vscode-sqllogictest for a fuller
@@ -378,7 +400,7 @@ fn parseBlocks(arena: std.mem.Allocator, source: []const u8) ![]Block {
             const sql = try collectUntilSeparator(arena, lines.items, &i);
             var expected: std.ArrayList([]const u8) = .empty;
             while (i < lines.items.len and lines.items[i].len != 0) : (i += 1) {
-                try expected.append(arena, lines.items[i]);
+                try appendExpectedLine(arena, lines.items[i], &expected);
             }
             try blocks.append(arena, .{ .query = .{ .sql = sql, .expected = expected.items } });
             continue;
@@ -401,6 +423,28 @@ fn collectUntilBlank(arena: std.mem.Allocator, lines: []const []const u8, i: *us
     }
     if (i.* < lines.len) i.* += 1; // skip the blank separator
     return collected.items;
+}
+
+/// Appends one line of a `query` block's expected-result section to the
+/// flat, one-value-per-entry `out` list — supporting both of the real
+/// sqllogictest result layouts, not just one invented for this project.
+/// A line containing a tab is DuckDB's own suite's dominant convention,
+/// **row-wise**: one line per output ROW, its columns tab-separated (e.g.
+/// `(empty)\t(empty)` for a 2-column row) — confirmed directly against a
+/// real file in DuckDB's own test suite, not assumed from the docs prose
+/// (which undersells how common this form actually is). A line with no
+/// tab is **value-wise**: the whole line is one value (this project's
+/// `.test` files, which never contain a literal tab in an expected
+/// value — confirmed, so the two forms can't collide). Mixing both
+/// layouts within one query's expected block is allowed, the same as
+/// real sqllogictest permits, since the distinction is made per line.
+fn appendExpectedLine(arena: std.mem.Allocator, line: []const u8, out: *std.ArrayList([]const u8)) !void {
+    if (std.mem.indexOfScalar(u8, line, '\t') == null) {
+        try out.append(arena, line);
+        return;
+    }
+    var it = std.mem.splitScalar(u8, line, '\t');
+    while (it.next()) |field| try out.append(arena, field);
 }
 
 /// Like `collectUntilBlank`, but stops at a line that is exactly `----`

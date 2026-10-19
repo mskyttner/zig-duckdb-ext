@@ -159,11 +159,14 @@
         // YAML parser, needed only by tools/gen_v2_bindings.zig, which
         // regenerates src/lib/duckdb_v2_{types,static,dynamic}.zig from the API spec
         // (`zig build gen-v2-bindings`). The spec uses block scalars and flow
-        // maps, which upstream zig-yaml does not parse; the sibling checkout
-        // carries those changes. `lazy = true`, so no other build ever
-        // resolves it — the generated files are committed.
+        // maps, which upstream kubkon/zig-yaml does not parse — pinned to a
+        // fork (`mskyttner/zig-yaml`'s `master` branch) carrying those
+        // additions instead of the local `../zig-yaml` path this was
+        // originally developed against (see ADR-0007). `lazy = true`, so no
+        // other build ever resolves it — the generated files are committed.
         .yaml = .{
-            .path = "../zig-yaml",
+            .url = "git+https://codeberg.org/mskyttner/zig-yaml#09ae7053845155aa14dbe0322bd21c7b07e536fe",
+            .hash = "zig_yaml-0.3.0-C1161rsbAwCYmeiMgf7MzPUqg0AeV0I4GAdml-do4Iko",
             .lazy = true,
         },
         // Image decode/resize, needed only by src/lib/braille_image.zig —
