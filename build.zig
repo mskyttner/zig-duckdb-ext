@@ -244,7 +244,16 @@ fn addWasmEmscriptenBuild(
     optimize: std.builtin.OptimizeMode,
     emcc_path: []const u8,
 ) std.Build.LazyPath {
-    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .emscripten });
+    // `.cpu_model = .explicit(&std.Target.wasm.cpu.mvp)`, not Zig's default `.generic`: `generic`
+    // enables post-MVP features (`bulk_memory`, `reference_types`, ...) that an older emsdk's
+    // bundled `wasm-opt` doesn't recognize (confirmed directly: emsdk 3.1.71, duckdb-wasm's own
+    // pin, failed with "Unknown option '--enable-bulk-memory-opt'" when the lib was built with
+    // the default). Plain MVP also matches the `wasm_mvp` platform/footer this step writes.
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .emscripten,
+        .cpu_model = .{ .explicit = &std.Target.wasm.cpu.mvp },
+    });
 
     const duckdb_c: Translator = .init(translate_c_dep, .{
         .name = "duckdb_c_wasm_mvp",
@@ -271,6 +280,12 @@ fn addWasmEmscriptenBuild(
     // side module, exporting only the real C API entry point DuckDB looks up by name
     // (`<filebase>_init_c_api`) — matching `extension_load.cpp`'s C-ABI load path exactly.
     const emcc_cmd = b.addSystemCommand(&.{emcc_path});
+    // `emcc_path` is a bare string, not a tracked `LazyPath`: the build graph has no way to
+    // notice the binary it points at changed (e.g. switching -Demcc-path= to a different
+    // emsdk install at the same path, as emsdk reuses its "upstream" directory in place),
+    // so the Zig cache would otherwise keep serving a stale .wasm linked by a different
+    // Emscripten version — confirmed directly: it did, silently, until this was added.
+    emcc_cmd.has_side_effects = true;
     emcc_cmd.addArtifactArg(lib);
     emcc_cmd.addArgs(&.{ "-O3", "-g2", "-sSIDE_MODULE=2" });
     emcc_cmd.addArg(b.fmt("-sEXPORTED_FUNCTIONS=_{s}_init_c_api", .{extension_name}));
