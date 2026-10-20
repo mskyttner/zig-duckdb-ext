@@ -124,10 +124,24 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   `registerFileBuffer` + direct-path `LOAD` (blocked by the Node-binding bug this ADR already
   names) remains the one loading path not exercised anywhere, Node or browser, but the
   network-fetch path this ADR relies on is now verified end to end in both environments.
-- **Only `zig_hello`/`zig_add_numbers` were actually called.** Every other function in
-  `src/root.zig` compiles into the same static lib and should work identically — nothing
-  about the build is function-specific — but "should" is not "verified."
-- **`wasm_mvp` only.** `eh`/`coi` (exceptions, threading) were never attempted; DuckDB's own
-  loadable-extension CMake branches on all three, and this project's own `root.zig` has no
-  exception-handling-dependent code path to lose by staying on `mvp`, but a `coi` build would
-  need its own pass through this same recipe to confirm.
+- ~~**Only `zig_hello`/`zig_add_numbers` were actually called.**~~ Narrowed, 2026-10-20:
+  `zig_tokenize`, `ct_add_numbers`, `ct_tokenize`, and `tp_bar` (named-parameter macro call)
+  all verified too, Node and browser, both engines. Found and fixed a real bug on the way —
+  see `docs/v2-migration-plan.md`'s matching 2026-10-20 follow-up for the full trace, short
+  version: `tp_bar` allocates per row, which captures `@returnAddress()` (part of Zig's
+  `Allocator` interface, not Debug-only), which official `duckdb-wasm`'s pinned Emscripten
+  aborts on without `-sUSE_OFFSET_CONVERTER` — fixed by forcing `.ReleaseFast` for this build
+  unconditionally rather than chasing that flag (which made things worse). Still not
+  verified: the three `LIST`-argument functions (`tp_line`/`tp_snakemap`/`tp_treemap`) —
+  found, separately, to be blocked by a `duckdb-wasm`-side limitation unrelated to this
+  project (any `LIST` value through this build's `query()` fails or corrupts, with or
+  without an extension involved — see the migration doc).
+- ~~**`wasm_mvp` only.**~~ `coi` added 2026-10-20 (`WasmVariant`, `wasm-ext-coi`), verified
+  live against `haybarn-wasm`'s real `coi` engine in a real headless browser (Node has no
+  `coi` bindings in either fork). Official `duckdb-wasm`'s own `coi` cannot be targeted at
+  all right now: its `coi`-specific Emscripten pin (`3.1.57`, different from its `mvp`/`eh`
+  pin) has a real, independently-reproduced version-skew bug — its bundled `wasm-opt`
+  predates a flag `emcc`'s own driver unconditionally requests for any `SIDE_MODULE`+
+  `pthread` link with real static data. Not this project's bug; not pursued further. `eh`
+  (exceptions, no threads) remains genuinely untried — nothing in `root.zig` needs it over
+  `mvp`, so low priority.

@@ -37,6 +37,66 @@ function fail(msg) {
     process.exit(1);
 }
 
+const bigintSafe = (k, v) => (typeof v === 'bigint' ? v.toString() : v);
+
+// Every check here is a function that doesn't take a LIST-typed argument. Functions that do
+// (tp_line, tp_snakemap, tp_treemap) are deliberately left out: confirmed directly (not
+// guessed) that any query involving a LIST value — as a function argument, or even a bare
+// `SELECT [1.0, 2.0, 3.0]` with no function at all — fails or returns corrupted data through
+// this exact duckdb-wasm build's query path, in both Node and a real browser alike, while the
+// identical SQL against the native CLI returns the right answer. A pre-existing duckdb-wasm
+// limitation, not a defect in this project's extension — see docs/v2-migration-plan.md's WASM
+// section for the full isolation (literal syntax, list_value(), a subquery, a table column,
+// and a built-in list function all fail the same way).
+const CHECKS = [
+    {
+        label: `zig_hello('ci')`,
+        sql: `SELECT zig_hello('ci') AS greeting`,
+        assert: row => row.greeting === 'Hello, ci!' || `expected {"greeting":"Hello, ci!"}, got ${JSON.stringify(row)}`,
+    },
+    {
+        label: `zig_add_numbers(2, 3)`,
+        sql: `SELECT zig_add_numbers(2, 3) AS sum`,
+        assert: row => String(row.sum) === '5' || `expected {"sum":5}, got ${JSON.stringify(row, bigintSafe)}`,
+    },
+    {
+        label: `zig_tokenize('a,b,c', ',')`,
+        sql: `SELECT token FROM zig_tokenize('a,b,c', ',') ORDER BY token_pos`,
+        rows: true,
+        assert: rows => JSON.stringify(rows.map(r => r.token)) === '["a","b","c"]' || `expected ["a","b","c"], got ${JSON.stringify(rows)}`,
+    },
+    {
+        label: `ct_add_numbers(2, 3)`,
+        sql: `SELECT ct_add_numbers(2, 3) AS sum`,
+        assert: row => String(row.sum) === '5' || `expected {"sum":5}, got ${JSON.stringify(row, bigintSafe)}`,
+    },
+    {
+        label: `ct_tokenize('alice,bob,charlie', ',')`,
+        sql: `SELECT token FROM ct_tokenize('alice,bob,charlie', ',') ORDER BY token_pos`,
+        rows: true,
+        assert: rows =>
+            JSON.stringify(rows.map(r => r.token)) === '["alice","bob","charlie"]' || `expected ["alice","bob","charlie"], got ${JSON.stringify(rows)}`,
+    },
+    {
+        label: `tp_bar(0.5, "on" := 'X', "off" := '.', width := 10)`,
+        sql: `SELECT tp_bar(0.5, "on" := 'X', "off" := '.', width := 10) AS bar`,
+        assert: row => row.bar === 'XXXXX.....' || `expected {"bar":"XXXXX....."}, got ${JSON.stringify(row)}`,
+    },
+];
+
+/// Runs every check in `CHECKS` against an already-`LOAD`ed connection, failing loudly (via
+/// `fail`, which exits the process) on the first mismatch, printing each result as it passes.
+function runChecks(conn) {
+    for (const check of CHECKS) {
+        const result = conn.query(check.sql);
+        const rows = result.toArray().map(r => r.toJSON());
+        const value = check.rows ? rows : rows[0];
+        const verdict = check.assert(value);
+        if (verdict !== true) fail(`${check.label}: ${verdict}`);
+        console.log(`${check.label} = ${JSON.stringify(value, bigintSafe)}`);
+    }
+}
+
 async function main() {
     const [distDirArg, extPathArg] = process.argv.slice(2);
     if (!distDirArg || !extPathArg) {
@@ -85,20 +145,7 @@ async function main() {
         conn.query(`LOAD ${extBase}`);
         console.log('LOAD succeeded');
 
-        const bigintSafe = (k, v) => (typeof v === 'bigint' ? v.toString() : v);
-
-        const hello = conn.query(`SELECT zig_hello('ci') AS greeting`).toArray()[0].toJSON();
-        if (hello.greeting !== 'Hello, ci!') {
-            fail(`zig_hello('ci') returned ${JSON.stringify(hello)}, expected {"greeting":"Hello, ci!"}`);
-        }
-        console.log(`zig_hello('ci') = ${JSON.stringify(hello, bigintSafe)}`);
-
-        const sum = conn.query(`SELECT zig_add_numbers(2, 3) AS sum`).toArray()[0].toJSON();
-        if (String(sum.sum) !== '5') {
-            fail(`zig_add_numbers(2, 3) returned ${JSON.stringify(sum, bigintSafe)}, expected {"sum":5}`);
-        }
-        console.log(`zig_add_numbers(2, 3) = ${JSON.stringify(sum, bigintSafe)}`);
-
+        runChecks(conn);
         conn.close();
         console.log(`verify_wasm_load: PASSED — ${extBase} loads and runs against ${distDir}`);
     } finally {

@@ -34,9 +34,8 @@ const Err = *v2.duckdb_v2_error_info_handle;
 fn fail(err: Err, code: v2.DUCKDB_V2_ERROR, comptime fmt: []const u8, args: anytype) void {
     var buf: [300]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch buf[0..0];
-    const text = helpers.str(msg);
     _ = v2.duckdb_v2_error_info_set_code(err.*, code);
-    _ = v2.duckdb_v2_error_info_set_text(err.*, &text);
+    _ = helpers.setErrorText(err.*, msg);
 }
 
 fn levelOf(name: []const u8) ?v2.DUCKDB_V2_LOG_LEVEL {
@@ -85,12 +84,12 @@ fn exec(info: v2.duckdb_v2_scalar_function_exec_info_handle, context: v2.duckdb_
             continue;
         }
         const level_name = helpers.bytesSlice(&args[0][row]);
-        const log_type = helpers.str(helpers.bytesSlice(&args[1][row]));
-        const message = helpers.str(helpers.bytesSlice(&args[2][row]));
+        const log_type = helpers.bytesSlice(&args[1][row]);
+        const message = helpers.bytesSlice(&args[2][row]);
         const level = levelOf(level_name) orelse
             return fail(err, .ERROR_INPUT_PARAMETER_INVALID, "zig_cookbook_log: unknown level '{s}' (trace, debug, info, warning, error or fatal)", .{level_name});
         // Succeeds whether or not the entry was recorded.
-        if (v2.duckdb_v2_context_log(context, level, &log_type, &message, err) != .ERROR_NONE) return;
+        if (helpers.contextLog(context, level, log_type, message, err) != .ERROR_NONE) return;
         out[row] = helpers.makeBytesValue(arena, helpers.bytesSlice(&args[2][row]), err) catch return;
     }
 }

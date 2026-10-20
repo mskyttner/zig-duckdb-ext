@@ -2904,6 +2904,114 @@ wanted" — extensions there are statically bundled at build time (`parquet`, `t
 direction from dynamic loading. Confirms, rather than opens, that Emscripten `SIDE_MODULE`
 loading remains the only dynamic-extension mechanism in DuckDB's WASM work.
 
+**Follow-up, 2026-10-20: the `coi` (threads + exceptions) platform — works for `haybarn-wasm`,
+blocked for official `duckdb-wasm` by an upstream Emscripten/Binaryen version-skew bug; four
+more functions verified; a real runtime bug found and fixed; a `duckdb-wasm`-side limitation
+isolated and ruled out as this project's fault; and today's official C API v2 feedback
+discussion corroborates an earlier finding.**
+
+**`coi` support**: `build.zig` gained a `WasmVariant` (`mvp`/`coi`) parameterizing
+`addWasmEmscriptenBuild` — platform string (`wasm_mvp`/`wasm_threads`, matching
+`DUCKDB_EXPLICIT_PLATFORM`), Zig CPU features, and `emcc`'s `-pthread -sSHARED_MEMORY=1` link
+flags for `coi`. The CPU feature set took two tries: Zig's `bleeding_edge` model (atomics,
+bulk memory, SIMD, *and* `exception_handling`/`relaxed_simd`/`fp16`/`gc`/`tail_call`/
+`multimemory`) failed even emsdk `6.0.12`'s `wasm-opt` with the same
+`"Unknown option '--enable-bulk-memory-opt'"` class of error seen before — too much, not too
+little. The right set, confirmed by matching `extension_build_tools.cmake`'s own
+`WITH_WASM_THREADS`/`WITH_WASM_SIMD`/`WITH_WASM_BULK_MEMORY` flags exactly: `generic` plus
+`atomics` and `simd128`, nothing more.
+
+**Verified live, real headless browser only** — `coi` has no Node bindings at all in either
+fork's `dist/` (only `duckdb-browser-coi.worker.js`/`.pthread.worker.js`, no
+`duckdb-node-coi.*`), and `SharedArrayBuffer` needs a cross-origin-isolated page
+(`Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp`),
+which only a real browser enforces. Against `haybarn-wasm`'s real `coi` engine:
+`self.crossOriginIsolated === true`, `zig_hello('coi')` → `"Hello, coi!"`,
+`zig_add_numbers(2, 3)` → `5`.
+
+**Official `duckdb-wasm`'s own `coi` cannot link this at all — a real, independently
+reproducible upstream bug, not this project's.** Official `duckdb-wasm` pins a *different*
+Emscripten for `coi` than for `mvp`/`eh` (`EMSCRIPTEN_VERSION_COI: '3.1.57'` vs.
+`EMSCRIPTEN_VERSION: '3.1.71'`, from its own `.github/workflows/main.yml`, read directly).
+Linking the real `.a` against `3.1.57` fails with the same `"Unknown option
+'--enable-bulk-memory-opt'"` error as the earlier `mvp`/`3.1.71` investigation — but this
+time isolated further: a **trivial one-function `.c` file**, linked with the exact same
+`emcc ... -sSIDE_MODULE=2 -pthread -sSHARED_MEMORY=1 ...` flags, links **cleanly**, no error
+at all. `3.1.57`'s bundled `wasm-opt --help` confirms it: `--enable-bulk-memory` exists,
+`--enable-bulk-memory-opt` does not. `emcc`'s own driver requests the latter unconditionally
+once a `SIDE_MODULE`+`pthread` link has real static data to pack (the trivial `.c` file,
+having none, never reaches that code path) — a version-skew bug in official `duckdb-wasm`'s
+own `coi` toolchain pin, nothing to do with Zig, this extension, or how it's built. Not
+pursued further (not this project's bug to fix); `haybarn-wasm`'s `coi` is unaffected since
+it pins the same Emscripten version (`6.0.12`) for every platform.
+
+**Four more functions verified, in both Node and browser, against both engines**:
+`zig_tokenize`, `ct_add_numbers`, `ct_tokenize`, and `tp_bar` (exercising the named-parameter
+SQL macro wrapper, `tp_bar(0.5, "on" := 'X', "off" := '.', width := 10)`) all load and return
+correct results. `tools/wasm_verify/verify_wasm_load.cjs` and `.../browser/index.html` +
+`verify_wasm_load_browser.cjs` both now check all six.
+
+**A real runtime bug found and fixed along the way**: `tp_bar` (which allocates per row)
+aborted against official `duckdb-wasm` specifically — not `haybarn-wasm` — with `"Aborted
+(Cannot use convertFrameToPC (needed by __builtin_return_address) without
+-sUSE_OFFSET_CONVERTER)"`. Root cause: Zig's `Allocator.alloc`/`.free` capture
+`@returnAddress()` at every call site — part of the interface's own leak-attribution
+convention, not Debug-only — which lowers to Emscripten's `__builtin_return_address`;
+official `duckdb-wasm`'s pinned Emscripten (`3.1.71`) aborts on this without
+`-sUSE_OFFSET_CONVERTER`, `haybarn-wasm`'s pin (`6.0.12`) tolerates it. Adding
+`-sUSE_OFFSET_CONVERTER` to the `emcc` link line was tried and made things *worse*
+(`"_setThrew is not defined"` — a different ABI mismatch, the same symptom as the
+Emscripten-version-mismatch finding from the first `mvp` follow-up above). The actual fix:
+`addWasmEmscriptenBuild` now forces `.ReleaseFast` unconditionally, ignoring whatever
+`-Doptimize=` the rest of the build was given — this makes the `@returnAddress()` capture
+unreachable, matches what a shipped extension should be built as anyway, and is verified
+working against both engines, all six functions.
+
+**A `duckdb-wasm`-side limitation found, isolated, and ruled out as this project's fault**:
+`tp_line`/`tp_snakemap`/`tp_treemap` (the three functions taking a `LIST`-typed argument)
+all fail with `"Cannot perform Construct on a detached ArrayBuffer"` through this build's
+`query()` — in **both** Node and a real browser. Isolated by elimination, not assumed: the
+exact same failure reproduces for a `LIST` literal (`[1.0, 2.0, 3.0]`), `list_value(...)`, a
+subquery `list(...)` aggregate, and a plain table column — none of them our extension's
+code — and even a bare `SELECT [1.0, 2.0, 3.0]` with **no function call at all** returns
+silently-corrupted data (`["\"10\"","\"20\"","\"30\""]` instead of `[1.0, 2.0, 3.0]`) rather
+than erroring. The identical `tp_line` call against the **native** CLI returns the exact
+correct ASCII line chart. A pre-existing, generic `duckdb-wasm` limitation around `LIST`
+values crossing the wasm/JS boundary in this build — not specific to the C API, this
+extension, or anything fixed above — and out of scope to chase further here.
+
+**Two candidate "DuckDB C API v2 bugs" considered and both withdrawn, on closer reading of
+this project's own code**: before committing to file anything upstream, re-checked two
+items this document and `docs/rationale/0005_a-package-for-extension-authors.md` had
+previously framed as DuckDB-side. (1) The ENUM-target custom-cast infinite recursion (this
+section's own earlier entry, "`comptime_cast_v2`: ported, and a framework bug found and
+fixed") is explicitly self-attributed in `comptime_cast_v2.zig`'s own current comment:
+*"not a DuckDB bug, a self-inflicted reentrancy bug in this framework's first attempt"* —
+calling the generic cast dispatcher from inside the very cast function registered for that
+exact type pair recurses by construction, for any API shaped this way, not a DuckDB defect.
+(2) The version-mismatch crash (`build.zig`: *"with `C_STRUCT` and 'v2.0.0' a build for one
+alpha loaded in another one and crashed it"*) happened specifically while declaring
+`abi_type = C_STRUCT` — the ABI type meant for a genuinely stable, post-1.0 API where
+"version equal or higher" really does guarantee compatibility — against a pre-1.0 alpha
+whose struct layout isn't actually stable between alphas. `C_STRUCT_UNSTABLE` exists
+specifically to require an exact version match for exactly this situation, and does reject a
+mismatch cleanly; this project already uses it for the real v2 extensions
+(`v2_abi_type = "C_STRUCT_UNSTABLE"`). Using the wrong ABI-type declaration for an admittedly
+unstable alpha API, and getting the predictable consequence, isn't a DuckDB bug either.
+Neither filed.
+
+**Independent, official confirmation of an earlier finding**: DuckDB opened a feedback
+discussion for the C API v2 today, 2026-10-20
+([duckdb/duckdb#27525](https://github.com/duckdb/duckdb/discussions/27525)) — not a v2.0.0
+release (still no `v2.*` tag exists; `v1.5.6` remains latest), but exactly the discussion
+this section's earlier "relation-valued ('table in, table out') function arguments" research
+(above) predicted would matter. A comment there, from a fork of this exact repository,
+asked the same question this document already answered independently; a DuckDB maintainer
+replied directly: *"'table in-out' functions are not currently supported! We may look into
+adding them in the future..."* — confirming, officially and for the first time, this
+project's own from-first-principles conclusion that relation-valued arguments aren't
+reachable from the v2 C API today.
+
 ### 7. DECIMAL and ENUM support — done
 
 The two parameterized types deliberately left out of item 5's otherwise-

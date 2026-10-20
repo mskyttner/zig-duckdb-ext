@@ -393,9 +393,8 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                     // populate the already-live error slot and stop, rather
                     // than silently producing NULL (see this file's module
                     // doc comment on castFn's return convention).
-                    const msg = helpers.str("cast failed");
                     _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
-                    _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
+                    _ = helpers.setErrorText(err.*, "cast failed");
                     return;
                 }
             }
@@ -449,9 +448,8 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                 } else if (mode == .CAST_MODE_TRY) {
                     if (v2.duckdb_v2_vector_set_null(output_vec, row, err) != .ERROR_NONE) return;
                 } else {
-                    const msg = helpers.str("cast failed");
                     _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
-                    _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
+                    _ = helpers.setErrorText(err.*, "cast failed");
                     return;
                 }
             }
@@ -563,9 +561,8 @@ pub fn Function(comptime SourceT: type, comptime TargetT: type, comptime castFn:
                 } else if (mode == .CAST_MODE_TRY) {
                     if (v2.duckdb_v2_vector_set_null(output_vec, row, err) != .ERROR_NONE) return;
                 } else {
-                    const msg = helpers.str("cast failed");
                     _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
-                    _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
+                    _ = helpers.setErrorText(err.*, "cast failed");
                     return;
                 }
             }

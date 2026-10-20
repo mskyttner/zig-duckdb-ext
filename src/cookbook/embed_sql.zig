@@ -104,8 +104,7 @@ pub const Session = struct {
         errdefer _ = v2.duckdb_v2_environment_destroy(&s.env);
         try c.ok(v2.duckdb_v2_instance_create_with_options(s.env, if (names.len > 0) names.ptr else null, if (values.len > 0) values.ptr else null, names.len, &s.instance, c.err()));
         errdefer _ = v2.duckdb_v2_instance_destroy(&s.instance);
-        const memory = helpers.str(":memory:");
-        try c.ok(v2.duckdb_v2_instance_attach(s.instance, null, &memory, null, true, c.err()));
+        try c.ok(helpers.instanceAttach(s.instance, null, ":memory:", null, true, c.err()));
         try c.ok(v2.duckdb_v2_connection_create(s.instance, &s.conn, c.err()));
         errdefer _ = v2.duckdb_v2_connection_destroy(&s.conn);
         try c.ok(v2.duckdb_v2_connection_get_factory(s.conn, &s.factory, c.err()));
@@ -349,9 +348,8 @@ fn run(arena: std.mem.Allocator, s: *Session) !void {
 /// The tokens of `sql` as "CLASS:lexeme" words, separated by a space. Whitespace is not a token.
 fn tokens(arena: std.mem.Allocator, s: *Session, sql: ?[]const u8, unterminated: ?*bool) ![]const u8 {
     var c: Call = .{};
-    const text = if (sql) |t| helpers.str(t) else v2.duckdb_v2_str{ .ptr = null, .len = 0 };
     var iterator: v2.duckdb_v2_token_iterator_handle = undefined;
-    try c.ok(v2.duckdb_v2_tokenize_sql(s.conn, &text, &iterator, c.err()));
+    try c.ok(helpers.tokenizeSql(s.conn, sql, &iterator, c.err()));
     defer _ = v2.duckdb_v2_token_iterator_destroy(&iterator);
     var out: std.ArrayList(u8) = .empty;
     while (true) {

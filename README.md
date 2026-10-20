@@ -324,6 +324,7 @@ docs/rationale/       Architecture decision records
 | `task wasm:verify-duckdb-wasm` | Verify the wasm build loads and runs against official duckdb-wasm's latest engine |
 | `task wasm:verify-haybarn-browser` | Same, in a real headless browser (Playwright/Chromium) instead of Node bindings |
 | `task wasm:verify-duckdb-wasm-browser` | Same, for official duckdb-wasm, in a real headless browser |
+| `task wasm:verify-haybarn-coi-browser` | The `coi` (threads+exceptions) wasm build, in a real headless browser, against haybarn-wasm only — see [ADR-0008](docs/rationale/0008_wasm-emscripten-side-module.md) for why official duckdb-wasm's own `coi` can't be targeted at all |
 | `task check:all`     | Format, build, unit tests, coverage report is current (not the SQL suites) |
 | `task bench`         | Benchmark hand-written vs comptime  |
 | `task format`        | Format Zig source files             |
