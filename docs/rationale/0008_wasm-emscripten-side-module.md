@@ -76,13 +76,23 @@ process**, deliberately: the Node "blocking" bindings fetch extensions via a
 deadlocks every time it's asked to serve the very request that thread is frozen waiting on —
 confirmed directly, not assumed, after a first version of this tool hung exactly this way.
 
+**A second verification tool, same directory, for a real browser instead of Node's own
+bindings**: `verify_wasm_load_browser.cjs` plus a minimal static page
+(`tools/wasm_verify/browser/index.html`), driven by Playwright/Chromium. The engine runs
+inside the browser's own separate process here, so the server can run in-process with this
+script without risking the same deadlock — Node orchestrates Playwright, but never runs
+`duckdb-wasm` itself in this path. The browser bundle (`duckdb-browser.mjs`) has a bare
+`import ... from "apache-arrow"`, meant for a real bundler to resolve (the same thing
+`duckdb-wasm`'s own webpack/vite examples show); a browser `<script type="importmap">`
+pointing that one specifier at a CDN ESM build stands in for the bundler here.
+
 ## Consequences
 
 - This project's real `zig_ext` functions are loadable inside a live `duckdb-wasm`/
-  `haybarn-wasm` engine, in Node today and (unverified, see Open questions) presumably in a
-  real browser — a capability that didn't exist at all before this (the WASM section of
-  `docs/v2-migration-plan.md` previously concluded this "not currently feasible as a
-  straight port").
+  `haybarn-wasm` engine — verified in Node and in a real headless browser
+  (Playwright/Chromium, `verify_wasm_load_browser.cjs`) alike — a capability that didn't
+  exist at all before this (the WASM section of `docs/v2-migration-plan.md` previously
+  concluded this "not currently feasible as a straight port").
 - Porting to a new Emscripten version, or verifying against a third fork, is "pick the right
   `-Demcc-path=` and rerun `wasm-ext`, then `wasm:verify-*`" — not a fresh investigation,
   because the recipe and the pitfalls (CPU features, build-cache staleness, the server/
@@ -94,17 +104,26 @@ confirmed directly, not assumed, after a first version of this tool hung exactly
   `ci-extended.yml`, which the file's own header already describes as not merge-blocking,
   rather than in the primary `ci.yml`.
 - `tools/wasm_verify/` is this project's first Node/npm dependency. It is scoped to its own
-  directory with its own `package.json` (one dependency, `apache-arrow`, version-matched to
-  what `duckdb-wasm` itself declares) — nothing elsewhere in the repository needs Node.
+  directory with its own `package.json` (`apache-arrow`, version-matched to what
+  `duckdb-wasm` itself declares, plus `playwright` for the browser check) — nothing
+  elsewhere in the repository needs Node. The browser check is a real, meaningfully heavier
+  dependency than the Node-only one (Playwright's own Chromium download, ~190 MB, plus
+  `--with-deps`'s OS packages in CI), which is why it's a separate CI step rather than folded
+  silently into the first one.
 
 ## Open questions
 
-- **A real browser.** Everything here — locally and in CI — runs through Node's bindings.
-  `registerFileBuffer` + direct-path `LOAD` (the path a browser's own `dlopen`-over-XHR
-  machinery would most naturally parallel) is specifically what's blocked by the upstream
-  Node-binding bug; the network-fetch path this ADR relies on is a complete, documented
-  deployment story on its own, but whether a real browser's `fetch`/`dlopen` plumbing
-  accepts this exact module is still unverified.
+- ~~**A real browser.**~~ Resolved, 2026-10-20: `verify_wasm_load_browser.cjs` drives real
+  headless Chromium (Playwright) against a minimal static page using each engine's actual
+  browser bundle (`duckdb-mvp.wasm` + `duckdb-browser-mvp.worker.js` + `duckdb-browser.mjs`),
+  not the Node ones — `LOAD` over the same `custom_extension_repository` path, `zig_hello`/
+  `zig_add_numbers` both correct, against both forks. One real wrinkle on the way: the
+  browser `.mjs` bundle has a bare `import ... from "apache-arrow"`, meant to be resolved by
+  a real bundler (webpack/vite, per `duckdb-wasm`'s own docs) — fixed with a browser
+  `<script type="importmap">` pointing that one specifier at a CDN ESM build instead.
+  `registerFileBuffer` + direct-path `LOAD` (blocked by the Node-binding bug this ADR already
+  names) remains the one loading path not exercised anywhere, Node or browser, but the
+  network-fetch path this ADR relies on is now verified end to end in both environments.
 - **Only `zig_hello`/`zig_add_numbers` were actually called.** Every other function in
   `src/root.zig` compiles into the same static lib and should work identically — nothing
   about the build is function-specific — but "should" is not "verified."

@@ -112,16 +112,17 @@ DuckDB running client-side, in a browser or Node, with no native install step:
 zig build wasm-ext -Demcc-path=<emcc from an activated emsdk>
 ```
 
-Verified live against both forks' own CI-built engines (`task wasm:verify-haybarn` /
-`task wasm:verify-duckdb-wasm`, and the `wasm-verify` job in `.github/workflows/ci-extended.yml`):
-`zig_hello`/`zig_add_numbers`, loaded over the documented `custom_extension_repository` + `LOAD` path,
-both return correct results. Needs the Emscripten version matching whichever engine you're targeting —
-the two forks pin different, mutually incompatible ones (6.0.12 vs 3.1.71), confirmed directly: a
-mismatch fails at `dlopen()`, not a warning. Deliberately not part of `cross` — see
-[docs/v2-migration-plan.md](docs/v2-migration-plan.md)'s WASM section and
-[ADR-0008](docs/rationale/0008_wasm-emscripten-side-module.md) for the full trace, including what's
-still unverified (a real browser; `registerFileBuffer` + direct-path `LOAD`, blocked today by an
-upstream Node-binding bug).
+Verified live against both forks' own CI-built engines, in Node (`task wasm:verify-haybarn` /
+`task wasm:verify-duckdb-wasm`) and in a real headless browser (`task wasm:verify-haybarn-browser` /
+`task wasm:verify-duckdb-wasm-browser`, Playwright/Chromium) alike — see the `wasm-verify` job in
+`.github/workflows/ci-extended.yml`. `zig_hello`/`zig_add_numbers`, loaded over the documented
+`custom_extension_repository` + `LOAD` path, both return correct results in every case tried. Needs
+the Emscripten version matching whichever engine you're targeting — the two forks pin different,
+mutually incompatible ones (6.0.12 vs 3.1.71), confirmed directly: a mismatch fails at `dlopen()`, not
+a warning. Deliberately not part of `cross` — see [docs/v2-migration-plan.md](docs/v2-migration-plan.md)'s
+WASM section and [ADR-0008](docs/rationale/0008_wasm-emscripten-side-module.md) for the full trace,
+including what's still unverified (`registerFileBuffer` + direct-path `LOAD`, blocked today by an
+upstream Node-binding bug — the documented `custom_extension_repository` path above is unaffected).
 
 ## Comptime Function Framework
 
@@ -321,6 +322,8 @@ docs/rationale/       Architecture decision records
 | `task wasm:ext` | Build the wasm32-emscripten SIDE_MODULE (needs a real `emcc`; see `-Demcc-path=`) |
 | `task wasm:verify-haybarn` | Verify the wasm build loads and runs against haybarn-wasm's latest engine |
 | `task wasm:verify-duckdb-wasm` | Verify the wasm build loads and runs against official duckdb-wasm's latest engine |
+| `task wasm:verify-haybarn-browser` | Same, in a real headless browser (Playwright/Chromium) instead of Node bindings |
+| `task wasm:verify-duckdb-wasm-browser` | Same, for official duckdb-wasm, in a real headless browser |
 | `task check:all`     | Format, build, unit tests, coverage report is current (not the SQL suites) |
 | `task bench`         | Benchmark hand-written vs comptime  |
 | `task format`        | Format Zig source files             |

@@ -134,11 +134,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash tools/wasm_verify/fetch_engine.sh ${{ matrix.repo }} .tmp/engine
 
-      - name: Verify the extension loads and runs for real
+      - name: Verify the extension loads and runs for real (Node bindings)
         run: |
           cd tools/wasm_verify
           npm install --no-audit --no-fund --silent
           NODE_PATH="$(pwd)/node_modules" node verify_wasm_load.cjs \
+            "$GITHUB_WORKSPACE/.tmp/engine/packages/duckdb-wasm/dist" \
+            "$GITHUB_WORKSPACE/zig-out/lib/wasm_mvp/zig_ext.duckdb_extension.wasm"
+
+      # The Node check above exercises the engine's Node bindings; a real browser's own
+      # fetch/Worker/dlopen path is otherwise unverified. `--with-deps` installs the OS
+      # packages headless Chromium needs on a bare runner, not just the browser binary.
+      - name: Install Playwright's Chromium
+        run: cd tools/wasm_verify && npx playwright install --with-deps chromium
+
+      - name: Verify the extension loads and runs for real (real headless browser)
+        run: |
+          cd tools/wasm_verify
+          NODE_PATH="$(pwd)/node_modules" node verify_wasm_load_browser.cjs \
             "$GITHUB_WORKSPACE/.tmp/engine/packages/duckdb-wasm/dist" \
             "$GITHUB_WORKSPACE/zig-out/lib/wasm_mvp/zig_ext.duckdb_extension.wasm"
 
