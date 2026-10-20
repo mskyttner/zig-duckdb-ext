@@ -355,6 +355,105 @@ fn createNamedType(
     return v2.duckdb_v2_factory_create_type_from_id(f, type_id, names.ptr, type_values.ptr, names.len, out_type, err);
 }
 
+// --- More `[]const u8`-taking wrappers over raw `duckdb_v2_str`-based calls -----------------------
+//
+// DuckDB's own C API v2 feedback discussion (duckdb/duckdb#27525) states a plan to remove
+// `duckdb_v2_str` entirely before stabilization, replacing every function that takes one with a
+// plain `(ptr, len)` pair — "a large, but almost entirely mechanical change." These wrappers (plus
+// `createTypeFromText`/`createVarcharValue`/`createBlobValue`/`setDocs` above, which already did
+// this for their own calls) mean that migration touches ~9 function bodies here, not every call
+// site across the codebase: when the signature changes, only `str(text)` + `&view` below becomes
+// `text.ptr, text.len` at each of these, once.
+
+/// Sets an error's text. Unlike most calls here, `duckdb_v2_error_info_set_text` takes no `err`
+/// of its own — there is nothing else that can fail about setting a string into a handle the
+/// caller already has.
+pub fn setErrorText(info: v2.duckdb_v2_error_info_handle, text: []const u8) v2.DUCKDB_V2_ERROR {
+    const view = str(text);
+    return v2.duckdb_v2_error_info_set_text(info, &view);
+}
+
+/// Opens a file at `file_path` through a file system handle, with already-configured `options`.
+pub fn fileSystemOpen(
+    file_system: v2.duckdb_v2_file_system_handle,
+    file_path: []const u8,
+    options: v2.duckdb_v2_file_open_options_handle,
+    out_file: *v2.duckdb_v2_file_handle,
+    err: ?*v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    const view = str(file_path);
+    return v2.duckdb_v2_file_system_open(file_system, &view, options, out_file, err);
+}
+
+/// Sets a macro function's SQL body.
+pub fn setMacroBody(function: v2.duckdb_v2_macro_function_handle, body: []const u8, err: ?*v2.duckdb_v2_error_info_handle) v2.DUCKDB_V2_ERROR {
+    const view = str(body);
+    return v2.duckdb_v2_macro_function_set_body(function, &view, err);
+}
+
+/// Attaches a database at `path` to `instance`, under `name` if given (DuckDB derives one from
+/// `path` otherwise).
+pub fn instanceAttach(
+    instance: v2.duckdb_v2_instance_handle,
+    name: ?[]const u8,
+    path: []const u8,
+    options: ?v2.duckdb_v2_attach_options_handle,
+    make_default: bool,
+    err: ?*v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    const path_view = str(path);
+    if (name) |n| {
+        const name_view = str(n);
+        return v2.duckdb_v2_instance_attach(instance, &name_view, &path_view, options, make_default, err);
+    }
+    return v2.duckdb_v2_instance_attach(instance, null, &path_view, options, make_default, err);
+}
+
+/// Sets one `key = setting` pair of attach options (`setting` is the textual form a quoted SQL
+/// literal would carry, e.g. `"true"`, not a typed value).
+pub fn attachOptionsSet(
+    options: v2.duckdb_v2_attach_options_handle,
+    key: []const u8,
+    setting: []const u8,
+    err: ?*v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    const key_view = str(key);
+    const setting_view = str(setting);
+    return v2.duckdb_v2_attach_options_set(options, &key_view, &setting_view, err);
+}
+
+/// Writes a log entry through a context, tagged with `log_type`. Succeeds whether or not the
+/// entry was actually recorded (that depends on the active log configuration).
+pub fn contextLog(
+    ctx: v2.duckdb_v2_context_handle,
+    level: v2.DUCKDB_V2_LOG_LEVEL,
+    log_type: []const u8,
+    message: []const u8,
+    err: ?*v2.duckdb_v2_error_info_handle,
+) v2.DUCKDB_V2_ERROR {
+    const type_view = str(log_type);
+    const message_view = str(message);
+    return v2.duckdb_v2_context_log(ctx, level, &type_view, &message_view, err);
+}
+
+/// Parses `text` as a (possibly multi-part, possibly quoted) qualified name.
+pub fn qnameParse(text: []const u8, out_name: *v2.duckdb_v2_qname_handle, err: ?*v2.duckdb_v2_error_info_handle) v2.DUCKDB_V2_ERROR {
+    const view = str(text);
+    return v2.duckdb_v2_qname_parse(&view, out_name, err);
+}
+
+/// Tokenizes `sql` (or an empty script, if not given) over `conn`.
+pub fn tokenizeSql(conn: v2.duckdb_v2_connection_handle, sql: ?[]const u8, out_iterator: *v2.duckdb_v2_token_iterator_handle, err: ?*v2.duckdb_v2_error_info_handle) v2.DUCKDB_V2_ERROR {
+    const view = str(sql orelse "");
+    return v2.duckdb_v2_tokenize_sql(conn, &view, out_iterator, err);
+}
+
+/// Whether `text` is valid UTF-8.
+pub fn validateUtf8(text: []const u8, err: ?*v2.duckdb_v2_error_info_handle) bool {
+    const view = str(text);
+    return v2.duckdb_v2_validate_utf8(&view, err) == .ERROR_NONE;
+}
+
 test "str views the bytes it is given" {
     const s = str("abc");
     try std.testing.expectEqual(@as(u64, 3), s.len);

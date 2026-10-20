@@ -1544,9 +1544,8 @@ fn nethogsTraceBind(info: v2.duckdb_v2_function_bind_info_handle, result: v2.duc
         // made a real, fixable usage error look like "no traffic captured".
         var buf: [160]u8 = undefined;
         const msg_text = std.fmt.bufPrint(&buf, "zig_v2_nethogs_trace: failed to spawn/read '{s}': {s} (try an absolute path, e.g. /usr/sbin/nethogs)", .{ cmd, @errorName(e) }) catch "zig_v2_nethogs_trace: failed to spawn/read subprocess";
-        const msg = helpers.str(msg_text);
         _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
-        _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
+        _ = helpers.setErrorText(err.*, msg_text);
         return;
     };
     defer batch.deinit(std.heap.c_allocator);

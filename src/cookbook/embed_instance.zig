@@ -253,9 +253,7 @@ fn attaching(arena: std.mem.Allocator) !void {
     var options: v2.duckdb_v2_attach_options_handle = undefined;
     try c.ok(v2.duckdb_v2_attach_options_create(s.instance, &options, c.err()));
     defer _ = v2.duckdb_v2_attach_options_destroy(&options);
-    const read_only = str("READ_ONLY");
-    const yes = str("true");
-    try c.ok(v2.duckdb_v2_attach_options_set(options, &read_only, &yes, c.err()));
+    try c.ok(helpers.attachOptionsSet(options, "READ_ONLY", "true", c.err()));
     const ro = str("ro");
     try c.ok(v2.duckdb_v2_instance_attach(s.instance, &ro, &path, options, false, c.err()));
     try expectEqual("what was written", "42", try scalar(arena, &s, "SELECT answer FROM ro.t"));
@@ -294,9 +292,8 @@ fn qnameText(arena: std.mem.Allocator, name: v2.duckdb_v2_qname_handle, c: *Call
 /// The columns of a table as "name TYPE [default] [generated]" words, and the resolved name and read-only flag in front.
 fn describe(arena: std.mem.Allocator, s: *Session, name: []const u8) ![]const u8 {
     var c: Call = .{};
-    const text = str(name);
     var parsed: v2.duckdb_v2_qname_handle = undefined;
-    try c.ok(v2.duckdb_v2_qname_parse(&text, &parsed, c.err()));
+    try c.ok(helpers.qnameParse(name, &parsed, c.err()));
     defer _ = v2.duckdb_v2_qname_destroy(&parsed);
 
     var desc: v2.duckdb_v2_table_description_handle = undefined;
@@ -362,9 +359,8 @@ fn catalog(arena: std.mem.Allocator) !void {
 
     // A description is a snapshot: the table can go, and the description is still readable.
     var c: Call = .{};
-    const name_text = str("main.plain");
     var parsed: v2.duckdb_v2_qname_handle = undefined;
-    try c.ok(v2.duckdb_v2_qname_parse(&name_text, &parsed, c.err()));
+    try c.ok(helpers.qnameParse("main.plain", &parsed, c.err()));
     defer _ = v2.duckdb_v2_qname_destroy(&parsed);
     var desc: v2.duckdb_v2_table_description_handle = undefined;
     try c.ok(v2.duckdb_v2_connection_describe_table(s.conn, parsed, &desc, c.err()));

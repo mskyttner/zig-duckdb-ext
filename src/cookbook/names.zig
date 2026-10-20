@@ -35,9 +35,8 @@ const gpa = std.heap.c_allocator;
 fn fail(err: Err, code: v2.DUCKDB_V2_ERROR, comptime fmt: []const u8, args: anytype) void {
     var buf: [300]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch buf[0..0];
-    const text = helpers.str(msg);
     _ = v2.duckdb_v2_error_info_set_code(err.*, code);
-    _ = v2.duckdb_v2_error_info_set_text(err.*, &text);
+    _ = helpers.setErrorText(err.*, msg);
 }
 
 fn oom(err: Err) void {
@@ -68,10 +67,9 @@ const QName = struct {
     handle: v2.duckdb_v2_qname_handle,
 
     fn parse(text: []const u8, err: Err) ?QName {
-        const s = helpers.str(text);
         var handle: v2.duckdb_v2_qname_handle = undefined;
         // The parser's own error: "unterminated quote", "too many parts", ...
-        if (v2.duckdb_v2_qname_parse(&s, &handle, err) != .ERROR_NONE) return null;
+        if (helpers.qnameParse(text, &handle, err) != .ERROR_NONE) return null;
         return .{ .handle = handle };
     }
 
@@ -181,9 +179,8 @@ fn hashCompute(alloc: std.mem.Allocator, args: [1][]const u8, err: Err) ?Value {
 fn utf8Compute(alloc: std.mem.Allocator, args: [1][]const u8, err: Err) ?Value {
     _ = alloc;
     _ = err;
-    const bytes = helpers.str(args[0]);
     // Not an error for the caller: the failure is the answer. Ask without an error slot, so nothing is allocated.
-    return .{ .boolean = v2.duckdb_v2_validate_utf8(&bytes, null) == .ERROR_NONE };
+    return .{ .boolean = helpers.validateUtf8(args[0], null) };
 }
 
 fn registerScalar(

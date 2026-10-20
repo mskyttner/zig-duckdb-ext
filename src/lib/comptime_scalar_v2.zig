@@ -765,11 +765,10 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         fn reportError(err: *v2.duckdb_v2_error_info_handle, e: anyerror) void {
             var buf: [160]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "{s}: {s}", .{ name, @errorName(e) }) catch name;
-            const text = helpers.str(msg);
             const code: v2.DUCKDB_V2_ERROR = if (e == error.Overflow) .ERROR_INPUT_OUT_OF_RANGE else .ERROR_INPUT_INVALID;
             // There is nowhere to report a failure to report: DuckDB fails the query either way.
             _ = v2.duckdb_v2_error_info_set_code(err.*, code);
-            _ = v2.duckdb_v2_error_info_set_text(err.*, &text);
+            _ = helpers.setErrorText(err.*, msg);
         }
 
         inline fn invoke(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) RawReturnType {
@@ -1240,9 +1239,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
                 if (comptime return_is_list) {
                     if (result.len > list_return_max_elems) {
-                        const msg = helpers.str("LIST return exceeds the supported maximum length");
                         _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
-                        _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
+                        _ = helpers.setErrorText(err.*, "LIST return exceeds the supported maximum length");
                         return;
                     }
                     var boxed: [list_return_max_elems]v2.duckdb_v2_value_handle = undefined;
@@ -1390,9 +1388,8 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
                 if (comptime return_is_map) {
                     if (result.entries.len > map_return_max_entries) {
-                        const msg = helpers.str("MAP return exceeds the supported maximum entry count");
                         _ = v2.duckdb_v2_error_info_set_code(err.*, .ERROR_API);
-                        _ = v2.duckdb_v2_error_info_set_text(err.*, &msg);
+                        _ = helpers.setErrorText(err.*, "MAP return exceeds the supported maximum entry count");
                         return;
                     }
                     var boxed_keys: [map_return_max_entries]v2.duckdb_v2_value_handle = undefined;

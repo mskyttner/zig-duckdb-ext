@@ -28,9 +28,8 @@ const Err = *v2.duckdb_v2_error_info_handle;
 fn fail(err: Err, code: v2.DUCKDB_V2_ERROR, comptime fmt: []const u8, args: anytype) void {
     var buf: [200]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch buf[0..0];
-    const text = helpers.str(msg);
     _ = v2.duckdb_v2_error_info_set_code(err.*, code);
-    _ = v2.duckdb_v2_error_info_set_text(err.*, &text);
+    _ = helpers.setErrorText(err.*, msg);
 }
 
 fn typeName(id: v2.DUCKDB_V2_LOGICAL_TYPE_ID) []const u8 {
