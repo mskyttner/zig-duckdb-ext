@@ -40,7 +40,9 @@ pub fn renderLine(allocator: std.mem.Allocator, values: []const f64, height: f64
 /// Vectorized execute callback for tp_line_impl.
 pub fn tpLineExec(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) callconv(.c) void {
     _ = info;
-    const chunk_size = db.dataChunkGetSize(input);
+    // SAFETY: DuckDB vectors are capped at STANDARD_VECTOR_SIZE (2048), far under `usize`'s
+    // range even on 32-bit targets (wasm32).
+    const chunk_size: usize = @intCast(db.dataChunkGetSize(input));
 
     const list_vec = db.dataChunkGetVector(input, 0);
     const height_vec = db.dataChunkGetVector(input, 1);
@@ -96,13 +98,16 @@ fn writeRow(
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const len = @min(entry.length, 255);
+    // SAFETY: `entry.length`/`entry.offset` are idx_t (u64); list entries are capped at 255
+    // values here regardless, far under `usize`'s range even on 32-bit targets (wasm32).
+    const offset: usize = @intCast(entry.offset);
+    const len: usize = @intCast(@min(entry.length, 255));
     const values = allocator.alloc(f64, len) catch {
         db.vectorAssignStringElement(output, row, "");
         return;
     };
     for (0..len) |i| {
-        const ci = entry.offset + i;
+        const ci = offset + i;
         values[i] = if (db.validityRowIsValid(child_validity, ci)) child_data[ci] else std.math.nan(f64);
     }
 

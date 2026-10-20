@@ -291,16 +291,16 @@ pub fn PlotGraph(self: *Self, data: [][]f64) !void {
                     plot[rowSize - y0][x + default.offset].text = "╯";
                 }
 
-                const start = @as(u64, @min(y0, y1)) + 1;
-                const end = @as(u64, @max(y0, y1));
+                const start = @as(usize, @min(y0, y1)) + 1;
+                const end = @as(usize, @max(y0, y1));
                 var k = start;
                 while (k < end) : (k += 1) {
                     plot[rowSize - k][x + default.offset].text = "│";
                 }
             }
 
-            const start = @as(u64, @min(y0, y1));
-            const end = @as(u64, @max(y0, y1));
+            const start = @as(usize, @min(y0, y1));
+            const end = @as(usize, @max(y0, y1));
             var k = start;
             while (k < end) : (k += 1) {
                 plot[rowSize - k][x + default.offset].color = self.config.legendColor;

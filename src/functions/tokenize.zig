@@ -179,7 +179,9 @@ fn emitToken(
     ordinal: i64,
     token: []const u8,
 ) void {
-    pos_data[row] = ordinal;
+    // SAFETY: row is bounded by STANDARD_VECTOR_SIZE (2048), far under `usize`'s range even on
+    // 32-bit targets (wasm32).
+    pos_data[@intCast(row)] = ordinal;
     db.vectorAssignStringElementLen(tok_vec, row, token.ptr, token.len);
 }
 

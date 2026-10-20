@@ -17,7 +17,9 @@ fn reportOverflow(info: db.FunctionInfo, a: i64, b: i64) void {
 /// Vectorized implementation of the add_numbers function.
 /// Processes an entire DataChunk, handling NULL propagation via validity masks.
 pub fn addNumbers(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) callconv(.c) void {
-    const input_size = db.dataChunkGetSize(input);
+    // SAFETY: DuckDB vectors are capped at STANDARD_VECTOR_SIZE (2048), far under `usize`'s
+    // range even on 32-bit targets (wasm32).
+    const input_size: usize = @intCast(db.dataChunkGetSize(input));
 
     const a_vec = db.dataChunkGetVector(input, 0);
     const b_vec = db.dataChunkGetVector(input, 1);

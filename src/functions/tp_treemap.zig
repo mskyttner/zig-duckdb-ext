@@ -16,7 +16,9 @@ const snake = @import("../lib/snake.zig");
 /// Vectorized execute callback for tp_treemap_impl.
 pub fn tpTreemapExec(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) callconv(.c) void {
     _ = info;
-    const chunk_size = db.dataChunkGetSize(input);
+    // SAFETY: DuckDB vectors are capped at STANDARD_VECTOR_SIZE (2048), far under `usize`'s
+    // range even on 32-bit targets (wasm32).
+    const chunk_size: usize = @intCast(db.dataChunkGetSize(input));
 
     const val_list_vec = db.dataChunkGetVector(input, 0);
     const lbl_list_vec = db.dataChunkGetVector(input, 1);
@@ -94,20 +96,25 @@ fn writeRow(
     const allocator = arena.allocator();
 
     // Build labels slice, aligning length to the values slice.
-    const n = ve.length;
+    // SAFETY: idx_t (u64) fields, capped at STANDARD_VECTOR_SIZE (2048), far under `usize`'s
+    // range even on 32-bit targets (wasm32).
+    const n: usize = @intCast(ve.length);
+    const val_offset: usize = @intCast(ve.offset);
     const labels_buf = allocator.alloc([]const u8, n) catch {
         db.vectorAssignStringElement(output, row, "");
         return;
     };
     const le = lbl_entries[row];
+    const lbl_length: usize = @intCast(le.length);
+    const lbl_offset: usize = @intCast(le.offset);
     for (0..n) |i| {
-        labels_buf[i] = if (i < le.length)
-            db.stringSlice(&lbl_data[le.offset + i])
+        labels_buf[i] = if (i < lbl_length)
+            db.stringSlice(&lbl_data[lbl_offset + i])
         else
             "";
     }
 
-    const values = val_data[ve.offset .. ve.offset + n];
+    const values = val_data[val_offset .. val_offset + n];
 
     var c = canvas_lib.Canvas.init(allocator, cw, ch) catch {
         db.vectorAssignStringElement(output, row, "");

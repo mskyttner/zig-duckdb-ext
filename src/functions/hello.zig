@@ -7,7 +7,9 @@ const db = @import("../lib/duckdb.zig");
 /// Processes an entire DataChunk of VARCHAR inputs, producing VARCHAR outputs.
 pub fn zigHello(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) callconv(.c) void {
     _ = info;
-    const input_size = db.dataChunkGetSize(input);
+    // SAFETY: DuckDB vectors are capped at STANDARD_VECTOR_SIZE (2048), far under `usize`'s
+    // range even on 32-bit targets (wasm32).
+    const input_size: usize = @intCast(db.dataChunkGetSize(input));
     const name_vec = db.dataChunkGetVector(input, 0);
     const name_validity = db.vectorGetValidity(name_vec);
 

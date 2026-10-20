@@ -75,7 +75,9 @@ pub fn Function(comptime name: [:0]const u8, comptime implFn: anytype) type {
 
         /// Vectorized callback invoked by DuckDB for each DataChunk.
         fn execute(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) callconv(.c) void {
-            const chunk_size = db.dataChunkGetSize(input);
+            // SAFETY: DuckDB vectors are capped at STANDARD_VECTOR_SIZE (2048), far under
+            // `usize`'s range even on 32-bit targets (wasm32).
+            const chunk_size: usize = @intCast(db.dataChunkGetSize(input));
 
             // Cache raw data pointers and validity masks before the loop (one vtable
             // call per parameter, not per row).

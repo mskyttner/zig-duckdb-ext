@@ -18,7 +18,9 @@ const box = @import("../lib/box.zig");
 
 pub fn tpSnakemapExec(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) callconv(.c) void {
     _ = info;
-    const chunk_size = db.dataChunkGetSize(input);
+    // SAFETY: DuckDB vectors are capped at STANDARD_VECTOR_SIZE (2048), far under `usize`'s
+    // range even on 32-bit targets (wasm32).
+    const chunk_size: usize = @intCast(db.dataChunkGetSize(input));
 
     const val_list_vec = db.dataChunkGetVector(input, 0);
     const lbl_list_vec = db.dataChunkGetVector(input, 1);
@@ -122,14 +124,21 @@ fn writeRow(
         db.vectorAssignStringElement(output, row, "");
         return;
     }
-    const n = ve.length;
+    const le = lbl_entries[row];
+    const ge = grp_entries[row];
+
+    // SAFETY: `ve.length`/`.offset` etc. are idx_t (u64), capped at STANDARD_VECTOR_SIZE (2048),
+    // far under `usize`'s range even on 32-bit targets (wasm32).
+    const n: usize = @intCast(ve.length);
+    const val_offset: usize = @intCast(ve.offset);
+    const lbl_length: usize = @intCast(le.length);
+    const lbl_offset: usize = @intCast(le.offset);
+    const grp_length: usize = @intCast(ge.length);
+    const grp_offset: usize = @intCast(ge.offset);
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-
-    const le = lbl_entries[row];
-    const ge = grp_entries[row];
 
     const values = allocator.alloc(f64, n) catch {
         db.vectorAssignStringElement(output, row, "");
@@ -144,9 +153,9 @@ fn writeRow(
         return;
     };
     for (0..n) |i| {
-        values[i] = val_data[ve.offset + i];
-        labels[i] = if (i < le.length) db.stringSlice(&lbl_data[le.offset + i]) else "";
-        groups[i] = if (i < ge.length) db.stringSlice(&grp_data[ge.offset + i]) else "";
+        values[i] = val_data[val_offset + i];
+        labels[i] = if (i < lbl_length) db.stringSlice(&lbl_data[lbl_offset + i]) else "";
+        groups[i] = if (i < grp_length) db.stringSlice(&grp_data[grp_offset + i]) else "";
     }
 
     const rendered = renderSnakemap(allocator, values, labels, groups, cw, ch, no_color) catch {
