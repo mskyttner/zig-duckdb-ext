@@ -88,14 +88,18 @@ async function main() {
         }
 
         const result = JSON.parse(resultText);
-        if (result.hello?.greeting !== 'Hello, ci!') {
-            fail(`zig_hello('ci') returned ${JSON.stringify(result.hello)}, expected {"greeting":"Hello, ci!"}`);
-        }
-        if (result.sum !== 5) {
-            fail(`zig_add_numbers(2, 3) returned ${JSON.stringify(result.sum)}, expected 5`);
-        }
-        console.log(`zig_hello('ci') = ${JSON.stringify(result.hello)}`);
-        console.log(`zig_add_numbers(2, 3) = ${result.sum}`);
+        const expect = (label, actual, expected) => {
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+                fail(`${label} returned ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
+            }
+            console.log(`${label} = ${JSON.stringify(actual)}`);
+        };
+        expect('zig_hello', result.zig_hello, { greeting: 'Hello, ci!' });
+        expect('zig_add_numbers', result.zig_add_numbers, 5);
+        expect('zig_tokenize', result.zig_tokenize, ['a', 'b', 'c']);
+        expect('ct_add_numbers', result.ct_add_numbers, 5);
+        expect('ct_tokenize', result.ct_tokenize, ['alice', 'bob', 'charlie']);
+        expect('tp_bar', result.tp_bar, 'XXXXX.....');
         console.log(`verify_wasm_load_browser: PASSED — ${extBase} loads and runs in a real headless browser against ${distDir}`);
     } finally {
         await browser.close();

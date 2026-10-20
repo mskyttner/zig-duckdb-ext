@@ -34,11 +34,21 @@ async function main() {
     await conn.query(`SET custom_extension_repository = '${location.origin}'`);
     await conn.query(`LOAD ${extName}`);
 
-    const hello = (await conn.query(`SELECT zig_hello('ci') AS greeting`)).toArray()[0].toJSON();
-    const sum = (await conn.query(`SELECT zig_add_numbers(2, 3) AS sum`)).toArray()[0].toJSON();
+    const results = {};
+    const run = async (label, sql, pick) => {
+        const rows = (await conn.query(sql)).toArray().map(r => r.toJSON());
+        results[label] = pick ? pick(rows) : rows[0];
+    };
+
+    await run('zig_hello', `SELECT zig_hello('ci') AS greeting`);
+    await run('zig_add_numbers', `SELECT zig_add_numbers(2, 3) AS sum`, rows => Number(rows[0].sum));
+    await run('zig_tokenize', `SELECT token FROM zig_tokenize('a,b,c', ',') ORDER BY token_pos`, rows => rows.map(r => r.token));
+    await run('ct_add_numbers', `SELECT ct_add_numbers(2, 3) AS sum`, rows => Number(rows[0].sum));
+    await run('ct_tokenize', `SELECT token FROM ct_tokenize('alice,bob,charlie', ',') ORDER BY token_pos`, rows => rows.map(r => r.token));
+    await run('tp_bar', `SELECT tp_bar(0.5, "on" := 'X', "off" := '.', width := 10) AS bar`, rows => rows[0].bar);
 
     await conn.close();
-    return { hello, sum: Number(sum.sum) };
+    return results;
 }
 
 main().then(r => {
