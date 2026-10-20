@@ -231,6 +231,21 @@ tasks:
       - task: wasm:verify-browser
         vars: { CLI_ARGS: ".tmp/duckdb-wasm/packages/duckdb-wasm/dist" }
 
+  wasm:verify-haybarn-coi-browser:
+    desc: "Verify the coi (threads+exceptions) wasm32-emscripten build loads in a real headless browser against haybarn-wasm's latest engine. Build it first: zig build wasm-ext-coi -Demcc-path=<emsdk 6.0.12's emcc>. haybarn-wasm only: official duckdb-wasm's coi pin (Emscripten 3.1.57) can't link this build at all — a real, independently-reproduced upstream bug, not this project's; see docs/rationale/0008_wasm-emscripten-side-module.md. No Node bindings exist for coi in either fork, so this is browser-only by necessity, not by choice."
+    cmds:
+      - |
+        set -e
+        EXT_PATH="$(pwd)/zig-out/lib/wasm_threads/zig_ext.duckdb_extension.wasm"
+        if [ ! -f "$EXT_PATH" ]; then
+          echo "missing $EXT_PATH — did 'zig build wasm-ext-coi -Demcc-path=...' run (with haybarn-wasm's pinned Emscripten version, 6.0.12)?"
+          exit 1
+        fi
+        bash tools/wasm_verify/fetch_engine.sh Query-farm-haybarn/haybarn-wasm .tmp/haybarn-wasm
+        (cd tools/wasm_verify && npm install --no-audit --no-fund --silent && npx playwright install chromium)
+        NODE_PATH="$(pwd)/tools/wasm_verify/node_modules" node tools/wasm_verify/verify_wasm_load_browser.cjs \
+          .tmp/haybarn-wasm/packages/duckdb-wasm/dist "$EXT_PATH" --coi
+
   verify:cross-arm64:
     desc: "Load the cross-compiled linux_arm64 extension under QEMU (via Docker/binfmt) and run real SQL against it"
     deps: [cross]

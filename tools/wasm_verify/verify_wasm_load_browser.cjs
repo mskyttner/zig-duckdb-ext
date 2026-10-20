@@ -4,11 +4,16 @@
 // through it. The Node-bindings counterpart to this is verify_wasm_load.cjs; this one closes
 // the gap that one can't: a real browser's fetch/Worker/dlopen path, not Node's.
 //
-//   node verify_wasm_load_browser.cjs <engine-dist-dir> <extension-wasm-path>
+//   node verify_wasm_load_browser.cjs <engine-dist-dir> <extension-wasm-path> [--coi]
 //
 // `engine-dist-dir` is a duckdb-wasm `packages/duckdb-wasm/dist` directory (what
 // fetch_engine.sh extracts) — needs its browser bundle files (`duckdb-mvp.wasm`,
-// `duckdb-browser-mvp.worker.js`, `duckdb-browser.mjs`), not the Node ones.
+// `duckdb-browser-mvp.worker.js`, `duckdb-browser.mjs`, or the `coi` equivalents with
+// `--coi`), not the Node ones. `--coi` also needs the extension itself built for that
+// platform (`zig build wasm-ext-coi`, not `wasm-ext`) and serves the page with
+// `Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy` headers, required for
+// `crossOriginIsolated`/`SharedArrayBuffer` — without them `coi`'s threaded engine never
+// gets as far as `LOAD`.
 //
 // Unlike verify_wasm_load.cjs, the static server here runs in-process with this script:
 // the duckdb-wasm engine runs inside the browser's own separate process, driven remotely
@@ -30,9 +35,11 @@ function fail(msg) {
 }
 
 async function main() {
-    const [distDirArg, extPathArg] = process.argv.slice(2);
+    const args = process.argv.slice(2);
+    const coi = args.includes('--coi');
+    const [distDirArg, extPathArg] = args.filter(a => a !== '--coi');
     if (!distDirArg || !extPathArg) {
-        console.error('usage: verify_wasm_load_browser.cjs <engine-dist-dir> <extension-wasm-path>');
+        console.error('usage: verify_wasm_load_browser.cjs <engine-dist-dir> <extension-wasm-path> [--coi]');
         process.exit(2);
     }
     const distDir = path.resolve(distDirArg);
@@ -44,13 +51,22 @@ async function main() {
     }
 
     const browserDir = path.join(__dirname, 'browser');
-    const engineFiles = ['duckdb-mvp.wasm', 'duckdb-browser-mvp.worker.js', 'duckdb-browser.mjs'];
+    const engineFiles = coi
+        ? ['duckdb-coi.wasm', 'duckdb-browser-coi.worker.js', 'duckdb-browser-coi.pthread.worker.js', 'duckdb-browser.mjs']
+        : ['duckdb-mvp.wasm', 'duckdb-browser-mvp.worker.js', 'duckdb-browser.mjs'];
     const mime = { '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript', '.wasm': 'application/wasm' };
 
     const server = http.createServer((req, res) => {
         const url = req.url.split('?')[0];
+        const headers = { 'Access-Control-Allow-Origin': '*' };
+        // Required for `crossOriginIsolated`/`SharedArrayBuffer`, which `coi`'s threaded
+        // engine needs; harmless (and unused) for `mvp`.
+        if (coi) {
+            headers['Cross-Origin-Opener-Policy'] = 'same-origin';
+            headers['Cross-Origin-Embedder-Policy'] = 'require-corp';
+        }
         if (url.endsWith('.duckdb_extension.wasm')) {
-            res.writeHead(200, { 'Content-Type': 'application/wasm', 'Access-Control-Allow-Origin': '*' });
+            res.writeHead(200, { ...headers, 'Content-Type': 'application/wasm' });
             res.end(extBytes);
             return;
         }
@@ -59,11 +75,11 @@ async function main() {
         const filePath = fromEngine ? path.join(distDir, name) : path.join(browserDir, name);
         fs.readFile(filePath, (err, data) => {
             if (err) {
-                res.writeHead(404);
+                res.writeHead(404, headers);
                 res.end('not found: ' + filePath);
                 return;
             }
-            res.writeHead(200, { 'Content-Type': mime[path.extname(name)] || 'application/octet-stream', 'Access-Control-Allow-Origin': '*' });
+            res.writeHead(200, { ...headers, 'Content-Type': mime[path.extname(name)] || 'application/octet-stream' });
             res.end(data);
         });
     });
@@ -79,7 +95,8 @@ async function main() {
         const consoleErrors = [];
         page.on('pageerror', err => consoleErrors.push(err.message));
 
-        await page.goto(`http://127.0.0.1:${port}/index.html?name=${encodeURIComponent(extBase)}`, { waitUntil: 'load' });
+        const pageUrl = `http://127.0.0.1:${port}/index.html?name=${encodeURIComponent(extBase)}${coi ? '&coi=1' : ''}`;
+        await page.goto(pageUrl, { waitUntil: 'load' });
         await page.waitForFunction(() => document.getElementById('result').textContent !== 'PENDING', { timeout: 30000 });
         const resultText = await page.textContent('#result');
 
@@ -100,7 +117,8 @@ async function main() {
         expect('ct_add_numbers', result.ct_add_numbers, 5);
         expect('ct_tokenize', result.ct_tokenize, ['alice', 'bob', 'charlie']);
         expect('tp_bar', result.tp_bar, 'XXXXX.....');
-        console.log(`verify_wasm_load_browser: PASSED — ${extBase} loads and runs in a real headless browser against ${distDir}`);
+        if (coi) expect('crossOriginIsolated', result.crossOriginIsolated, true);
+        console.log(`verify_wasm_load_browser: PASSED — ${extBase} loads and runs in a real headless browser against ${distDir}${coi ? ' (coi)' : ''}`);
     } finally {
         await browser.close();
         server.close();

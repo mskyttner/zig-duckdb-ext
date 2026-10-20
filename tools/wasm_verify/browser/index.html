@@ -21,13 +21,15 @@
 <script type="module">
 import * as duckdb from './duckdb-browser.mjs';
 
-const extName = new URLSearchParams(location.search).get('name');
+const params = new URLSearchParams(location.search);
+const extName = params.get('name');
+const coi = params.get('coi') === '1';
 
 async function main() {
-    const worker = new Worker('./duckdb-browser-mvp.worker.js');
+    const worker = new Worker(coi ? './duckdb-browser-coi.worker.js' : './duckdb-browser-mvp.worker.js');
     const logger = new duckdb.ConsoleLogger();
     const db = new duckdb.AsyncDuckDB(logger, worker);
-    await db.instantiate('./duckdb-mvp.wasm', null);
+    await db.instantiate(coi ? './duckdb-coi.wasm' : './duckdb-mvp.wasm', coi ? './duckdb-browser-coi.pthread.worker.js' : null);
     await db.open({ allowUnsignedExtensions: true });
     const conn = await db.connect();
 
@@ -48,6 +50,7 @@ async function main() {
     await run('tp_bar', `SELECT tp_bar(0.5, "on" := 'X', "off" := '.', width := 10) AS bar`, rows => rows[0].bar);
 
     await conn.close();
+    if (coi) results.crossOriginIsolated = self.crossOriginIsolated;
     return results;
 }
 
