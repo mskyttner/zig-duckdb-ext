@@ -245,6 +245,47 @@ const VariantDefault = comptime_scalar_v2.Function("zig_v2_variant_default_ct", 
     }
 }.eval);
 
+/// CAUTION, found live, not fixed (nothing to fix on this side): calling
+/// `duckdb_v2_value_get_type` on a value fetched from a VARIANT cell via
+/// `duckdb_v2_vector_get_value` segfaults the host process on this pinned alpha
+/// (`v2.0.0-alpha48730`), reproducibly, with no error returned first. Isolated by
+/// elimination, not assumed: the identical handle (same fetch, same lifetime, same
+/// framework code path `VariantDefault` above already uses successfully) works fine with
+/// `duckdb_v2_value_is_null`/`duckdb_v2_value_get_bigint` — only `value_get_type` crashes.
+/// A one-line change (returning before the `get_type` call, left as `const probe = true`
+/// below rather than deleted, to keep the isolation itself reproducible) runs clean and
+/// returns a plain value. Not this project's bug: nothing here does anything but call the
+/// C API function as documented. Relevant to a live discussion,
+/// https://github.com/duckdb/duckdb/discussions/27525, about whether VARIANT-cell values
+/// report their real inner type or stay opaque — on this build, asking crashes outright
+/// rather than returning either answer.
+const VariantTypeId = comptime_scalar_v2.Function("zig_v2_variant_type_id_ct", struct {
+    fn eval(context: v2.duckdb_v2_context_handle, v: v2.duckdb_v2_value_handle) v2.duckdb_v2_value_handle {
+        var err: v2.duckdb_v2_error_info_handle = undefined;
+        var factory: v2.duckdb_v2_factory_handle = undefined;
+        _ = v2.duckdb_v2_context_get_factory(context, &factory, &err);
+        var out: v2.duckdb_v2_value_handle = undefined;
+        const probe = false; // true: skip the crashing call, confirms everything else here is fine
+        if (probe) {
+            _ = v2.duckdb_v2_value_create_bigint(factory, 555, &out, &err);
+            return out;
+        }
+        var lt: v2.duckdb_v2_logical_type_handle = undefined;
+        if (v2.duckdb_v2_value_get_type(v, &lt, &err) != .ERROR_NONE) {
+            _ = v2.duckdb_v2_value_create_bigint(factory, -1, &out, &err);
+            return out;
+        }
+        defer _ = v2.duckdb_v2_logical_type_destroy(&lt);
+        var id: v2.DUCKDB_V2_LOGICAL_TYPE_ID = undefined;
+        if (v2.duckdb_v2_logical_type_get_id(lt, &id, &err) != .ERROR_NONE) {
+            _ = v2.duckdb_v2_value_create_bigint(factory, -2, &out, &err);
+            return out;
+        }
+        _ = v2.duckdb_v2_value_create_bigint(factory, @backingInt(id), &out, &err);
+        return out;
+    }
+}.eval);
+
 /// Proves the smaller integer/float types (i8/i16/i32/f32) are actually
 /// registered and callable live, not just type-checked — the real gap
 /// `docs/v2-migration-plan.md` flagged ("mapped in duckdbV2TypeId but only
@@ -1117,6 +1158,7 @@ fn registerComptimeExamples(input: *const v2.duckdb_v2_extension_input) void {
     IntToPointCast.register(input) catch {};
     VariantToIntCast.register(input) catch {};
     VariantDefault.register(input) catch {};
+    VariantTypeId.register(input) catch {};
     NarrowSum.register(input) catch {};
     TimestampAddCt.register(input) catch {};
     BlobPrefixCt.register(input) catch {};
