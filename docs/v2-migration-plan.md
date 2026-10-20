@@ -1129,6 +1129,20 @@ workload:
   real and unchanged. Found by porting the framework (it had no runtime
   tests); pinned by the PoC suite. Still true and now documented in the
   framework: a custom ENUM cast is not limited to its own dictionary.
+
+**Follow-up, 2026-10-20: `duckdb_v2_value_get_type` segfaults on a value fetched from a
+VARIANT cell — filed upstream, [duckdb/duckdb#27570](https://github.com/duckdb/duckdb/issues/27570).**
+Prompted by a question in [duckdb/duckdb#27525](https://github.com/duckdb/duckdb/discussions/27525)
+about whether `duckdb_v2_vector_get_value()` on a VARIANT cell returns an already-unwrapped
+inner value or stays boxed: *content* extraction via a typed getter
+(`duckdb_v2_value_get_bigint`) already works correctly on such a handle (confirmed live,
+`zig_v2_variant_default_ct` just above never needed to ask the type at all) — but calling
+`duckdb_v2_value_get_type()` on that same kind of handle segfaults the host process outright,
+on the pinned `v2.0.0-alpha48730`, with no error returned first. Isolated by elimination, not
+assumed: added `zig_v2_variant_type_id_ct` (`VariantTypeId` in `init_v2_poc.zig`) with a
+`probe` flag that skips straight past the `get_type` call — that path returns cleanly; only
+`get_type` crashes, same handle, same fetch, same lifetime as the already-working
+`value_get_bigint` call right next to it.
 - **No SQL-execution pipeline wrapped at all — not started** (found
   2026-10-12, systematically checking this project's v2 coverage against
   every section of https://duckdb.org/docs/preview/clients/c/api, not
