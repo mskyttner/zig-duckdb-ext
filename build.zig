@@ -208,6 +208,59 @@ fn addCrossBuild(
     return addDuckdbExtensionMetadata(b, lib, unique_name, target_duckdb_version, extension_version, abi_type, platform);
 }
 
+/// One of `duckdb-wasm`'s three wasm extension platforms — `mvp` (plain WebAssembly 1.0),
+/// `coi` (exceptions + threads, needs a cross-origin-isolated page), and `eh` (exceptions,
+/// no threads) sits between them but isn't wired up here, nothing in this project's own
+/// code needing it over plain `mvp`. Each maps to the platform string DuckDB's own
+/// `extension_build_tools.cmake` writes into the footer (`DUCKDB_EXPLICIT_PLATFORM`), the
+/// Zig wasm CPU feature set needed to link against that platform's `wasm-opt`/`emcc`
+/// without a feature mismatch, and the extra `emcc` link flags that platform's own CMake
+/// passes (`coi`: `-pthread -sSHARED_MEMORY=1`, from that same cmake file's `LINK_FLAGS`).
+const WasmVariant = enum {
+    mvp,
+    coi,
+
+    fn platform(self: WasmVariant) []const u8 {
+        return switch (self) {
+            .mvp => "wasm_mvp",
+            .coi => "wasm_threads",
+        };
+    }
+
+    /// `mvp`: zero extra features — an older emsdk's bundled `wasm-opt` doesn't recognize
+    /// post-MVP feature names like `bulk-memory-opt` (confirmed directly: emsdk 3.1.71,
+    /// official duckdb-wasm's own pin, failed with "Unknown option '--enable-bulk-memory-opt'"
+    /// when linking a lib built with Zig's default `generic` CPU model instead).
+    /// `coi`: Zig's `generic` model (`bulk_memory`, `multivalue`, `mutable_globals`,
+    /// `nontrapping_fptoint`, `reference_types`, `sign_ext`) plus `atomics` and `simd128` —
+    /// exactly `WITH_WASM_THREADS`/`WITH_WASM_SIMD`/`WITH_WASM_BULK_MEMORY`,
+    /// `extension_build_tools.cmake`'s own flags for this platform, no more. Confirmed
+    /// directly that more is actively wrong here, not just unneeded: Zig's `bleeding_edge`
+    /// model (which this used at first) adds `exception_handling`/`relaxed_simd`/`fp16`/
+    /// `gc`/`tail_call`/`multimemory` — features even emsdk 6.0.12's `wasm-opt` doesn't
+    /// recognize, let alone duckdb-wasm's own coi-specific, older `3.1.57` pin. A module
+    /// built without `atomics` cannot link against a `-sSHARED_MEMORY=1` main module at
+    /// all — the two sides' wasm "target features" custom sections have to agree.
+    fn resolveTarget(self: WasmVariant, b: *std.Build) std.Build.ResolvedTarget {
+        var query: std.Target.Query = .{ .cpu_arch = .wasm32, .os_tag = .emscripten };
+        switch (self) {
+            .mvp => query.cpu_model = .{ .explicit = &std.Target.wasm.cpu.mvp },
+            .coi => {
+                query.cpu_model = .{ .explicit = &std.Target.wasm.cpu.generic };
+                query.cpu_features_add = std.Target.wasm.featureSet(&.{ .atomics, .simd128 });
+            },
+        }
+        return b.resolveTargetQuery(query);
+    }
+
+    fn emccLinkArgs(self: WasmVariant) []const []const u8 {
+        return switch (self) {
+            .mvp => &.{},
+            .coi => &.{ "-pthread", "-sSHARED_MEMORY=1" },
+        };
+    }
+};
+
 /// Build the real v1 extension as a `wasm32-emscripten` Emscripten
 /// `SIDE_MODULE`, loadable by `duckdb-wasm`/`haybarn-wasm` via Emscripten's
 /// own `dlopen()`. Mirrors DuckDB's own loadable-extension-for-wasm recipe
@@ -218,12 +271,12 @@ fn addCrossBuild(
 /// project's own `append_metadata` tool — the same footer format and tool
 /// every native build already uses; no wasm-specific variant needed.
 ///
-/// Verified end to end (2026-10-20): loaded via `custom_extension_repository`
-/// and `LOAD` into a live `haybarn-wasm` v1.5.6 engine, `zig_hello`/
-/// `zig_add_numbers` both called and returned correct results through a
-/// real `dlopen()`. `registerFileBuffer` + direct-path `LOAD` hangs in at
-/// least one non-browser binding (a gap in that binding, not in this
-/// artifact — see the migration doc) and is not what this step aims at.
+/// Verified end to end (2026-10-20): `mvp` loaded via `custom_extension_repository`
+/// and `LOAD` into a live `haybarn-wasm`/`duckdb-wasm` engine, in Node and in a real
+/// headless browser, `zig_hello`/`zig_add_numbers` both called and returned correct
+/// results through a real `dlopen()`. `registerFileBuffer` + direct-path `LOAD` hangs in
+/// at least one non-browser binding (a gap in that binding, not in this artifact — see
+/// the migration doc) and is not what this step aims at.
 ///
 /// Needs a real `emcc` from an activated `emsdk` on `PATH`, or `-Demcc-path=`
 /// pointing at one directly — no Emscripten toolchain is vendored here, the
@@ -243,20 +296,12 @@ fn addWasmEmscriptenBuild(
     extension_version: []const u8,
     optimize: std.builtin.OptimizeMode,
     emcc_path: []const u8,
+    variant: WasmVariant,
 ) std.Build.LazyPath {
-    // `.cpu_model = .explicit(&std.Target.wasm.cpu.mvp)`, not Zig's default `.generic`: `generic`
-    // enables post-MVP features (`bulk_memory`, `reference_types`, ...) that an older emsdk's
-    // bundled `wasm-opt` doesn't recognize (confirmed directly: emsdk 3.1.71, duckdb-wasm's own
-    // pin, failed with "Unknown option '--enable-bulk-memory-opt'" when the lib was built with
-    // the default). Plain MVP also matches the `wasm_mvp` platform/footer this step writes.
-    const wasm_target = b.resolveTargetQuery(.{
-        .cpu_arch = .wasm32,
-        .os_tag = .emscripten,
-        .cpu_model = .{ .explicit = &std.Target.wasm.cpu.mvp },
-    });
+    const wasm_target = variant.resolveTarget(b);
 
     const duckdb_c: Translator = .init(translate_c_dep, .{
-        .name = "duckdb_c_wasm_mvp",
+        .name = b.fmt("duckdb_c_{s}", .{variant.platform()}),
         .c_source_file = duckdb_headers_v1_dep.path("duckdb_extension.h"),
         .target = wasm_target,
         .optimize = optimize,
@@ -266,7 +311,7 @@ fn addWasmEmscriptenBuild(
 
     const lib = b.addLibrary(.{
         .linkage = .static,
-        .name = b.fmt("{s}_wasm_mvp", .{extension_name}),
+        .name = b.fmt("{s}_{s}", .{ extension_name, variant.platform() }),
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = wasm_target,
@@ -288,12 +333,13 @@ fn addWasmEmscriptenBuild(
     emcc_cmd.has_side_effects = true;
     emcc_cmd.addArtifactArg(lib);
     emcc_cmd.addArgs(&.{ "-O3", "-g2", "-sSIDE_MODULE=2" });
+    emcc_cmd.addArgs(variant.emccLinkArgs());
     emcc_cmd.addArg(b.fmt("-sEXPORTED_FUNCTIONS=_{s}_init_c_api", .{extension_name}));
     emcc_cmd.addArg("-o");
     const wasm_module = emcc_cmd.addOutputFileArg(b.fmt("{s}.wasm", .{extension_name}));
 
     const metadata_tool = b.addExecutable(.{
-        .name = b.fmt("append_metadata_{s}_wasm_mvp", .{extension_name}),
+        .name = b.fmt("append_metadata_{s}_{s}", .{ extension_name, variant.platform() }),
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/append_metadata_main.zig"),
             .target = b.graph.host,
@@ -305,7 +351,7 @@ fn addWasmEmscriptenBuild(
     append_cmd.addArg(duckdb_version);
     append_cmd.addArg(extension_version);
     append_cmd.addArg(abi_type);
-    append_cmd.addArg("wasm_mvp");
+    append_cmd.addArg(variant.platform());
     return append_cmd.addOutputFileArg(b.fmt("{s}.duckdb_extension.wasm", .{extension_name}));
 }
 
@@ -1558,11 +1604,19 @@ pub fn build(b: *std.Build) void {
         cross_step.dependOn(&install_cross.step);
     }
 
-    // ── "wasm-ext" step: build the wasm32-emscripten SIDE_MODULE ──────────
-    const wasm_ext_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, optimize, emcc_path);
+    // ── "wasm-ext" step: build the wasm32-emscripten SIDE_MODULE (mvp) ────
+    const wasm_ext_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, optimize, emcc_path, .mvp);
     const install_wasm_ext = b.addInstallFile(wasm_ext_output, b.fmt("lib/wasm_mvp/{s}.duckdb_extension.wasm", .{extension_name}));
-    const wasm_ext_step = b.step("wasm-ext", "Build the wasm32-emscripten SIDE_MODULE (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
+    const wasm_ext_step = b.step("wasm-ext", "Build the wasm32-emscripten SIDE_MODULE, mvp platform (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
     wasm_ext_step.dependOn(&install_wasm_ext.step);
+
+    // ── "wasm-ext-coi" step: the threaded/exceptions variant (needs a matching
+    // threaded emcc build; the same -Demcc-path= as wasm-ext, just a different
+    // emsdk activation) ─────────────────────────────────────────────────────
+    const wasm_ext_coi_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, optimize, emcc_path, .coi);
+    const install_wasm_ext_coi = b.addInstallFile(wasm_ext_coi_output, b.fmt("lib/wasm_threads/{s}.duckdb_extension.wasm", .{extension_name}));
+    const wasm_ext_coi_step = b.step("wasm-ext-coi", "Build the wasm32-emscripten SIDE_MODULE, coi (threads+exceptions) platform (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
+    wasm_ext_coi_step.dependOn(&install_wasm_ext_coi.step);
 
     // ── "dist" step: arrange and gzip `cross`'s output into the DuckDB
     // custom-extension-repository layout `INSTALL ... FROM '<url>'`
