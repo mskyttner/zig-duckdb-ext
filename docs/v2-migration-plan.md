@@ -2449,13 +2449,14 @@ flavors — `mvp`/`eh`/`coi`), loaded via **Emscripten's own `dlopen()`**
 as a `SIDE_MODULE` into an already-running Emscripten main module — a
 proprietary dynamic-linking ABI on top of raw wasm (its own relocation
 format, shared table/memory conventions), not satisfied by emitting
-valid `wasm32` bytecode alone. Zig's wasm support targets
-`wasm32-freestanding`/`wasm32-wasi`, architecturally distinct from
-`wasm32-emscripten` — no evidence found that Zig's linker can emit an
-Emscripten-compatible `SIDE_MODULE` (historically requires going through
-`emcc` directly, which would defeat most of the point of using Zig
-here). No prior art found of a Rust/Zig/non-Emscripten-toolchain
-extension loaded by duckdb-wasm this way.
+valid `wasm32` bytecode alone. Zig does recognize `wasm32-emscripten` as
+a real target triple (see the 2026-10-20 follow-up below, which corrects
+an earlier, narrower claim here) — but no evidence found that Zig's own
+linker performs Emscripten's proprietary `SIDE_MODULE` dynamic-linking
+step itself; every real-world case found (raylib-zig included) still
+shells out to real `emcc` for that, which would defeat most of the point
+of using Zig here. No prior art found of a Rust/Zig/non-Emscripten-
+toolchain extension loaded by duckdb-wasm this way.
 
 **A real alternative, now actually inspected (cloned
 `../ducklink-extension` locally, 2026-10-12) — not a port of this
@@ -2564,6 +2565,61 @@ attempted. Still speculative, still not started; haybarn-wasm doesn't
 unblock it, it just rules out v2 as a candidate and adds one untested
 lead (the unsigned load path) worth checking first if this is ever
 picked up for real.
+
+**Follow-up, 2026-10-20: `raylib-zig`'s `wasm32-emscripten` support,
+traced to its actual implementation — corrects one claim above, confirms
+the rest.** Prompted by raylib-zig's README documenting a
+`target.query.os_tag == .emscripten` branch in its "Exporting for web"
+section. That branch is real and changes this section's prior claim that
+"Zig's `wasm32-*` targets are `freestanding`/`wasi`, not `emscripten`" —
+wrong: `.emscripten` is a real, Zig-recognized `os_tag`, confirmed
+directly in raylib-zig's own `build.zig` (pinned at
+`97be2c7a`) and traced one level further through its dependency graph:
+`raylib-zig` re-exports `emsdk` from its `raylib` dependency
+(`raysan5/raylib#6.0`, which ships its own Zig build script), whose
+`emccStep`/`emccDefaultFlags`/`emccDefaultSettings` (`build.zig`, lines
+4–73 of that package) turn out to be a thin wrapper around a separate
+package, `zig-gamedev/zemscripten` (pinned
+`70bdafc473be2131445bb6fd977fe7cb92fd0f5f`) — read directly, not assumed.
+
+What `zemscripten.emccStep` (`build.zig:198-282`) actually does: it
+builds a `std.Build.Step.Run` that shells out to the **real, fetched
+`emcc` binary** (`emsdk.emccPath(b)`, from the `emsdk` dependency,
+`emscripten-core/emsdk#4.0.9`) and forwards two generic maps —
+`EmccFlags` (a `StringHashMap(void)`, each key added as a bare `-X` flag)
+and `EmccSettings` (a `StringHashMap([]const u8)`, each pair added as
+`-s<KEY>=<VALUE>`) — verbatim onto the `emcc` command line, then installs
+whatever `emcc` produced. `emccDefaultFlags`/`emccDefaultSettings`
+(`build.zig:113-168`) populate those maps with `-O0`/`-gsource-map`/
+`ASSERTIONS`/`MALLOC`-style build-mode settings; neither sets
+`SIDE_MODULE` or `MAIN_MODULE` anywhere, and nothing else in raylib's
+call site (`build.zig:706-726`, the actual "export for web" path) does
+either — the omission matches what raylib-zig is actually for (a
+standalone game, shipped as its own HTML/JS/wasm bundle, raylib's own
+`shell.html` as the page shell), not a loadable plugin.
+
+So this corrects the earlier over-broad claim ("Zig's wasm support
+targets `freestanding`/`wasi`" was wrong) but **confirms, rather than
+changes, the load-bearing part of the original finding**: the
+Emscripten-specific link step — the one that would need to emit a
+`SIDE_MODULE` for `duckdb-wasm`-style plugin loading — is still done by
+real, external `emcc` via `b.addSystemCommand`, not by Zig's own
+linker. Zig compiles object code for the `wasm32-emscripten` target
+triple; it does not perform Emscripten's proprietary dynamic-linking
+relocation/table/memory convention itself. Mechanically, nothing stops
+a caller of this same generic settings-map plumbing from adding
+`SIDE_MODULE=2` (or `MAIN_MODULE=2`) to the map before calling
+`emccStep` — the forwarding is key-agnostic — but no example found in
+raylib-zig/raylib/zemscripten does this, and doing so would still mean
+the actual link is `emcc`'s job, using whatever Emscripten version is
+pinned (here, `emsdk#4.0.9`), which would need to match `duckdb-wasm`'s
+own pinned Emscripten build closely enough for the resulting
+`SIDE_MODULE`'s ABI to be loadable by it — an unverified, separate
+requirement not touched by this investigation. Not a new lead for
+solving the `duckdb-wasm` loading problem; it narrows exactly how the
+prior "no evidence Zig's linker can do this" claim should be stated
+(object-code compilation: yes, real target; the dynamic-linking/
+`SIDE_MODULE` step: still `emcc`, same conclusion as before).
 
 ### 7. DECIMAL and ENUM support — done
 
