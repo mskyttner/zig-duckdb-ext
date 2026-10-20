@@ -103,6 +103,26 @@ COPY (SELECT 42 AS id, 'duck' AS name) TO '/tmp/x.arrows' (FORMAT zig_cookbook_a
 SELECT * FROM zig_cookbook_read_arrow('/tmp/x.arrows');
 ```
 
+## Wasm (Emscripten)
+
+`zig_ext` also builds as a real Emscripten `SIDE_MODULE`, loadable by `duckdb-wasm`/`haybarn-wasm` —
+DuckDB running client-side, in a browser or Node, with no native install step:
+
+```sh
+zig build wasm-ext -Demcc-path=<emcc from an activated emsdk>
+```
+
+Verified live against both forks' own CI-built engines (`task wasm:verify-haybarn` /
+`task wasm:verify-duckdb-wasm`, and the `wasm-verify` job in `.github/workflows/ci-extended.yml`):
+`zig_hello`/`zig_add_numbers`, loaded over the documented `custom_extension_repository` + `LOAD` path,
+both return correct results. Needs the Emscripten version matching whichever engine you're targeting —
+the two forks pin different, mutually incompatible ones (6.0.12 vs 3.1.71), confirmed directly: a
+mismatch fails at `dlopen()`, not a warning. Deliberately not part of `cross` — see
+[docs/v2-migration-plan.md](docs/v2-migration-plan.md)'s WASM section and
+[ADR-0008](docs/rationale/0008_wasm-emscripten-side-module.md) for the full trace, including what's
+still unverified (a real browser; `registerFileBuffer` + direct-path `LOAD`, blocked today by an
+upstream Node-binding bug).
+
 ## Comptime Function Framework
 
 The extension includes a `comptime` registration framework that generates
@@ -278,6 +298,7 @@ docs/rationale/       Architecture decision records
 | Linux (glibc)  | arm64, amd64 |
 | Linux (musl)   | arm64, amd64 |
 | Windows        | amd64        |
+| Wasm (Emscripten) | wasm32 (`SIDE_MODULE`, experimental — see [Wasm (Emscripten)](#wasm-emscripten)) |
 
 ## Available Tasks
 
@@ -297,6 +318,9 @@ docs/rationale/       Architecture decision records
 | `task dist:v2` | Cross-compile the v2 extensions into `dist/<alpha>/<platform>/` |
 | `task verify:dist-v2` | Install them from `dist/` into the pinned alpha CLI and use them (run `dist:v2` first) |
 | `task verify:static-windows` | Windows static embedding under Wine, in a container |
+| `task wasm:ext` | Build the wasm32-emscripten SIDE_MODULE (needs a real `emcc`; see `-Demcc-path=`) |
+| `task wasm:verify-haybarn` | Verify the wasm build loads and runs against haybarn-wasm's latest engine |
+| `task wasm:verify-duckdb-wasm` | Verify the wasm build loads and runs against official duckdb-wasm's latest engine |
 | `task check:all`     | Format, build, unit tests, coverage report is current (not the SQL suites) |
 | `task bench`         | Benchmark hand-written vs comptime  |
 | `task format`        | Format Zig source files             |
@@ -327,3 +351,7 @@ docs/rationale/       Architecture decision records
   static libraries.
 - **Explicit memory management**: Allocators are passed explicitly; `defer`
   and `errdefer` ensure cleanup on all paths.
+- **Wasm as a separate, opt-in build**, not a `cross` target: it needs an
+  external, unvendored Emscripten toolchain, and the two forks this project
+  has verified against pin different, mutually incompatible versions of it.
+  See [ADR-0008](docs/rationale/0008_wasm-emscripten-side-module.md).

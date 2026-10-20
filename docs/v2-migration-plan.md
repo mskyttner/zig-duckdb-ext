@@ -2442,6 +2442,9 @@ this project's own build.
 and called successfully inside a live `haybarn-wasm` engine — see the 2026-10-20 follow-ups
 below)
 
+See [ADR-0008](rationale/0008_wasm-emscripten-side-module.md) for the decision record (the
+condensed "what and why"); this section is the full narrative trace that record is based on.
+
 Investigated whether this extension could target `duckdb-wasm` (browser
 DuckDB). Third-party/custom extension repositories ARE supported there
 (same version/platform path layout as native, served over CORS) — the
