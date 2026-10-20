@@ -294,11 +294,24 @@ fn addWasmEmscriptenBuild(
     extension_name: []const u8,
     duckdb_version: []const u8,
     extension_version: []const u8,
-    optimize: std.builtin.OptimizeMode,
     emcc_path: []const u8,
     variant: WasmVariant,
 ) std.Build.LazyPath {
     const wasm_target = variant.resolveTarget(b);
+
+    // Always `.ReleaseFast`, ignoring whatever `-Doptimize=` the rest of the build was given:
+    // confirmed directly that a Debug build is actively broken against at least one real
+    // engine, not just slower. Zig's `Allocator.alloc`/`.free` capture `@returnAddress()` at
+    // every call site (part of the interface's own leak-attribution convention, not
+    // Debug-only), which lowers to Emscripten's `__builtin_return_address` — official
+    // duckdb-wasm's own pinned Emscripten (3.1.71) aborts on this without
+    // `-sUSE_OFFSET_CONVERTER` (`tp_bar`, which allocates per row, hit this at runtime: "Cannot
+    // use convertFrameToPC ... without -sUSE_OFFSET_CONVERTER"); `haybarn-wasm`'s pin (6.0.12)
+    // tolerates it. Adding `-sUSE_OFFSET_CONVERTER` to the `emcc` link line was tried and made
+    // things worse (`_setThrew is not defined` — a different ABI mismatch). `.ReleaseFast`
+    // avoids the capture being reachable at all, matches what a shipped extension should be
+    // built as anyway, and is verified working against both engines.
+    const optimize: std.builtin.OptimizeMode = .ReleaseFast;
 
     const duckdb_c: Translator = .init(translate_c_dep, .{
         .name = b.fmt("duckdb_c_{s}", .{variant.platform()}),
@@ -1605,7 +1618,7 @@ pub fn build(b: *std.Build) void {
     }
 
     // ── "wasm-ext" step: build the wasm32-emscripten SIDE_MODULE (mvp) ────
-    const wasm_ext_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, optimize, emcc_path, .mvp);
+    const wasm_ext_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, emcc_path, .mvp);
     const install_wasm_ext = b.addInstallFile(wasm_ext_output, b.fmt("lib/wasm_mvp/{s}.duckdb_extension.wasm", .{extension_name}));
     const wasm_ext_step = b.step("wasm-ext", "Build the wasm32-emscripten SIDE_MODULE, mvp platform (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
     wasm_ext_step.dependOn(&install_wasm_ext.step);
@@ -1613,7 +1626,7 @@ pub fn build(b: *std.Build) void {
     // ── "wasm-ext-coi" step: the threaded/exceptions variant (needs a matching
     // threaded emcc build; the same -Demcc-path= as wasm-ext, just a different
     // emsdk activation) ─────────────────────────────────────────────────────
-    const wasm_ext_coi_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, optimize, emcc_path, .coi);
+    const wasm_ext_coi_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, emcc_path, .coi);
     const install_wasm_ext_coi = b.addInstallFile(wasm_ext_coi_output, b.fmt("lib/wasm_threads/{s}.duckdb_extension.wasm", .{extension_name}));
     const wasm_ext_coi_step = b.step("wasm-ext-coi", "Build the wasm32-emscripten SIDE_MODULE, coi (threads+exceptions) platform (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
     wasm_ext_coi_step.dependOn(&install_wasm_ext_coi.step);
