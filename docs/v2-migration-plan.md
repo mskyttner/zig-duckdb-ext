@@ -2438,8 +2438,9 @@ Build artifacts (~7.7GB) left in the session's scratchpad directory,
 not committed anywhere — this was an investigation, not a change to
 this project's own build.
 
-### 6a. WASM support (a real `SIDE_MODULE` built and structurally verified; live-loading in a
-running `duckdb-wasm`/`haybarn-wasm` engine not yet attempted)
+### 6a. WASM support (a real `SIDE_MODULE` built, and loaded and called successfully inside
+a live `haybarn-wasm` engine — see the 2026-10-20 follow-up below; not yet packaged as a
+repeatable build step)
 
 Investigated whether this extension could target `duckdb-wasm` (browser
 DuckDB). Third-party/custom extension repositories ARE supported there
@@ -2692,21 +2693,101 @@ Reproducing the Zig side of that recipe:
 **What this does and doesn't settle.** This is the first real evidence that the
 Zig-static-lib → real-`emcc`-SIDE_MODULE-link pipeline produces a structurally valid
 Emscripten extension module from this project's actual code — a stronger result than the
-raylib-zig investigation above, which never produced a `SIDE_MODULE` at all. It does **not**
-settle whether `haybarn-wasm`'s (or upstream `duckdb-wasm`'s) running engine would actually
-`dlopen()` this file successfully: that needs the full C++ engine built to wasm (a much
-longer build, not attempted here) and a live JS harness calling `LOAD`/`registerFileBuffer`
-against it. Two specific open risks for that next step, both already partly flagged
-elsewhere in this document: (a) the DuckDB **engine** version gap — `haybarn-wasm`'s own
-submodule pins `haybarn-v1.5.2-rc13`, while this project's v1 extension is built against the
-v1.5.6 C API headers; upstream `duckdb/duckdb-wasm`'s `main` branch README now states it's
-"currently based on DuckDB v1.5.6" (checked directly, 2026-10-20), so the gap is specific to
-the `haybarn-wasm` fork, not `duckdb-wasm` in general, but it's real for this fork; (b)
-whatever wasm-specific extension-metadata-footer convention DuckDB's real build appends
-(the `add_custom_command` block right after the `emcc` call in
-`extension_build_tools.cmake`, not yet read) may need to be replicated for a real `LOAD` to
-accept the file, the same way this project's own `append_metadata` tool does for native
-builds.
+raylib-zig investigation above, which never produced a `SIDE_MODULE` at all.
+
+**Follow-up, 2026-10-20: it loads and runs — `zig_hello`/`zig_add_numbers` called for real
+inside a live `haybarn-wasm` engine, via the real `LOAD`/network-fetch path, not
+`registerFileBuffer`.**
+
+First tried the obvious thing — download the actual `duckdb-wasm-packages-loadable` CI
+artifact from the run linked by the user
+(`Query-farm-haybarn/haybarn-wasm` run `38514819835`, tag `haybarn-v1.5.6-rc1` — so the
+earlier `haybarn-v1.5.2-rc13` submodule-pin finding above is now stale; haybarn-wasm has
+since moved to v1.5.6, matching this project's own pin exactly), run it under Node with the
+real `@haybarn/haybarn-wasm` bindings (`duckdb-node-blocking.cjs`, no browser available in
+this sandbox), `registerFileBuffer` the built `.wasm`, and `LOAD` it directly. That hung
+indefinitely — but a negative control (`LOAD` of a guaranteed-nonexistent local path) hung
+identically, while `LOAD json` (a real, named, network-fetched core extension) *succeeded*
+in the same harness. So the hang was specific to the local-registered-buffer code path, not
+evidence against the module — `duckdb/duckdb-wasm` PR
+[#2284](https://github.com/duckdb/duckdb-wasm/pull/2284) (the v2.0.0-alpha port, read
+directly) independently corroborates this: its own description lists *"Added binary
+synchronous XHR handling for browser workers and blocking main-thread bindings"* as new work,
+implying the current v1 build's local-file read path for extension loading isn't fully wired
+for non-browser bindings, while the network-fetch path is.
+
+So, following the real docs
+([Load Extensions](https://duckdb.org/docs/current/clients/wasm/extensions),
+[Deploy § Cross-Origin Isolation](https://duckdb.org/docs/current/clients/wasm/deploying_duckdb_wasm#cross-origin-isolation),
+[Instantiate § Statically Served](https://duckdb.org/docs/current/clients/wasm/instantiation#statically-served),
+[Troubleshoot § custom repository](https://duckdb.org/docs/current/clients/wasm/troubleshoot#extension-fails-to-load-from-a-custom-repository),
+all read directly, not from memory) instead of fighting that gap: self-host the built
+extension at the exact URL shape DuckDB's own loader constructs
+(`$custom_extension_repository/$duckdb_version_hash/$duckdb_platform/$name.duckdb_extension.wasm`)
+and `SET custom_extension_repository = '…'` to point at it, then `LOAD <name>` by bare name —
+the path already proven to work via `LOAD json`. A tiny local HTTP server plus
+`SET custom_extension_repository = 'http://127.0.0.1:PORT'` was enough; `mvp` needs no
+cross-origin-isolation headers (that's `coi`-only), so nothing extra was needed there.
+
+**What this took, concretely:**
+
+1. **Appended a real extension metadata footer** — this project's own `append_metadata_main.zig`
+   tool (already used for every native build) worked unmodified:
+   `append_metadata zig_ext.wasm zig_ext v1.5.6 v0.1.0 C_STRUCT wasm_mvp
+   zig_ext.duckdb_extension.wasm`. No wasm-specific variant needed; same footer layout native
+   builds already use.
+2. **Reverse-engineered the exact `$duckdb_version_hash`/`$duckdb_platform` values empirically**,
+   not guessed: pointed a logging HTTP server at `custom_extension_repository` and attempted
+   `LOAD zig_ext`, which revealed the engine requesting exactly
+   `GET /v1.5.6/wasm_mvp/zig_ext.duckdb_extension.wasm` — confirming `v1.5.6` (not a git hash,
+   despite the docs' `$duckdb_version_hash` naming — `pragma_version()` on this exact engine
+   reports `v1.5.7-dev154`/`5b8b06dfbc`, a different string entirely; the extension-API-compat
+   version embedded at build time is what's used, and it happens to equal this project's own
+   v1.5.6 pin) and `wasm_mvp` (matching `DUCKDB_EXPLICIT_PLATFORM=wasm_mvp` from
+   `extension_build_tools.cmake`, read earlier).
+3. **First real attempt still failed**, with `IO Error: Unknown ABI type of value '176' for
+   extension 'zig_ext'` — traced to the actual DuckDB C++ source
+   (`src/main/extension/extension_load.cpp`, cloned from the real `Query-farm-haybarn/haybarn`
+   submodule the CI run pins) rather than guessed: `LoadExternalExtensionInternal`'s final
+   `throw IOException("Unknown ABI type of value '%s' …", static_cast<uint8_t>(abi_type), …)`
+   only fires when `abi_type` is none of `CPP`/`C_STRUCT`/`C_STRUCT_UNSTABLE` — and a byte-level
+   dump of the built file's own footer fields (`FilterZeroAtEnd`-style, matching
+   `ParseExtensionMetaData`'s own field order exactly) showed `"C_STRUCT"` sitting at exactly
+   the right offset, correctly formatted. The real cause: that *first* attempt was still
+   serving the **unstamped** raw `zig_ext.wasm` (footer added only after this), and a later
+   retry under the *same* extension name kept failing identically even after fixing the file
+   and restarting the server, with **no new HTTP request ever reaching the server** — a stale
+   per-name install-metadata cache (not tracked down to its exact storage location, but
+   clearly real) kept re-serving the first, garbage-footer parse. Confirmed by elimination:
+   switching to a never-used name (`zigext2`) against the *same* properly-stamped file
+   immediately got past ABI-type parsing and failed on something else entirely (an expected,
+   self-inflicted mismatch: the served file's export is `zig_ext_init_c_api`, but
+   `LoadExternalExtensionInternal` looks up `<filebase>_init_c_api`, i.e.
+   `zigext2_init_c_api`, for a file renamed to `zigext2`) — proof the footer/ABI-type content
+   itself had been correct all along.
+4. **Switched to a fresh `custom_extension_repository` URL (not a fresh name) with the real
+   `zig_ext` name, so the real export (`zig_ext_init_c_api`) matches `<filebase>_init_c_api`
+   exactly** — and it worked outright: `LOAD zig_ext` succeeded, then
+   `SELECT zig_hello('world')` returned `{"greeting": "Hello, world!"}` and
+   `SELECT zig_add_numbers(2, 3)` returned `{"sum": 5}` — real scalar-function calls, through
+   the real comptime framework, executed inside a real, running `haybarn-wasm` v1.5.6 engine,
+   loaded via Emscripten's actual `dlopen()` dynamic-linking machinery, not a mock or a stub.
+
+**This settles the question the "what this doesn't settle" paragraph above left open**: yes,
+a `haybarn-wasm`/`duckdb-wasm`-style engine does `dlopen()` this project's Zig-built
+`SIDE_MODULE` successfully and calls into it correctly, at least via the network-fetch
+`LOAD`/`custom_extension_repository` path (`registerFileBuffer`+direct-path `LOAD` remains
+unverified and likely blocked by the Node-binding-specific gap found above — a real browser,
+not available in this sandbox, would be the next thing to try there, though the custom-
+repository path demonstrated here is itself a legitimate, documented deployment path, not a
+workaround of last resort). Remaining open items, both narrow and both about going from
+*this specific extension works* to *a real deployment*: (a) the stale per-name install-
+metadata cache found above — understanding exactly where it's stored would matter for a real
+iterative-development workflow, though it's a one-time-per-name snag, not a correctness
+issue; (b) the Zig-side `idx_t`→`usize` fixes and this whole build pipeline live only on the
+scratch branch `wasm32-emscripten-side-module-poc` — turning this into a repeatable,
+documented build step (a `zig build` target plus the `append_metadata` + `emcc` link,
+scripted) is follow-up work, not yet done.
 
 **Checked in passing, directly relevant to any future live-load attempt**: the
 `duckdb/duckdb-wasm` `wasi-sandbox` branch (prompted by a question about whether it offers
