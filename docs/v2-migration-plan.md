@@ -2500,6 +2500,71 @@ becomes a real goal — this is a genuinely different problem from "run
 in a browser" and doesn't require solving the Emscripten `SIDE_MODULE`
 issue above at all.
 
+**Follow-up, 2026-10-20: `Query-farm-haybarn/haybarn-wasm`, checked against this
+same Emscripten blocker, confirms rather than changes it.** Prompted by
+a claim that it's a "drop-in fork of duckdb-wasm that loads extensions
+faster." Read its own `HAYBARN.md` (a hard fork's own rebase/architecture
+notes, the authoritative source for what actually changed, not marketing
+copy): the fork changes exactly three things — the npm package name, the
+extension-hosting CDN (`haybarn-extensions.query.farm`, R2-backed, which
+is where "faster" comes from — a network/hosting difference, not a
+different extension ABI), and the baked-in trust root/signing key for
+`INSTALL ... FROM` validation. `HAYBARN.md` states explicitly: "the wasm
+build toolchain (emsdk, build flags)" and "internal C++ symbols" are
+**deliberately unchanged** from upstream `duckdb-wasm`, specifically so
+existing consumer code ports via a single import rewrite. So the
+Emscripten `SIDE_MODULE`/`dlopen()` ABI this section already identified
+as the real blocker is bit-for-bit identical here — confirmed by the
+fork's own stated design goal, not re-derived from scratch.
+
+Two things haybarn-wasm's docs *do* newly clarify, beyond re-confirming
+the existing finding:
+- **The DuckDB version gap, not just the Emscripten one.** The engine
+  submodule is pinned to `haybarn-v1.5.2-rc13` — DuckDB v1.5.2 plus the
+  Haybarn patch stack. This project's actual focus (the generated v2 C
+  API bindings, static linking, everything in ADR-0007) targets the
+  staged v2.0.0 alpha; none of it could run against a v1.5.2 wasm
+  runtime regardless of the Emscripten question. Only a `zig_ext`-style
+  v1 build (hand-written C API, this project's older/retained extension)
+  is even a theoretical candidate here, and even that would need
+  targeting DuckDB's wasm ABI version to match `v1.5.2` specifically —
+  a separate build variant from this project's native `v1.5.6` pin,
+  not confirmed compatible (the C_STRUCT ABI is designed to tolerate
+  this kind of skew within a major line, per this project's own prior
+  ABI research, but that's a design intent, not a test of this specific
+  gap).
+- **A plausible unsigned-loading path, not previously documented.**
+  `duckdb-wasm`'s JS bindings expose `registerFileBuffer(name, bytes)`/
+  `registerFileURL(name, url, protocol)` (confirmed directly in
+  `packages/duckdb-wasm/src/bindings/bindings_base.ts`) to place an
+  arbitrary file into its virtual filesystem, which a plain `LOAD
+  '<registered-name>';` could then presumably load directly — the wasm
+  equivalent of native DuckDB's own direct-file-path `LOAD`, which this
+  project's ADR-0004 research already confirmed only needs an unsigned/
+  trust bypass, not a matching repository signature. Plausible, not
+  verified: found the function that would make this path possible, not
+  a confirmation that `LOAD`-by-registered-path skips Haybarn's
+  (or upstream's) signature check the same way the native CLI's
+  `-unsigned` flag does.
+
+**What building a `zig_ext` (v1) wasm variant would concretely still
+need, none of it new**: fix the real, already-found `idx_t` (`u64`)→
+`usize` (32-bit on `wasm32`) narrowing compile errors across 8 files
+(`add_numbers.zig`, `hello.zig`, `tokenize.zig`, `tp_bar.zig`,
+`tp_line.zig`, `tp_snakemap.zig`, `tp_treemap.zig`,
+`comptime_scalar.zig`); get Zig emitting an actual Emscripten
+`SIDE_MODULE` (Zig's `wasm32-*` targets are `freestanding`/`wasi`, not
+`emscripten` — no evidence Zig's linker can do this without shelling
+out to `emcc` itself, which was already the open question, still open);
+match whatever wasm-specific extension-metadata-footer convention
+`duckdb-wasm`'s own build tooling expects; and verify the
+`registerFileBuffer`+`LOAD` unsigned path actually works, live, in a
+real browser or Node.js `duckdb-wasm` instance — none of which has been
+attempted. Still speculative, still not started; haybarn-wasm doesn't
+unblock it, it just rules out v2 as a candidate and adds one untested
+lead (the unsigned load path) worth checking first if this is ever
+picked up for real.
+
 ### 7. DECIMAL and ENUM support — done
 
 The two parameterized types deliberately left out of item 5's otherwise-
