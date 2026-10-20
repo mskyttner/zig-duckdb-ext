@@ -2438,9 +2438,9 @@ Build artifacts (~7.7GB) left in the session's scratchpad directory,
 not committed anywhere — this was an investigation, not a change to
 this project's own build.
 
-### 6a. WASM support (a real `SIDE_MODULE` built, and loaded and called successfully inside
-a live `haybarn-wasm` engine — see the 2026-10-20 follow-up below; not yet packaged as a
-repeatable build step)
+### 6a. WASM support (`zig build wasm-ext` produces a real `SIDE_MODULE`, verified loaded
+and called successfully inside a live `haybarn-wasm` engine — see the 2026-10-20 follow-ups
+below)
 
 Investigated whether this extension could target `duckdb-wasm` (browser
 DuckDB). Third-party/custom extension repositories ARE supported there
@@ -2780,14 +2780,46 @@ a `haybarn-wasm`/`duckdb-wasm`-style engine does `dlopen()` this project's Zig-b
 unverified and likely blocked by the Node-binding-specific gap found above — a real browser,
 not available in this sandbox, would be the next thing to try there, though the custom-
 repository path demonstrated here is itself a legitimate, documented deployment path, not a
-workaround of last resort). Remaining open items, both narrow and both about going from
-*this specific extension works* to *a real deployment*: (a) the stale per-name install-
-metadata cache found above — understanding exactly where it's stored would matter for a real
-iterative-development workflow, though it's a one-time-per-name snag, not a correctness
-issue; (b) the Zig-side `idx_t`→`usize` fixes and this whole build pipeline live only on the
-scratch branch `wasm32-emscripten-side-module-poc` — turning this into a repeatable,
-documented build step (a `zig build` target plus the `append_metadata` + `emcc` link,
-scripted) is follow-up work, not yet done.
+workaround of last resort).
+
+**Follow-up, 2026-10-20: turned into a real `zig build wasm-ext` step, and re-verified live
+against its own output.** `build.zig` gained `addWasmEmscriptenBuild` (next to
+`addCrossBuild`, same shape) and a new `wasm-ext` top-level step:
+
+```
+zig build wasm-ext -Demcc-path=/path/to/emsdk/upstream/emscripten/emcc
+```
+
+It does exactly the manual steps above, now scripted and parameterized: a *static* Zig
+library for `wasm32-emscripten` (no `.link_libc`, unlike every other target here — confirmed
+unnecessary and unavailable for this one), one `emcc -sSIDE_MODULE=2
+-sEXPORTED_FUNCTIONS=_<name>_init_c_api` link via `b.addSystemCommand`, then the existing
+`append_metadata` tool (unmodified) stamping the result with `C_STRUCT`/`wasm_mvp`/the
+project's own `dist_version` (`v1.5.6` by default, reusing the option that already carried
+the right value for native `dist` packaging — not `target_duckdb_version`'s lower
+minimum-compat default). No Emscripten toolchain is vendored; `-Demcc-path=` (default: a bare
+`emcc` on `PATH`, i.e. after sourcing `emsdk_env.sh`) is the one external dependency, and
+omitting it fails with a clear, accurate Zig build error (`failed to spawn and capture stdio
+from emcc: FileNotFound`, with the exact attempted command line) rather than a cryptic one.
+
+Verified, not assumed: `zig build wasm-ext -Demcc-path=…` produced a `.wasm` **byte-for-byte
+identical** to the one hand-built earlier (`cmp`, exit 0), and re-running the exact live-load
+test from the previous follow-up against this freshly-built artifact — a brand-new
+`custom_extension_repository` URL, to sidestep the stale-cache snag below — succeeded again:
+`LOAD zig_ext` loaded, `zig_hello('world')` and `zig_add_numbers(2, 3)` both returned correct
+results. `task check:all` stays green; the new step is additive (its own opt-in top-level
+step, not wired into the default install step, the same way `cross` isn't).
+
+Remaining open items, both narrow and both about going from *this specific extension works*
+to *a wider workflow*: (a) the stale per-name install-metadata cache found in the previous
+follow-up — still not tracked down to its exact storage location (checked: not `~/.duckdb`,
+not a file anywhere under the harness's own working directories, not Node's own `fetch`
+cache; the compiled `duckdb-mvp.wasm`'s Emscripten-emulated filesystem is the remaining
+suspect, not yet confirmed) — a one-time-per-name snag with a known workaround (a fresh
+`custom_extension_repository` URL), not a correctness issue with the build step itself;
+(b) `registerFileBuffer` + direct-path `LOAD` remains unverified in a real browser (not
+available in this sandbox) — the custom-repository path this step targets is a complete,
+documented deployment story on its own, so this is a nice-to-have, not a blocker.
 
 **Checked in passing, directly relevant to any future live-load attempt**: the
 `duckdb/duckdb-wasm` `wasi-sandbox` branch (prompted by a question about whether it offers
