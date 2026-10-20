@@ -88,6 +88,73 @@ jobs:
       - run: zig build dist-v2 -Doptimize=ReleaseSafe
       - run: zig build verify-dist-v2
 
+  # Builds the real wasm32-emscripten SIDE_MODULE (zig build wasm-ext) and loads it for real
+  # inside the latest "loadable" engine build from each of the two duckdb-wasm forks this
+  # project has verified against — not a mock, the actual CI artifact each fork publishes on
+  # its own default branch. The two forks pin different Emscripten versions (haybarn-wasm:
+  # 6.0.12, official duckdb-wasm: 3.1.71) and the SIDE_MODULE dynamic-linking ABI isn't stable
+  # across that gap (confirmed directly: a 6.0.12-linked module fails with `_setThrew is not
+  # defined` against the 3.1.71 engine), so each leg builds its own extension with the
+  # matching toolchain rather than sharing one build. See docs/v2-migration-plan.md's WASM
+  # section for the full trace, and tools/wasm_verify/ for the scripts this job runs.
+  wasm-verify:
+    name: wasm-verify (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: haybarn-wasm
+            repo: Query-farm-haybarn/haybarn-wasm
+            emsdk_version: "6.0.12"
+          - name: duckdb-wasm
+            repo: duckdb/duckdb-wasm
+            emsdk_version: "3.1.71"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ matrix.emsdk_version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build the wasm32-emscripten SIDE_MODULE
+        run: zig build wasm-ext -Demcc-path="$(command -v emcc)"
+
+      # Needs at least public-repo read access to fetch another public repo's own CI
+      # artifacts; the default GITHUB_TOKEN has worked for this in testing, but if GitHub
+      # ever tightens cross-repo artifact-read scope for it, this step is where that
+      # would surface, not fetch_engine.sh itself.
+      - name: Fetch ${{ matrix.name }}'s latest loadable engine build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash tools/wasm_verify/fetch_engine.sh ${{ matrix.repo }} .tmp/engine
+
+      - name: Verify the extension loads and runs for real (Node bindings)
+        run: |
+          cd tools/wasm_verify
+          npm install --no-audit --no-fund --silent
+          NODE_PATH="$(pwd)/node_modules" node verify_wasm_load.cjs \
+            "$GITHUB_WORKSPACE/.tmp/engine/packages/duckdb-wasm/dist" \
+            "$GITHUB_WORKSPACE/zig-out/lib/wasm_mvp/zig_ext.duckdb_extension.wasm"
+
+      # The Node check above exercises the engine's Node bindings; a real browser's own
+      # fetch/Worker/dlopen path is otherwise unverified. `--with-deps` installs the OS
+      # packages headless Chromium needs on a bare runner, not just the browser binary.
+      - name: Install Playwright's Chromium
+        run: cd tools/wasm_verify && npx playwright install --with-deps chromium
+
+      - name: Verify the extension loads and runs for real (real headless browser)
+        run: |
+          cd tools/wasm_verify
+          NODE_PATH="$(pwd)/node_modules" node verify_wasm_load_browser.cjs \
+            "$GITHUB_WORKSPACE/.tmp/engine/packages/duckdb-wasm/dist" \
+            "$GITHUB_WORKSPACE/zig-out/lib/wasm_mvp/zig_ext.duckdb_extension.wasm"
+
   # The Arrow IPC files that the cookbook suite writes are read back by PyArrow, an independent implementation.
   # `tools/verify_arrow_output.py` skips when PyArrow is missing, so it is installed here: a skip would prove nothing.
   # setup-python gives a Python whose pip may install (the runner's system Python refuses, PEP 668).

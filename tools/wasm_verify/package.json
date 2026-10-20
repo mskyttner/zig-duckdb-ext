@@ -1,0 +1,9 @@
+{
+  "name": "wasm_verify",
+  "private": true,
+  "description": "Loads a built wasm32-emscripten SIDE_MODULE extension into a real duckdb-wasm engine and runs SQL through it. See verify_wasm_load.cjs.",
+  "dependencies": {
+    "apache-arrow": "^21.0.0",
+    "playwright": "^1.64.0"
+  }
+}

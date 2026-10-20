@@ -208,6 +208,107 @@ fn addCrossBuild(
     return addDuckdbExtensionMetadata(b, lib, unique_name, target_duckdb_version, extension_version, abi_type, platform);
 }
 
+/// Build the real v1 extension as a `wasm32-emscripten` Emscripten
+/// `SIDE_MODULE`, loadable by `duckdb-wasm`/`haybarn-wasm` via Emscripten's
+/// own `dlopen()`. Mirrors DuckDB's own loadable-extension-for-wasm recipe
+/// (`extension/extension_build_tools.cmake` in DuckDB's real source, read
+/// directly — see docs/v2-migration-plan.md's WASM section for the full
+/// trace): build a *static* Zig library for this target, link it with one
+/// real `emcc -sSIDE_MODULE=2` call, then stamp the result with this
+/// project's own `append_metadata` tool — the same footer format and tool
+/// every native build already uses; no wasm-specific variant needed.
+///
+/// Verified end to end (2026-10-20): loaded via `custom_extension_repository`
+/// and `LOAD` into a live `haybarn-wasm` v1.5.6 engine, `zig_hello`/
+/// `zig_add_numbers` both called and returned correct results through a
+/// real `dlopen()`. `registerFileBuffer` + direct-path `LOAD` hangs in at
+/// least one non-browser binding (a gap in that binding, not in this
+/// artifact — see the migration doc) and is not what this step aims at.
+///
+/// Needs a real `emcc` from an activated `emsdk` on `PATH`, or `-Demcc-path=`
+/// pointing at one directly — no Emscripten toolchain is vendored here, the
+/// same way DuckDB's own wasm build shells out to a real `emcc` rather than
+/// bundling one. A *static* Zig output needs no libc for this target/ABI
+/// (confirmed directly); a *dynamic* one does, and Zig ships none for it
+/// (`unable to provide libc for target "wasm32-emscripten-musl"`) — which
+/// is why this does not reuse `addCrossBuild`'s `.linkage = .dynamic`, and
+/// does not set `.link_libc = true` the way every other target here does.
+fn addWasmEmscriptenBuild(
+    b: *std.Build,
+    translate_c_dep: *std.Build.Dependency,
+    duckdb_headers_v1_dep: *std.Build.Dependency,
+    build_options_mod: *std.Build.Module,
+    extension_name: []const u8,
+    duckdb_version: []const u8,
+    extension_version: []const u8,
+    optimize: std.builtin.OptimizeMode,
+    emcc_path: []const u8,
+) std.Build.LazyPath {
+    // `.cpu_model = .explicit(&std.Target.wasm.cpu.mvp)`, not Zig's default `.generic`: `generic`
+    // enables post-MVP features (`bulk_memory`, `reference_types`, ...) that an older emsdk's
+    // bundled `wasm-opt` doesn't recognize (confirmed directly: emsdk 3.1.71, duckdb-wasm's own
+    // pin, failed with "Unknown option '--enable-bulk-memory-opt'" when the lib was built with
+    // the default). Plain MVP also matches the `wasm_mvp` platform/footer this step writes.
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .emscripten,
+        .cpu_model = .{ .explicit = &std.Target.wasm.cpu.mvp },
+    });
+
+    const duckdb_c: Translator = .init(translate_c_dep, .{
+        .name = "duckdb_c_wasm_mvp",
+        .c_source_file = duckdb_headers_v1_dep.path("duckdb_extension.h"),
+        .target = wasm_target,
+        .optimize = optimize,
+        .extra_args = &.{"-DDUCKDB_API_EXCLUDE_FUNCTIONS=1"},
+    });
+    duckdb_c.addIncludePath(duckdb_headers_v1_dep.path("."));
+
+    const lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = b.fmt("{s}_wasm_mvp", .{extension_name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    lib.root_module.addImport("duckdb_c", duckdb_c.mod);
+    lib.root_module.addImport("build_options", build_options_mod);
+
+    // The one real link step: `emcc` takes the static archive and produces the loadable
+    // side module, exporting only the real C API entry point DuckDB looks up by name
+    // (`<filebase>_init_c_api`) — matching `extension_load.cpp`'s C-ABI load path exactly.
+    const emcc_cmd = b.addSystemCommand(&.{emcc_path});
+    // `emcc_path` is a bare string, not a tracked `LazyPath`: the build graph has no way to
+    // notice the binary it points at changed (e.g. switching -Demcc-path= to a different
+    // emsdk install at the same path, as emsdk reuses its "upstream" directory in place),
+    // so the Zig cache would otherwise keep serving a stale .wasm linked by a different
+    // Emscripten version — confirmed directly: it did, silently, until this was added.
+    emcc_cmd.has_side_effects = true;
+    emcc_cmd.addArtifactArg(lib);
+    emcc_cmd.addArgs(&.{ "-O3", "-g2", "-sSIDE_MODULE=2" });
+    emcc_cmd.addArg(b.fmt("-sEXPORTED_FUNCTIONS=_{s}_init_c_api", .{extension_name}));
+    emcc_cmd.addArg("-o");
+    const wasm_module = emcc_cmd.addOutputFileArg(b.fmt("{s}.wasm", .{extension_name}));
+
+    const metadata_tool = b.addExecutable(.{
+        .name = b.fmt("append_metadata_{s}_wasm_mvp", .{extension_name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/append_metadata_main.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const append_cmd = b.addRunArtifact(metadata_tool);
+    append_cmd.addFileArg(wasm_module);
+    append_cmd.addArg(extension_name);
+    append_cmd.addArg(duckdb_version);
+    append_cmd.addArg(extension_version);
+    append_cmd.addArg(abi_type);
+    append_cmd.addArg("wasm_mvp");
+    return append_cmd.addOutputFileArg(b.fmt("{s}.duckdb_extension.wasm", .{extension_name}));
+}
+
 /// The v2 extensions that are published.
 const V2Extension = enum { zig_ext_v2, zig_ext_cookbook };
 
@@ -601,6 +702,13 @@ pub fn build(b: *std.Build) void {
         "DuckDB version the v2 extensions are built for: the directory `dist-v2` packages under and the version in their footer (default: v2.0.0-alpha48730)",
     ) orelse v2_duckdb_version;
     const extension_version_v2 = b.option([]const u8, "extension-version-v2", "Extension version recorded in the v2 extensions (default: v0.1.0)") orelse "v0.1.0";
+
+    // `wasm-ext` step — see `addWasmEmscriptenBuild`'s doc comment for the full recipe.
+    const emcc_path = b.option(
+        []const u8,
+        "emcc-path",
+        "Path to a real `emcc` from an activated emsdk, for the `wasm-ext` step (default: `emcc` on PATH, i.e. after sourcing emsdk_env.sh)",
+    ) orelse "emcc";
 
     // `v2-static-embed-poc` link paths — see that step's own comment.
     const libstdcxx_path_override = b.option([]const u8, "libstdcxx-path", "Path to the system libstdc++.a for `v2-static-embed-poc` (default: `g++ -print-file-name=libstdc++.a`)");
@@ -1449,6 +1557,12 @@ pub fn build(b: *std.Build) void {
         const install_cross = b.addInstallFile(output, b.fmt("lib/{s}/{s}.duckdb_extension", .{ platform, extension_name }));
         cross_step.dependOn(&install_cross.step);
     }
+
+    // ── "wasm-ext" step: build the wasm32-emscripten SIDE_MODULE ──────────
+    const wasm_ext_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, optimize, emcc_path);
+    const install_wasm_ext = b.addInstallFile(wasm_ext_output, b.fmt("lib/wasm_mvp/{s}.duckdb_extension.wasm", .{extension_name}));
+    const wasm_ext_step = b.step("wasm-ext", "Build the wasm32-emscripten SIDE_MODULE (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
+    wasm_ext_step.dependOn(&install_wasm_ext.step);
 
     // ── "dist" step: arrange and gzip `cross`'s output into the DuckDB
     // custom-extension-repository layout `INSTALL ... FROM '<url>'`

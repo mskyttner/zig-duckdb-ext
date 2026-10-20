@@ -45,7 +45,9 @@ pub fn buildBar(
 /// Vectorized execute callback for tp_bar_impl.
 pub fn tpBarExec(info: db.FunctionInfo, input: db.DataChunk, output: db.Vector) callconv(.c) void {
     _ = info;
-    const chunk_size = db.dataChunkGetSize(input);
+    // SAFETY: DuckDB vectors are capped at STANDARD_VECTOR_SIZE (2048), far under `usize`'s
+    // range even on 32-bit targets (wasm32).
+    const chunk_size: usize = @intCast(db.dataChunkGetSize(input));
 
     const val_vec = db.dataChunkGetVector(input, 0);
     const on_vec = db.dataChunkGetVector(input, 1);

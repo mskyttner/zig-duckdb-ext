@@ -5,6 +5,11 @@ zig-cache/
 zig-pkg/
 dist/
 
+# Downloaded wasm-engine artifacts (tools/wasm_verify/fetch_engine.sh) and its npm deps
+# (package-lock.json is committed, for reproducible CI installs)
+.tmp/
+tools/wasm_verify/node_modules/
+
 # OS
 .DS_Store
 

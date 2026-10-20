@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>wasm-ext browser verify</title></head>
+<body>
+<!--
+  Served by verify_wasm_load_browser.cjs's own static server, alongside a duckdb-wasm
+  engine's own `dist/duckdb-mvp.wasm`/`duckdb-browser-mvp.worker.js`/`duckdb-browser.mjs`
+  and the built extension. Loaded by Playwright, not meant to be opened by hand (though
+  it works that way too, served over plain http://, with ?name=<extension-name> in the URL).
+
+  The import map is required: `duckdb-browser.mjs` has a bare `import ... from
+  "apache-arrow"`, meant to be resolved by a real bundler (webpack/vite) — the same
+  thing duckdb-wasm's own docs show for those consumers. A bare browser <script
+  type="module"> has no bundler, so this maps that one bare specifier at a CDN ESM
+  build instead (confirmed directly: this is what it takes, not a guess).
+-->
+<div id="result">PENDING</div>
+<script type="importmap">
+{ "imports": { "apache-arrow": "https://esm.sh/apache-arrow@17.0.0" } }
+</script>
+<script type="module">
+import * as duckdb from './duckdb-browser.mjs';
+
+const extName = new URLSearchParams(location.search).get('name');
+
+async function main() {
+    const worker = new Worker('./duckdb-browser-mvp.worker.js');
+    const logger = new duckdb.ConsoleLogger();
+    const db = new duckdb.AsyncDuckDB(logger, worker);
+    await db.instantiate('./duckdb-mvp.wasm', null);
+    await db.open({ allowUnsignedExtensions: true });
+    const conn = await db.connect();
+
+    await conn.query(`SET custom_extension_repository = '${location.origin}'`);
+    await conn.query(`LOAD ${extName}`);
+
+    const hello = (await conn.query(`SELECT zig_hello('ci') AS greeting`)).toArray()[0].toJSON();
+    const sum = (await conn.query(`SELECT zig_add_numbers(2, 3) AS sum`)).toArray()[0].toJSON();
+
+    await conn.close();
+    return { hello, sum: Number(sum.sum) };
+}
+
+main().then(r => {
+    document.getElementById('result').textContent = JSON.stringify(r);
+}).catch(e => {
+    document.getElementById('result').textContent = 'ERROR: ' + (e && e.stack ? e.stack : e);
+});
+</script>
+</body>
+</html>

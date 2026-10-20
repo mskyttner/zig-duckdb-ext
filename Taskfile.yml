@@ -172,6 +172,65 @@ tasks:
     cmds:
       - zig build cross
 
+  wasm:ext:
+    desc: "Build the wasm32-emscripten SIDE_MODULE (needs a real emcc on PATH or -Demcc-path=...; pass via CLI_ARGS)"
+    cmds:
+      - zig build wasm-ext {{.CLI_ARGS}}
+
+  wasm:verify:
+    desc: "Verify the built wasm32-emscripten extension loads for real against a given duckdb-wasm engine. Usage: task wasm:verify -- <engine-dist-dir>"
+    cmds:
+      - |
+        set -e
+        EXT_PATH="$(pwd)/zig-out/lib/wasm_mvp/zig_ext.duckdb_extension.wasm"
+        if [ ! -f "$EXT_PATH" ]; then
+          echo "missing $EXT_PATH — did 'zig build wasm-ext -Demcc-path=...' run (with the Emscripten version matching the engine you're verifying against)?"
+          exit 1
+        fi
+        (cd tools/wasm_verify && npm install --no-audit --no-fund --silent)
+        NODE_PATH="$(pwd)/tools/wasm_verify/node_modules" node tools/wasm_verify/verify_wasm_load.cjs {{.CLI_ARGS}} "$EXT_PATH"
+
+  wasm:verify-haybarn:
+    desc: "Fetch haybarn-wasm's latest loadable engine and verify the wasm32-emscripten build against it. Build it first against haybarn-wasm's own pinned Emscripten version: zig build wasm-ext -Demcc-path=<emsdk 6.0.12's emcc>"
+    cmds:
+      - bash tools/wasm_verify/fetch_engine.sh Query-farm-haybarn/haybarn-wasm .tmp/haybarn-wasm
+      - task: wasm:verify
+        vars: { CLI_ARGS: ".tmp/haybarn-wasm/packages/duckdb-wasm/dist" }
+
+  wasm:verify-duckdb-wasm:
+    desc: "Fetch official duckdb-wasm's latest loadable engine and verify the wasm32-emscripten build against it. Build it first against duckdb-wasm's own pinned Emscripten version: zig build wasm-ext -Demcc-path=<emsdk 3.1.71's emcc>"
+    cmds:
+      - bash tools/wasm_verify/fetch_engine.sh duckdb/duckdb-wasm .tmp/duckdb-wasm
+      - task: wasm:verify
+        vars: { CLI_ARGS: ".tmp/duckdb-wasm/packages/duckdb-wasm/dist" }
+
+  wasm:verify-browser:
+    desc: "Verify the built wasm32-emscripten extension loads for real in a headless browser (Playwright/Chromium) against a given duckdb-wasm engine. Usage: task wasm:verify-browser -- <engine-dist-dir>"
+    cmds:
+      - |
+        set -e
+        EXT_PATH="$(pwd)/zig-out/lib/wasm_mvp/zig_ext.duckdb_extension.wasm"
+        if [ ! -f "$EXT_PATH" ]; then
+          echo "missing $EXT_PATH — did 'zig build wasm-ext -Demcc-path=...' run (with the Emscripten version matching the engine you're verifying against)?"
+          exit 1
+        fi
+        (cd tools/wasm_verify && npm install --no-audit --no-fund --silent && npx playwright install chromium)
+        NODE_PATH="$(pwd)/tools/wasm_verify/node_modules" node tools/wasm_verify/verify_wasm_load_browser.cjs {{.CLI_ARGS}} "$EXT_PATH"
+
+  wasm:verify-haybarn-browser:
+    desc: "Fetch haybarn-wasm's latest loadable engine and verify the wasm32-emscripten build loads in a real headless browser. Build it first: zig build wasm-ext -Demcc-path=<emsdk 6.0.12's emcc>"
+    cmds:
+      - bash tools/wasm_verify/fetch_engine.sh Query-farm-haybarn/haybarn-wasm .tmp/haybarn-wasm
+      - task: wasm:verify-browser
+        vars: { CLI_ARGS: ".tmp/haybarn-wasm/packages/duckdb-wasm/dist" }
+
+  wasm:verify-duckdb-wasm-browser:
+    desc: "Fetch official duckdb-wasm's latest loadable engine and verify the wasm32-emscripten build loads in a real headless browser. Build it first: zig build wasm-ext -Demcc-path=<emsdk 3.1.71's emcc>"
+    cmds:
+      - bash tools/wasm_verify/fetch_engine.sh duckdb/duckdb-wasm .tmp/duckdb-wasm
+      - task: wasm:verify-browser
+        vars: { CLI_ARGS: ".tmp/duckdb-wasm/packages/duckdb-wasm/dist" }
+
   verify:cross-arm64:
     desc: "Load the cross-compiled linux_arm64 extension under QEMU (via Docker/binfmt) and run real SQL against it"
     deps: [cross]
