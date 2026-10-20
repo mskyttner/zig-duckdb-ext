@@ -11,6 +11,22 @@ pub fn init(input: *const v2.duckdb_v2_extension_input, minimum_api_version: [*:
     return true;
 }
 
+/// `try helpers.ok(v2.duckdb_v2_X(...), error.Y)` instead of
+/// `if (v2.duckdb_v2_X(...) != .ERROR_NONE) return error.Y;` — same control flow, one call
+/// instead of an `if`. `failure` can be any error already in scope, so the descriptive name
+/// each call site already used (`error.FailedToGetDocs`, `error.DuckDbError`, ...) survives;
+/// this only removes the repeated `if (... != .ERROR_NONE) return ...` shape, confirmed to
+/// repeat 23 times across this file and the five comptime_*_v2 frameworks before this existed.
+/// `DuckDB's own `error_info_handle` already carries the real message for the engine to show
+/// the user — none of these call sites read it back, so there's nothing lost by not doing so
+/// here either (prompted by comparing against `duckdb-neo`'s own single-point error
+/// conversion, `Error::from_code_and_handle`, which does read the message — this project's own
+/// `cookbook/embed_sql.zig`'s `Call`/`ok`/`err` already does exactly that, for the one
+/// embedding-host use case that actually needs to report a message back to a human).
+pub inline fn ok(code: v2.DUCKDB_V2_ERROR, comptime failure: anytype) @TypeOf(failure)!void {
+    if (code != .ERROR_NONE) return failure;
+}
+
 /// Whether `row` is valid according to a vector's validity mask. A missing mask means every row is.
 pub fn isValid(validity: ?[*]const u64, row: u64) bool {
     const mask = validity orelse return true;
@@ -63,18 +79,20 @@ pub const Docs = struct {
 pub fn setDocs(docs: v2.duckdb_v2_function_docs_handle, d: Docs, err: ?*v2.duckdb_v2_error_info_handle) !void {
     if (d.description) |text| {
         const view = str(text);
-        if (v2.duckdb_v2_function_docs_set_description(docs, &view, err) != .ERROR_NONE) return error.DuckDbError;
+        try ok(v2.duckdb_v2_function_docs_set_description(docs, &view, err), error.DuckDbError);
     }
     for (d.examples) |example| {
         const sql = str(example.sql);
         if (example.title) |t| {
             const title = str(t);
-            if (v2.duckdb_v2_function_docs_add_example(docs, &title, &sql, err) != .ERROR_NONE) return error.DuckDbError;
-        } else if (v2.duckdb_v2_function_docs_add_example(docs, null, &sql, err) != .ERROR_NONE) return error.DuckDbError;
+            try ok(v2.duckdb_v2_function_docs_add_example(docs, &title, &sql, err), error.DuckDbError);
+        } else {
+            try ok(v2.duckdb_v2_function_docs_add_example(docs, null, &sql, err), error.DuckDbError);
+        }
     }
     for (d.categories) |c| {
         const category = str(c);
-        if (v2.duckdb_v2_function_docs_add_category(docs, &category, err) != .ERROR_NONE) return error.DuckDbError;
+        try ok(v2.duckdb_v2_function_docs_add_category(docs, &category, err), error.DuckDbError);
     }
 }
 
@@ -467,13 +485,18 @@ test "str views the bytes it is given" {
 /// The value starts zeroed: DuckDB compares, hashes and sorts an inline string by all of its bytes, so
 /// the ones after the text must be defined (zero, as DuckDB's own constructor leaves them).
 pub fn makeBytesValue(arena: v2.duckdb_v2_arena_handle, text: []const u8, err: *v2.duckdb_v2_error_info_handle) !v2.duckdb_v2_bytes {
+    // Both `.length` fields below are `u32` (duckdb_v2_types.zig's `duckdb_v2_bytes`): checked
+    // explicitly, not just cast, so text past 4 GiB fails loudly instead of silently
+    // truncating — the same check `duckdb-neo`'s own `DuckDBBytes::new` (Rust) makes before
+    // its own encode, found while comparing against it directly, not assumed needed.
+    if (text.len > std.math.maxInt(u32)) return error.TextTooLong;
     var b = std.mem.zeroes(v2.duckdb_v2_bytes);
     if (text.len <= v2.DUCKDB_V2_BYTES_INLINE_LENGTH) {
         b.value.inlined.length = @intCast(text.len);
         @memcpy(b.value.inlined.inlined[0..text.len], text);
     } else {
         var out_ptr: [*]u8 = undefined;
-        if (v2.duckdb_v2_arena_allocate(arena, text.len, &out_ptr, err) != .ERROR_NONE) return error.DuckDbError;
+        try ok(v2.duckdb_v2_arena_allocate(arena, text.len, &out_ptr, err), error.DuckDbError);
         @memcpy(out_ptr[0..text.len], text);
         b.value.pointer.length = @intCast(text.len);
         const prefix_len = @min(text.len, 4);

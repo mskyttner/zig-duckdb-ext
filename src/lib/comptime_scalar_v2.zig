@@ -592,7 +592,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
             if (docs) |d| {
                 var function_docs: v2.duckdb_v2_function_docs_handle = undefined;
-                if (v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, &err) != .ERROR_NONE) return error.FailedToGetDocs;
+                try helpers.ok(v2.duckdb_v2_scalar_function_get_docs(function, &function_docs, &err), error.FailedToGetDocs);
                 helpers.setDocs(function_docs, d, &err) catch return error.FailedToSetDocs;
             }
 

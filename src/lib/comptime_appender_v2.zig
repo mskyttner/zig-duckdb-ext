@@ -239,7 +239,7 @@ fn buildLeafValue(ctx: v2.duckdb_v2_context_handle, comptime T: type, value: T, 
         []const u8 => helpers.createVarcharValue(ctx, value, &v, err),
         else => @compileError("unsupported leaf type for DuckDB v2 value boxing: " ++ @typeName(T)),
     };
-    if (code != .ERROR_NONE) return error.DuckDbError;
+    try helpers.ok(code, error.DuckDbError);
     return v;
 }
 
@@ -265,11 +265,11 @@ fn buildListValue(ctx: v2.duckdb_v2_context_handle, comptime E: type, items: []c
     }
 
     var child_type: v2.duckdb_v2_logical_type_handle = undefined;
-    if (helpers.createTypeFromId(ctx, duckdbV2TypeId(E), &child_type, err) != .ERROR_NONE) return error.DuckDbError;
+    try helpers.ok(helpers.createTypeFromId(ctx, duckdbV2TypeId(E), &child_type, err), error.DuckDbError);
     defer _ = v2.duckdb_v2_logical_type_destroy(&child_type);
 
     var out: v2.duckdb_v2_value_handle = undefined;
-    if (helpers.createListValue(ctx, child_type, children, &out, err) != .ERROR_NONE) return error.DuckDbError;
+    try helpers.ok(helpers.createListValue(ctx, child_type, children, &out, err), error.DuckDbError);
     return out;
 }
 
@@ -294,11 +294,11 @@ fn buildArrayValue(ctx: v2.duckdb_v2_context_handle, comptime E: type, items: []
     }
 
     var child_type: v2.duckdb_v2_logical_type_handle = undefined;
-    if (helpers.createTypeFromId(ctx, duckdbV2TypeId(E), &child_type, err) != .ERROR_NONE) return error.DuckDbError;
+    try helpers.ok(helpers.createTypeFromId(ctx, duckdbV2TypeId(E), &child_type, err), error.DuckDbError);
     defer _ = v2.duckdb_v2_logical_type_destroy(&child_type);
 
     var out: v2.duckdb_v2_value_handle = undefined;
-    if (helpers.createArrayValue(ctx, child_type, children, &out, err) != .ERROR_NONE) return error.DuckDbError;
+    try helpers.ok(helpers.createArrayValue(ctx, child_type, children, &out, err), error.DuckDbError);
     return out;
 }
 
@@ -324,7 +324,7 @@ fn buildStructValue(ctx: v2.duckdb_v2_context_handle, comptime T: type, value: T
     }
 
     var out: v2.duckdb_v2_value_handle = undefined;
-    if (helpers.createStructValue(ctx, &names, &children, &out, err) != .ERROR_NONE) return error.DuckDbError;
+    try helpers.ok(helpers.createStructValue(ctx, &names, &children, &out, err), error.DuckDbError);
     return out;
 }
 
@@ -428,8 +428,8 @@ pub fn Appender(comptime Row: type) type {
         fn growVectorsToCapacity(self: *Self, err: *v2.duckdb_v2_error_info_handle) !void {
             inline for (0..num_fields) |i| {
                 var vec: v2.duckdb_v2_vector_handle = undefined;
-                if (v2.duckdb_v2_data_chunk_get_vector(self.chunk, i, &vec, err) != .ERROR_NONE) return error.DuckDbError;
-                if (v2.duckdb_v2_vector_set_size(vec, self.capacity, err) != .ERROR_NONE) return error.DuckDbError;
+                try helpers.ok(v2.duckdb_v2_data_chunk_get_vector(self.chunk, i, &vec, err), error.DuckDbError);
+                try helpers.ok(v2.duckdb_v2_vector_set_size(vec, self.capacity, err), error.DuckDbError);
             }
         }
 
@@ -439,12 +439,12 @@ pub fn Appender(comptime Row: type) type {
 
             inline for (0..num_fields) |i| {
                 var vec: v2.duckdb_v2_vector_handle = undefined;
-                if (v2.duckdb_v2_data_chunk_get_vector(self.chunk, i, &vec, err) != .ERROR_NONE) return error.DuckDbError;
+                try helpers.ok(v2.duckdb_v2_data_chunk_get_vector(self.chunk, i, &vec, err), error.DuckDbError);
                 const T = field_types[i];
                 const field_value = @field(row, field_names[i]);
                 if (comptime isLeafScalarType(T)) {
                     var out_data: ?*anyopaque = null;
-                    if (v2.duckdb_v2_vector_get_data_mutable(vec, &out_data, err) != .ERROR_NONE) return error.DuckDbError;
+                    try helpers.ok(v2.duckdb_v2_vector_get_data_mutable(vec, &out_data, err), error.DuckDbError);
                     // SAFETY: vector `i` was created from `types[i]`, which maps to `T` via `duckdbV2TypeId`.
                     const ptr: [*]T = @ptrCast(@alignCast(out_data));
                     ptr[self.buffered] = field_value;
@@ -456,16 +456,16 @@ pub fn Appender(comptime Row: type) type {
                     var text_value = try buildLeafValue(self.ctx, []const u8, @tagName(field_value), err);
                     defer _ = v2.duckdb_v2_value_destroy(&text_value);
                     var value: v2.duckdb_v2_value_handle = undefined;
-                    if (v2.duckdb_v2_value_cast(helpers.factory(self.ctx, err) orelse return error.FailedToGetFactory, text_value, self.types[i], &value, err) != .ERROR_NONE) return error.DuckDbError;
+                    try helpers.ok(v2.duckdb_v2_value_cast(helpers.factory(self.ctx, err) orelse return error.FailedToGetFactory, text_value, self.types[i], &value, err), error.DuckDbError);
                     defer _ = v2.duckdb_v2_value_destroy(&value);
-                    if (v2.duckdb_v2_vector_set_value(vec, self.buffered, value, err) != .ERROR_NONE) return error.DuckDbError;
+                    try helpers.ok(v2.duckdb_v2_vector_set_value(vec, self.buffered, value, err), error.DuckDbError);
                 } else {
                     // VARCHAR, LIST, STRUCT, and ARRAY all go through boxed
                     // Value — none has a raw-buffer write path (see this
                     // file's doc comment on LIST/STRUCT/ARRAY).
                     var value = try buildValue(self.ctx, T, field_value, err);
                     defer _ = v2.duckdb_v2_value_destroy(&value);
-                    if (v2.duckdb_v2_vector_set_value(vec, self.buffered, value, err) != .ERROR_NONE) return error.DuckDbError;
+                    try helpers.ok(v2.duckdb_v2_vector_set_value(vec, self.buffered, value, err), error.DuckDbError);
                 }
             }
             self.buffered += 1;
@@ -477,8 +477,8 @@ pub fn Appender(comptime Row: type) type {
 
             inline for (0..num_fields) |i| {
                 var vec: v2.duckdb_v2_vector_handle = undefined;
-                if (v2.duckdb_v2_data_chunk_get_vector(self.chunk, i, &vec, err) != .ERROR_NONE) return error.DuckDbError;
-                if (v2.duckdb_v2_vector_set_size(vec, self.buffered, err) != .ERROR_NONE) return error.DuckDbError;
+                try helpers.ok(v2.duckdb_v2_data_chunk_get_vector(self.chunk, i, &vec, err), error.DuckDbError);
+                try helpers.ok(v2.duckdb_v2_vector_set_size(vec, self.buffered, err), error.DuckDbError);
             }
             if (v2.duckdb_v2_column_data_collection_append(self.collection, self.append_state, self.chunk, err) != .ERROR_NONE) {
                 return error.FailedToAppendChunk;
