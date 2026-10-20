@@ -2760,8 +2760,9 @@ cross-origin-isolation headers (that's `coi`-only), so nothing extra was needed 
    serving the **unstamped** raw `zig_ext.wasm` (footer added only after this), and a later
    retry under the *same* extension name kept failing identically even after fixing the file
    and restarting the server, with **no new HTTP request ever reaching the server** — a stale
-   per-name install-metadata cache (not tracked down to its exact storage location, but
-   clearly real) kept re-serving the first, garbage-footer parse. Confirmed by elimination:
+   per-name install-metadata cache (located later, see the 2026-10-20 follow-up below:
+   `~/.duckdb/extensions/<repository>/<version>/<platform>/`) kept re-serving the first,
+   garbage-footer parse. Confirmed by elimination:
    switching to a never-used name (`zigext2`) against the *same* properly-stamped file
    immediately got past ABI-type parsing and failed on something else entirely (an expected,
    self-inflicted mismatch: the served file's export is `zig_ext_init_c_api`, but
@@ -2814,12 +2815,21 @@ results. `task check:all` stays green; the new step is additive (its own opt-in 
 step, not wired into the default install step, the same way `cross` isn't).
 
 Remaining open items, both narrow and both about going from *this specific extension works*
-to *a wider workflow*: (a) the stale per-name install-metadata cache found in the previous
-follow-up — still not tracked down to its exact storage location (checked: not `~/.duckdb`,
-not a file anywhere under the harness's own working directories, not Node's own `fetch`
-cache; the compiled `duckdb-mvp.wasm`'s Emscripten-emulated filesystem is the remaining
-suspect, not yet confirmed) — a one-time-per-name snag with a known workaround (a fresh
-`custom_extension_repository` URL), not a correctness issue with the build step itself;
+to *a wider workflow*: (a) ~~the stale per-name install-metadata cache found in the previous
+follow-up — still not tracked down to its exact storage location~~ — found, 2026-10-20,
+prompted by reading `Query-farm-haybarn/haybarn-extension-wasm-tester`'s own source (a
+third-party tool that tests community extensions against `@haybarn/haybarn-wasm` at scale):
+it's a real, repository-URL-keyed directory on disk — `~/.duckdb/extensions/<repository>/
+<version>/<platform>/<name>.duckdb_extension.wasm` for official `duckdb-wasm`, and a
+`~/.haybarn/extensions/...` sibling specifically for `haybarn-wasm` (confirmed live on this
+machine: every `custom_extension_repository` port used across this document's own earlier
+follow-ups has its own cached copy sitting there right now, under exactly this layout). The
+earlier check only looked at the native CLI's own plain `~/.duckdb/extensions/<version>/
+<platform>/` — missing the repository-URL path segment entirely, which is why it came up
+empty. Explains the original symptom precisely: `LOAD` under an unchanged `(name,
+repository)` pair re-serves this cached file instead of re-fetching, which is also exactly
+what a fresh port sidesteps — not a coincidental workaround, the actual mechanism. Still a
+one-time-per-name-and-repository snag, not a correctness issue with the build step itself;
 (b) `registerFileBuffer` + direct-path `LOAD` remains unverified in a real browser (not
 available in this sandbox) — the custom-repository path this step targets is a complete,
 documented deployment story on its own, so this is a nice-to-have, not a blocker.
