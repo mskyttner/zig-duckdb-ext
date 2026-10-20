@@ -172,6 +172,11 @@ tasks:
     cmds:
       - zig build cross
 
+  wasm:ext:
+    desc: "Build the wasm32-emscripten SIDE_MODULE (needs a real emcc on PATH or -Demcc-path=...; pass via CLI_ARGS)"
+    cmds:
+      - zig build wasm-ext {{.CLI_ARGS}}
+
   verify:cross-arm64:
     desc: "Load the cross-compiled linux_arm64 extension under QEMU (via Docker/binfmt) and run real SQL against it"
     deps: [cross]
