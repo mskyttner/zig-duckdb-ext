@@ -1551,10 +1551,16 @@ true
 simd_blocked
 true
 true
+simd_blocked_mc
+true
+true
 simd_parallel
 true
 true
 simd_parallel_blocked
+true
+true
+simd_parallel_blocked_mc
 true
 true
 

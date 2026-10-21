@@ -2312,24 +2312,25 @@ const MatmulCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_ct", struct {
     }
 }.eval, &.{ "a", "b", "m", "k", "n" });
 
-/// Benchmarks `matmulNaive` against `matmulSimd`, `matmulSimdParallel`, `matmulSimdBlocked` and
-/// `matmulSimdParallelBlocked` on an m×k × k×n multiplication, run `iterations` times each, timed
-/// via `std.Io.Clock` (`std.time.Timer` no longer exists in Zig 0.17 — timing moved under the
-/// unified `Io` interface, same `std.Io.Threaded` construction the braille v2-poc demo already
-/// uses to get an `Io` instance outside of `std.process.Init`). The same `Threaded` instance
-/// built for timing also backs both parallel kernels' `std.Io.Group` dispatch — one pool doing
-/// all three jobs. Test data is a fixed deterministic pattern, not random — this is a throughput
-/// comparison, not a correctness fuzz test (that's `matmul.zig`'s own unit tests).
+/// Benchmarks `matmulNaive` against `matmulSimd`, `matmulSimdParallel`, `matmulSimdBlocked`,
+/// `matmulSimdParallelBlocked`, `matmulSimdBlockedMc` and `matmulSimdParallelBlockedMc` on an
+/// m×k × k×n multiplication, run `iterations` times each, timed via `std.Io.Clock`
+/// (`std.time.Timer` no longer exists in Zig 0.17 — timing moved under the unified `Io` interface,
+/// same `std.Io.Threaded` construction the braille v2-poc demo already uses to get an `Io`
+/// instance outside of `std.process.Init`). The same `Threaded` instance built for timing also
+/// backs every parallel kernel's `std.Io.Group` dispatch — one pool doing all of them. Test data
+/// is a fixed deterministic pattern, not random — this is a throughput comparison, not a
+/// correctness fuzz test (that's `matmul.zig`'s own unit tests).
 const MatmulBenchState = struct {
-    kernel_names: [5][]const u8,
-    elapsed_ms: [5]f64,
-    gflops: [5]f64,
+    kernel_names: [7][]const u8,
+    elapsed_ms: [7]f64,
+    gflops: [7]f64,
     idx: usize,
 
     pub const Row = struct { kernel: []const u8, elapsed_ms: f64, gflops: f64 };
 
     pub fn init(m: i64, k: i64, n: i64, iterations: i64) @This() {
-        const failed: @This() = .{ .kernel_names = undefined, .elapsed_ms = undefined, .gflops = undefined, .idx = 5 };
+        const failed: @This() = .{ .kernel_names = undefined, .elapsed_ms = undefined, .gflops = undefined, .idx = 7 };
 
         const mu: usize = @intCast(@max(m, 1));
         const ku: usize = @intCast(@max(k, 1));
@@ -2372,16 +2373,24 @@ const MatmulBenchState = struct {
         for (0..iters) |_| matmul.matmulSimdParallelBlocked(matmul.default_rm, io, max_tasks, a, b, c, mu, ku, nu);
         const parallel_blocked_ns: f64 = @floatFromInt(parallel_blocked_start.durationTo(.now(io, .awake)).raw.nanoseconds);
 
+        const blocked_mc_start: std.Io.Clock.Timestamp = .now(io, .awake);
+        for (0..iters) |_| matmul.matmulSimdBlockedMc(matmul.default_rm, a, b, c, mu, ku, nu);
+        const blocked_mc_ns: f64 = @floatFromInt(blocked_mc_start.durationTo(.now(io, .awake)).raw.nanoseconds);
+
+        const parallel_blocked_mc_start: std.Io.Clock.Timestamp = .now(io, .awake);
+        for (0..iters) |_| matmul.matmulSimdParallelBlockedMc(matmul.default_rm, io, max_tasks, a, b, c, mu, ku, nu);
+        const parallel_blocked_mc_ns: f64 = @floatFromInt(parallel_blocked_mc_start.durationTo(.now(io, .awake)).raw.nanoseconds);
+
         return .{
-            .kernel_names = .{ "naive", "simd", "simd_parallel", "simd_blocked", "simd_parallel_blocked" },
-            .elapsed_ms = .{ naive_ns / 1e6, simd_ns / 1e6, parallel_ns / 1e6, blocked_ns / 1e6, parallel_blocked_ns / 1e6 },
-            .gflops = .{ flops / naive_ns, flops / simd_ns, flops / parallel_ns, flops / blocked_ns, flops / parallel_blocked_ns },
+            .kernel_names = .{ "naive", "simd", "simd_parallel", "simd_blocked", "simd_parallel_blocked", "simd_blocked_mc", "simd_parallel_blocked_mc" },
+            .elapsed_ms = .{ naive_ns / 1e6, simd_ns / 1e6, parallel_ns / 1e6, blocked_ns / 1e6, parallel_blocked_ns / 1e6, blocked_mc_ns / 1e6, parallel_blocked_mc_ns / 1e6 },
+            .gflops = .{ flops / naive_ns, flops / simd_ns, flops / parallel_ns, flops / blocked_ns, flops / parallel_blocked_ns, flops / blocked_mc_ns, flops / parallel_blocked_mc_ns },
             .idx = 0,
         };
     }
 
     pub fn next(self: *@This()) ?Row {
-        if (self.idx >= 5) return null;
+        if (self.idx >= 7) return null;
         defer self.idx += 1;
         return .{ .kernel = self.kernel_names[self.idx], .elapsed_ms = self.elapsed_ms[self.idx], .gflops = self.gflops[self.idx] };
     }
