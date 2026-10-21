@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-620 functions (620 unstable) in 39 spec modules, from 70 scanned source files. Referenced by the extension: **356**; by the extension or the PoC: **367**.
+620 functions (620 unstable) in 39 spec modules, from 70 scanned source files. Referenced by the extension: **373**; by the extension or the PoC: **384**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -19,11 +19,11 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | configuration/custom_option | 17 | 17 | 0 | 0 | 17 |
 | connection | 4 | 4 | 2 | 2 | 2 |
 | data_chunk/column_data_collection | 14 | 14 | 10 | 11 | 3 |
-| data_chunk | 8 | 8 | 5 | 5 | 3 |
+| data_chunk | 8 | 8 | 8 | 8 | 0 |
 | environment | 3 | 3 | 3 | 3 | 0 |
-| error | 6 | 6 | 5 | 5 | 1 |
+| error | 6 | 6 | 6 | 6 | 0 |
 | expression | 9 | 9 | 5 | 5 | 4 |
-| factory | 3 | 3 | 2 | 2 | 1 |
+| factory | 3 | 3 | 3 | 3 | 0 |
 | filesystem/file_system | 24 | 24 | 14 | 14 | 10 |
 | function/aggregate | 45 | 45 | 34 | 34 | 11 |
 | function/cast | 14 | 14 | 11 | 11 | 3 |
@@ -39,18 +39,18 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | identifier | 1 | 1 | 1 | 1 | 0 |
 | instance | 10 | 10 | 10 | 10 | 0 |
 | logging/log_sink | 12 | 12 | 0 | 0 | 12 |
-| logging | 3 | 3 | 1 | 1 | 2 |
+| logging | 3 | 3 | 3 | 3 | 0 |
 | logical_type/custom_type | 6 | 6 | 5 | 5 | 1 |
-| logical_type | 13 | 13 | 7 | 7 | 6 |
+| logical_type | 13 | 13 | 12 | 12 | 1 |
 | prepared_statement | 4 | 4 | 4 | 4 | 0 |
 | profiling/query_metrics | 11 | 11 | 0 | 0 | 11 |
 | qname | 8 | 8 | 8 | 8 | 0 |
-| query_result | 10 | 10 | 6 | 6 | 4 |
+| query_result | 10 | 10 | 8 | 8 | 2 |
 | schema | 3 | 3 | 3 | 3 | 0 |
 | sql_statement | 10 | 10 | 9 | 9 | 1 |
 | tokenizer | 4 | 4 | 4 | 4 | 0 |
-| value | 73 | 73 | 26 | 29 | 44 |
-| vector | 22 | 22 | 12 | 12 | 10 |
+| value | 73 | 73 | 27 | 30 | 43 |
+| vector | 22 | 22 | 14 | 14 | 8 |
 
 ## Not referenced
 
@@ -66,13 +66,7 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **data_chunk/column_data_collection**: `column_data_collection_reset` *(u)*, `column_data_collection_clear` *(u)*, `column_data_collection_combine` *(u)*
 
-**data_chunk**: `data_chunk_copy` *(u)*, `data_chunk_clear` *(u)*, `data_chunk_get_vector_count` *(u)*
-
-**error**: `error_info_get_raw_text` *(u)*
-
 **expression**: `expression_get_return_type` *(u)*, `expression_function_get_name` *(u)*, `expression_function_get_qname` *(u)*, `expression_cast_get_mode` *(u)*
-
-**factory**: `instance_get_factory` *(u)*
 
 **filesystem/file_system**: `instance_get_file_system` *(u)*, `connection_get_file_system` *(u)*, `file_open_options_set_value` *(u)*, `file_system_path_exists` *(u)*, `file_system_path_is_remote` *(u)*, `file_system_path_expand` *(u)*, `file_system_path_glob` *(u)*, `file_system_path_move` *(u)*, `file_system_path_remove` *(u)*, `file_seek` *(u)*
 
@@ -94,19 +88,17 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **logging/log_sink**: `log_sink_create` *(u)*, `log_sink_set_name` *(u)*, `log_sink_set_user_data` *(u)*, `log_sink_set_write_callback` *(u)*, `log_sink_set_flush_callback` *(u)*, `log_sink_write_info_get_connection_id` *(u)*, `log_sink_write_info_get_transaction_id` *(u)*, `log_sink_write_info_get_query_id` *(u)*, `log_sink_write_info_get_thread_id` *(u)*, `instance_register_log_sink` *(u)*, `extension_register_log_sink` *(u)*, `log_sink_destroy` *(u)*
 
-**logging**: `instance_log` *(u)*, `connection_log` *(u)*
-
 **logical_type/custom_type**: `connection_register_custom_type` *(u)*
 
-**logical_type**: `logical_type_copy` *(u)*, `logical_type_is_equal` *(u)*, `logical_type_get_name` *(u)*, `logical_type_get_param_count` *(u)*, `logical_type_get_param` *(u)*, `factory_create_common_type` *(u)*
+**logical_type**: `factory_create_common_type` *(u)*
 
 **profiling/query_metrics**: `connection_get_query_metrics` *(u)*, `connection_enable_profiling` *(u)*, `query_metrics_get_root` *(u)*, `query_metrics_node_get_name` *(u)*, `query_metrics_node_get_child_count` *(u)*, `query_metrics_node_get_child` *(u)*, `query_metrics_node_get_metric_count` *(u)*, `query_metrics_node_get_metric_name` *(u)*, `query_metrics_node_get_metric_value` *(u)*, `query_metrics_node_get_metric` *(u)*, `query_metrics_destroy` *(u)*
 
-**query_result**: `result_step` *(u)*, `result_wait` *(u)*, `result_render_box` *(u)*, `result_get_statement_type` *(u)*
+**query_result**: `result_step` *(u)*, `result_wait` *(u)*
 
 **sql_statement**: `statement_add_collection` *(u)*
 
-**value**: `value_get_utinyint` *(u)*, `value_get_usmallint` *(u)*, `value_get_uint` *(u)*, `value_get_ubigint` *(u)*, `value_get_uhugeint` *(u)*, `value_get_hugeint` *(u)*, `value_get_blob` *(u)*, `value_get_date` *(u)*, `value_get_time` *(u)*, `value_get_time_ns` *(u)*, `value_get_time_tz` *(u)*, `value_get_timestamp` *(u)*, `value_get_timestamp_sec` *(u)*, `value_get_timestamp_ms` *(u)*, `value_get_timestamp_ns` *(u)*, `value_get_timestamp_tz` *(u)*, `value_get_timestamp_tz_ns` *(u)*, `value_get_interval` *(u)*, `value_get_uuid` *(u)*, `value_get_decimal` *(u)*, `value_create_null` *(u)*, `value_create_usmallint` *(u)*, `value_create_uint` *(u)*, `value_create_ubigint` *(u)*, `value_create_uhugeint` *(u)*, `value_create_hugeint` *(u)*, `value_create_date` *(u)*, `value_create_time` *(u)*, `value_create_time_ns` *(u)*, `value_create_time_tz` *(u)*, `value_create_timestamp` *(u)*, `value_create_timestamp_sec` *(u)*, `value_create_timestamp_ms` *(u)*, `value_create_timestamp_ns` *(u)*, `value_create_timestamp_tz` *(u)*, `value_create_timestamp_tz_ns` *(u)*, `value_create_interval` *(u)*, `value_create_decimal` *(u)*, `value_create_uuid` *(u)*, `value_create_bit` *(u)*, `value_create_bignum` *(u)*, `value_create_tuple` *(u)*, `value_get_logical_type` *(u)*, `value_to_string` *(u)*
+**value**: `value_get_usmallint` *(u)*, `value_get_uint` *(u)*, `value_get_ubigint` *(u)*, `value_get_uhugeint` *(u)*, `value_get_hugeint` *(u)*, `value_get_blob` *(u)*, `value_get_date` *(u)*, `value_get_time` *(u)*, `value_get_time_ns` *(u)*, `value_get_time_tz` *(u)*, `value_get_timestamp` *(u)*, `value_get_timestamp_sec` *(u)*, `value_get_timestamp_ms` *(u)*, `value_get_timestamp_ns` *(u)*, `value_get_timestamp_tz` *(u)*, `value_get_timestamp_tz_ns` *(u)*, `value_get_interval` *(u)*, `value_get_uuid` *(u)*, `value_get_decimal` *(u)*, `value_create_null` *(u)*, `value_create_usmallint` *(u)*, `value_create_uint` *(u)*, `value_create_ubigint` *(u)*, `value_create_uhugeint` *(u)*, `value_create_hugeint` *(u)*, `value_create_date` *(u)*, `value_create_time` *(u)*, `value_create_time_ns` *(u)*, `value_create_time_tz` *(u)*, `value_create_timestamp` *(u)*, `value_create_timestamp_sec` *(u)*, `value_create_timestamp_ms` *(u)*, `value_create_timestamp_ns` *(u)*, `value_create_timestamp_tz` *(u)*, `value_create_timestamp_tz_ns` *(u)*, `value_create_interval` *(u)*, `value_create_decimal` *(u)*, `value_create_uuid` *(u)*, `value_create_bit` *(u)*, `value_create_bignum` *(u)*, `value_create_tuple` *(u)*, `value_get_logical_type` *(u)*, `value_to_string` *(u)*
 
-**vector**: `vector_get_vector_type` *(u)*, `vector_get_size` *(u)*, `vector_cast` *(u)*, `vector_make_constant` *(u)*, `vector_make_sequence` *(u)*, `vector_flat_get_validity_mutable` *(u)*, `vector_constant_set_valid` *(u)*, `vector_get_child_count` *(u)*, `bignum_decode` *(u)*, `bignum_encode` *(u)*
+**vector**: `vector_get_vector_type` *(u)*, `vector_get_size` *(u)*, `vector_cast` *(u)*, `vector_make_constant` *(u)*, `vector_make_sequence` *(u)*, `vector_flat_get_validity_mutable` *(u)*, `vector_constant_set_valid` *(u)*, `vector_get_child_count` *(u)*
 
