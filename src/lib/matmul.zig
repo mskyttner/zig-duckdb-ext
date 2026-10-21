@@ -33,6 +33,16 @@
 ///! direct tinyBLAS analogue to port from; it's this PoC's own answer to
 ///! "can the matmul PoC use more than one thread" from its own
 ///! benchmarking session.
+///!
+///! `matmulSimdBlocked`/`matmulSimdParallelBlocked` add a fourth axis: cache reuse beyond the
+///! register tile. `simdTileRange`'s single pass down all of `k` re-streams the whole of `B` from
+///! RAM once per row tile once `k * n * 8` bytes stops fitting in cache — exactly the regime this
+///! PoC's own benchmarking session found (GFLOPS falling off from n=512 to n=2000, serial and
+///! parallel alike). The blocked kernels restructure the loop order into `default_bn`-wide ×
+///! `default_bk`-deep panels of `B`, so a panel stays resident across every row tile that needs
+///! it. Still not the real thing: a production BLAS also blocks (and packs into contiguous
+///! buffers) the `M` dimension so `A`'s panel survives across `N` panels too — this PoC blocks `B`
+///! only, documented here rather than silently assumed to be "the same as OpenBLAS now."
 const std = @import("std");
 
 /// Vector lane width for the SIMD kernel's inner loop — **picked at
@@ -127,6 +137,127 @@ fn scalarRowRemainder(a: []const f64, b: []const f64, c: []f64, m_tiles_end: usi
             c[i * n + j] = sum;
         }
     }
+}
+
+/// `K` block size (the reduction dimension) for `matmulSimdBlocked`/`matmulSimdParallelBlocked`.
+/// A `BK × BN` panel of `B` (`default_bk * default_bn * 8` bytes = 512 KiB) is read in full once
+/// per row tile that uses it, so keeping that panel resident in L2 across every row tile — rather
+/// than letting each row tile re-stream the whole of `B` from RAM, which is what `simdTileRange`
+/// does once `k * n * 8` bytes stops fitting in cache — is the actual point of blocking (the
+/// GotoBLAS/OpenBLAS "panel" idea, simplified to two loop levels instead of the full
+/// NC/KC/MC-with-packing hierarchy a real BLAS uses). Like `default_rm`, a fixed, documented
+/// guess, not derived from the build target's actual cache size — std has no portable query for
+/// that — tunable if it's wrong for a given machine.
+pub const default_bk: usize = 256;
+/// `N` block size (the output-column dimension); see `default_bk`'s doc comment.
+pub const default_bn: usize = 256;
+
+/// One `RM`-row, one-`vec_width`-column tile of the register-blocked microkernel, restricted to
+/// the `[k_lo, k_hi)` × `[n_lo, n_hi)` panel of `a`/`b` — `simdTileRange`'s kernel, with the full
+/// `k`/`n` ranges each replaced by a caller-chosen sub-range. `accumulate` says whether `c`
+/// already holds a partial sum from an earlier `k`-panel for this same `n`-panel (add to it)
+/// or is this row/column's first contribution (overwrite it) — the caller must visit every
+/// `k`-panel of a given `n`-panel, for a given row tile, in order, accumulate=false only on the
+/// first.
+fn microTile(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, k_full: usize, n_full: usize, k_lo: usize, k_hi: usize, n_lo: usize, n_hi: usize, accumulate: bool, row0: usize) void {
+    const n_vecs = (n_hi - n_lo) / vec_width;
+    var jv: usize = 0;
+    while (jv < n_vecs) : (jv += 1) {
+        const j0 = n_lo + jv * vec_width;
+        var acc: [RM]Vec = undefined;
+        if (accumulate) {
+            inline for (0..RM) |r| acc[r] = c[(row0 + r) * n_full + j0 ..][0..vec_width].*;
+        } else {
+            inline for (0..RM) |r| acc[r] = @splat(0);
+        }
+
+        var l = k_lo;
+        while (l < k_hi) : (l += 1) {
+            const bvec: Vec = b[l * n_full + j0 ..][0..vec_width].*;
+            inline for (0..RM) |r| {
+                const aval: Vec = @splat(a[(row0 + r) * k_full + l]);
+                acc[r] = @mulAdd(Vec, aval, bvec, acc[r]);
+            }
+        }
+
+        inline for (0..RM) |r| {
+            c[(row0 + r) * n_full + j0 ..][0..vec_width].* = acc[r];
+        }
+    }
+
+    // Column remainder ((n_hi - n_lo) % vec_width) within this panel, scalar.
+    var j = n_lo + n_vecs * vec_width;
+    while (j < n_hi) : (j += 1) {
+        inline for (0..RM) |r| {
+            var sum: f64 = if (accumulate) c[(row0 + r) * n_full + j] else 0;
+            var l = k_lo;
+            while (l < k_hi) : (l += 1) sum += a[(row0 + r) * k_full + l] * b[l * n_full + j];
+            c[(row0 + r) * n_full + j] = sum;
+        }
+    }
+}
+
+/// `simdTileRange`, restructured in `default_bn`-wide column panels and `default_bk`-deep
+/// reduction panels — the GotoBLAS loop order (N panel outside, K panel inside it, then every row
+/// tile, then the microkernel) instead of `simdTileRange`'s single pass straight down all of `k`.
+/// Parallelism (in `matmulSimdParallelBlocked`) still splits `[tile_lo, tile_hi)` the same way
+/// `simdTileRange` does — blocking only changes what one thread does with its own row-tile range,
+/// not how the range is split, so dispatch cost is identical to the unblocked kernel.
+fn simdTileRangeBlocked(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, k: usize, n: usize, tile_lo: usize, tile_hi: usize) void {
+    var n_lo: usize = 0;
+    while (n_lo < n) : (n_lo += default_bn) {
+        const n_hi = @min(n_lo + default_bn, n);
+
+        var k_lo: usize = 0;
+        var first_k = true;
+        while (k_lo < k) : (k_lo += default_bk) {
+            const k_hi = @min(k_lo + default_bk, k);
+
+            var it = tile_lo;
+            while (it < tile_hi) : (it += 1) microTile(RM, a, b, c, k, n, k_lo, k_hi, n_lo, n_hi, !first_k, it * RM);
+
+            first_k = false;
+        }
+    }
+}
+
+/// `matmulSimd`, with `B`'s panels blocked for cache reuse — see `simdTileRangeBlocked`'s doc
+/// comment. Same row-remainder handling as `matmulSimd`; the remainder (`m % RM` rows) is small
+/// enough that blocking it isn't worth the bookkeeping.
+pub fn matmulSimdBlocked(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, m: usize, k: usize, n: usize) void {
+    const m_tiles = m / RM;
+    simdTileRangeBlocked(RM, a, b, c, k, n, 0, m_tiles);
+    scalarRowRemainder(a, b, c, m_tiles * RM, m, k, n);
+}
+
+/// `matmulSimdParallel`, with the per-thread row-tile range processed by the blocked kernel
+/// (`simdTileRangeBlocked`) instead of the unblocked one — combines both: multiple threads, each
+/// one reusing cached `B` panels across its own row tiles. See both functions' own doc comments.
+pub fn matmulSimdParallelBlocked(comptime RM: usize, io: std.Io, max_tasks: usize, a: []const f64, b: []const f64, c: []f64, m: usize, k: usize, n: usize) void {
+    const m_tiles = m / RM;
+    const tasks = @max(@as(usize, 1), @min(max_tasks, m_tiles));
+
+    if (tasks <= 1) {
+        simdTileRangeBlocked(RM, a, b, c, k, n, 0, m_tiles);
+    } else {
+        const Task = struct {
+            fn run(aa: []const f64, bb: []const f64, cc: []f64, kk: usize, nn: usize, lo: usize, hi: usize) void {
+                simdTileRangeBlocked(RM, aa, bb, cc, kk, nn, lo, hi);
+            }
+        };
+        var group: std.Io.Group = .init;
+        const base = m_tiles / tasks;
+        const extra = m_tiles % tasks;
+        var lo: usize = 0;
+        for (0..tasks) |t| {
+            const hi = lo + base + @as(usize, if (t < extra) 1 else 0);
+            group.concurrent(io, Task.run, .{ a, b, c, k, n, lo, hi }) catch Task.run(a, b, c, k, n, lo, hi);
+            lo = hi;
+        }
+        group.await(io) catch {};
+    }
+
+    scalarRowRemainder(a, b, c, m_tiles * RM, m, k, n);
 }
 
 /// Serial register-blocked SIMD kernel: see `simdTileRange`'s doc comment for the kernel itself.
@@ -246,5 +377,56 @@ test "matmulSimdParallel agrees with matmulNaive, split across more tasks than t
 
     for (c_naive, c_parallel) |expected, actual| {
         try std.testing.expectApproxEqAbs(expected, actual, 1e-9);
+    }
+}
+
+test "matmulSimdBlocked agrees with matmulNaive across multiple N and K panels, non-aligned" {
+    // default_bn/default_bk are 256; cross several panel boundaries in both k and n, with a
+    // partial last panel in each, plus a non-tile-aligned m.
+    const m = 37;
+    const k = 530;
+    const n = 517;
+    const a = std.testing.allocator.alloc(f64, m * k) catch unreachable;
+    defer std.testing.allocator.free(a);
+    const b = std.testing.allocator.alloc(f64, k * n) catch unreachable;
+    defer std.testing.allocator.free(b);
+    for (a, 0..) |*v, i| v.* = @floatFromInt(i % 11);
+    for (b, 0..) |*v, i| v.* = @floatFromInt((i % 6) + 1);
+
+    const c_naive = std.testing.allocator.alloc(f64, m * n) catch unreachable;
+    defer std.testing.allocator.free(c_naive);
+    const c_blocked = std.testing.allocator.alloc(f64, m * n) catch unreachable;
+    defer std.testing.allocator.free(c_blocked);
+    matmulNaive(a, b, c_naive, m, k, n);
+    matmulSimdBlocked(default_rm, a, b, c_blocked, m, k, n);
+
+    for (c_naive, c_blocked) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-6);
+    }
+}
+
+test "matmulSimdParallelBlocked agrees with matmulNaive, split across more tasks than there are tiles" {
+    const m = 37;
+    const k = 530;
+    const n = 517;
+    const a = std.testing.allocator.alloc(f64, m * k) catch unreachable;
+    defer std.testing.allocator.free(a);
+    const b = std.testing.allocator.alloc(f64, k * n) catch unreachable;
+    defer std.testing.allocator.free(b);
+    for (a, 0..) |*v, i| v.* = @floatFromInt(i % 11);
+    for (b, 0..) |*v, i| v.* = @floatFromInt((i % 6) + 1);
+
+    const c_naive = std.testing.allocator.alloc(f64, m * n) catch unreachable;
+    defer std.testing.allocator.free(c_naive);
+    const c_parallel = std.testing.allocator.alloc(f64, m * n) catch unreachable;
+    defer std.testing.allocator.free(c_parallel);
+    matmulNaive(a, b, c_naive, m, k, n);
+
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    matmulSimdParallelBlocked(default_rm, threaded.io(), 64, a, b, c_parallel, m, k, n);
+
+    for (c_naive, c_parallel) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-6);
     }
 }
