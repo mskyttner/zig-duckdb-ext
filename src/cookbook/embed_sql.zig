@@ -42,6 +42,9 @@ pub var error_text_buf: [1024]u8 = undefined;
 /// The text and code of the last failed call: DuckDB's reason, copied before the error info is destroyed.
 pub var error_text: []const u8 = "";
 pub var error_code: v2.DUCKDB_V2_ERROR = .ERROR_NONE;
+pub var error_raw_text_buf: [1024]u8 = undefined;
+/// The same reason as `error_text`, minus its leading "<Type> Error: " category prefix (error_info_get_raw_text).
+pub var error_raw_text: []const u8 = "";
 
 /// One call's error slot. Pass `c.err()` as the last argument and hand the return code to `ok`: on failure the slot
 /// holds an error info that this program owns, so `ok` reads it and destroys it.
@@ -63,6 +66,11 @@ pub const Call = struct {
         const n = @min(reason.len, error_text_buf.len);
         if (reason.ptr) |p| @memcpy(error_text_buf[0..n], p[0..n]);
         error_text = error_text_buf[0..n];
+        var raw_reason: v2.duckdb_v2_str = undefined;
+        _ = v2.duckdb_v2_error_info_get_raw_text(info, &raw_reason);
+        const raw_n = @min(raw_reason.len, error_raw_text_buf.len);
+        if (raw_reason.ptr) |p| @memcpy(error_raw_text_buf[0..raw_n], p[0..raw_n]);
+        error_raw_text = error_raw_text_buf[0..raw_n];
         _ = v2.duckdb_v2_error_info_destroy(&info);
         self.slot = null;
         return error.DuckDb;
@@ -133,6 +141,7 @@ pub const Session = struct {
 /// A result read to the end.
 pub const Table = struct {
     result_type: v2.DUCKDB_V2_RESULT_TYPE,
+    statement_type: v2.DUCKDB_V2_STATEMENT_TYPE,
     columns: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
     /// One entry per row, the values as text ("NULL" for a NULL).
@@ -159,8 +168,9 @@ pub const Table = struct {
 pub fn collect(arena: std.mem.Allocator, s: *Session, result: *v2.duckdb_v2_result_handle) !Table {
     defer _ = v2.duckdb_v2_result_destroy(result);
     var c: Call = .{};
-    var table: Table = .{ .result_type = undefined };
+    var table: Table = .{ .result_type = undefined, .statement_type = undefined };
     try c.ok(v2.duckdb_v2_result_get_result_type(result.*, &table.result_type, c.err()));
+    try c.ok(v2.duckdb_v2_result_get_statement_type(result.*, &table.statement_type, c.err()));
 
     var schema: v2.duckdb_v2_schema_handle = undefined;
     try c.ok(v2.duckdb_v2_result_get_schema(result.*, &schema, c.err()));
@@ -330,6 +340,11 @@ fn run(arena: std.mem.Allocator, s: *Session) !void {
     try expectInt("INSERT reports changed rows", @backingInt(v2.DUCKDB_V2_RESULT_TYPE.RESULT_TYPE_CHANGED_ROWS), @intCast(@backingInt(script[1].result_type)));
     try expectInt("INSERT changed rows", 5000, script[1].changed_rows);
     try expectEqual("SELECT", "5000|4999", try script[2].flat(arena));
+    try expectEqual("statement types", "CREATE,INSERT,SELECT", try std.fmt.allocPrint(arena, "{s},{s},{s}", .{
+        @tagName(script[0].statement_type)["STATEMENT_TYPE_".len..],
+        @tagName(script[1].statement_type)["STATEMENT_TYPE_".len..],
+        @tagName(script[2].statement_type)["STATEMENT_TYPE_".len..],
+    }));
 
     // Rows arrive in chunks of at most 2048: 5000 rows are three chunks.
     const stream = (try runAll(arena, s, "SELECT i FROM t ORDER BY i"))[0];
@@ -343,6 +358,118 @@ fn run(arena: std.mem.Allocator, s: *Session) !void {
     try arrowResults(s);
     try tokenizing(arena, s);
     try parsing(arena, s);
+    try dataChunkUtilities(arena, s);
+    try renderBox(arena, s);
+    try hostLogging(arena, s);
+    try bignumRoundTrip();
+}
+
+/// data_chunk_copy/_clear/_get_vector_count: utilities on a chunk already in hand from a real result.
+fn dataChunkUtilities(arena: std.mem.Allocator, s: *Session) !void {
+    var c: Call = .{};
+    const sql = try arena.dupeSentinel(u8, "SELECT 1 AS a, 2 AS b, 3 AS c", 0);
+    var iterator: v2.duckdb_v2_statement_iterator_handle = undefined;
+    try c.ok(v2.duckdb_v2_parse_sql(s.conn, sql.ptr, &iterator, c.err()));
+    defer _ = v2.duckdb_v2_statement_iterator_destroy(&iterator);
+    var statement: ?v2.duckdb_v2_sql_statement_handle = null;
+    try c.ok(v2.duckdb_v2_statement_iterator_next(iterator, @ptrCast(&statement), c.err()));
+    var stmt = statement.?;
+    defer _ = v2.duckdb_v2_sql_statement_destroy(&stmt);
+
+    var result: v2.duckdb_v2_result_handle = undefined;
+    try c.ok(v2.duckdb_v2_statement_execute(s.conn, stmt, null, null, 0, &result, c.err()));
+    defer _ = v2.duckdb_v2_result_destroy(&result);
+
+    var chunk: ?v2.duckdb_v2_data_chunk_handle = null;
+    try c.ok(v2.duckdb_v2_result_fetch_chunk(result, @ptrCast(&chunk), c.err()));
+    var owned = chunk orelse return error.Mismatch;
+    defer _ = v2.duckdb_v2_data_chunk_destroy(&owned);
+
+    var vector_count: u64 = 0;
+    try c.ok(v2.duckdb_v2_data_chunk_get_vector_count(owned, &vector_count, c.err()));
+    try expectInt("one vector per column", 3, vector_count);
+
+    var copied: v2.duckdb_v2_data_chunk_handle = undefined;
+    try c.ok(v2.duckdb_v2_data_chunk_copy(s.factory, owned, &copied, c.err()));
+    defer _ = v2.duckdb_v2_data_chunk_destroy(&copied);
+    var copied_size: u64 = 0;
+    try c.ok(v2.duckdb_v2_data_chunk_get_size(copied, &copied_size, c.err()));
+    try expectInt("the copy starts with the original's size", 1, copied_size);
+
+    try c.ok(v2.duckdb_v2_data_chunk_clear(copied, c.err()));
+    var cleared_size: u64 = 0;
+    try c.ok(v2.duckdb_v2_data_chunk_get_size(copied, &cleared_size, c.err()));
+    try expectInt("clear empties it", 0, cleared_size);
+    var original_size: u64 = 0;
+    try c.ok(v2.duckdb_v2_data_chunk_get_size(owned, &original_size, c.err()));
+    try expectInt("the original is unaffected by clearing its copy", 1, original_size);
+}
+
+var render_box_buf: [4096]u8 = undefined;
+var render_box_text: []const u8 = "";
+
+fn renderBoxSink(text: *const v2.duckdb_v2_str, user_data: *anyopaque, err: *v2.duckdb_v2_error_info_handle) callconv(.c) void {
+    _ = user_data;
+    _ = err;
+    const slice = view(text.*);
+    const n = @min(slice.len, render_box_buf.len);
+    @memcpy(render_box_buf[0..n], slice[0..n]);
+    render_box_text = render_box_buf[0..n];
+}
+
+/// result_render_box: the whole remaining result materializes and renders as one box-drawing string, delivered
+/// to the sink in a single call. The result handle is IN_TRANSFER: render_box consumes it, so nothing else
+/// drains or destroys it afterward.
+fn renderBox(arena: std.mem.Allocator, s: *Session) !void {
+    var c: Call = .{};
+    const sql = try arena.dupeSentinel(u8, "SELECT 42 AS answer", 0);
+    var iterator: v2.duckdb_v2_statement_iterator_handle = undefined;
+    try c.ok(v2.duckdb_v2_parse_sql(s.conn, sql.ptr, &iterator, c.err()));
+    defer _ = v2.duckdb_v2_statement_iterator_destroy(&iterator);
+    var statement: ?v2.duckdb_v2_sql_statement_handle = null;
+    try c.ok(v2.duckdb_v2_statement_iterator_next(iterator, @ptrCast(&statement), c.err()));
+    var stmt = statement.?;
+    defer _ = v2.duckdb_v2_sql_statement_destroy(&stmt);
+
+    var result: v2.duckdb_v2_result_handle = undefined;
+    try c.ok(v2.duckdb_v2_statement_execute(s.conn, stmt, null, null, 0, &result, c.err()));
+    const null_text = helpers.str("");
+    try c.ok(v2.duckdb_v2_result_render_box(&result, 0, 0, 0, &null_text, 0, 0, renderBoxSink, @ptrCast(&c), c.err()));
+    try expectInt("the box names its column", 1, @intFromBool(std.mem.indexOf(u8, render_box_text, "answer") != null));
+    try expectInt("the box has the value", 1, @intFromBool(std.mem.indexOf(u8, render_box_text, "42") != null));
+}
+
+/// connection_log/instance_log: the same facility context_log already demonstrates for an extension
+/// (src/cookbook/logging.zig), from a host's own connection and instance handles instead of a context.
+fn hostLogging(arena: std.mem.Allocator, s: *Session) !void {
+    _ = try runAll(arena, s, "SET enable_logging = true");
+    var c: Call = .{};
+    const log_type = helpers.str("zig_cookbook_host");
+    const conn_message = helpers.str("zh-connection");
+    try c.ok(v2.duckdb_v2_connection_log(s.conn, .LOG_LEVEL_INFO, &log_type, &conn_message, c.err()));
+    const inst_message = helpers.str("zh-instance");
+    try c.ok(v2.duckdb_v2_instance_log(s.instance, .LOG_LEVEL_INFO, &log_type, &inst_message, c.err()));
+
+    try expectEqual("connection_log is scoped to the connection", "1", try query(arena, s, "SELECT count(*) FROM duckdb_logs WHERE message = 'zh-connection' AND scope = 'CONNECTION' AND connection_id IS NOT NULL"));
+    try expectEqual("instance_log carries no connection id", "1", try query(arena, s, "SELECT count(*) FROM duckdb_logs WHERE message = 'zh-instance' AND scope = 'DATABASE' AND connection_id IS NULL"));
+    _ = try runAll(arena, s, "SET enable_logging = false");
+}
+
+/// bignum_encode/_decode: pure codec functions over BIGNUM's storage bytes, needing no connection at all.
+fn bignumRoundTrip() !void {
+    const magnitude = [_]u8{ 0x03, 0xE8 }; // 1000, big-endian
+    var storage: [64]u8 = undefined;
+    var storage_len: u64 = 0;
+    const encoded = v2.duckdb_v2_bignum_encode(&magnitude, magnitude.len, true, &storage, storage.len, &storage_len, null);
+    try expectInt("bignum_encode succeeds", 1, @intFromBool(encoded == .ERROR_NONE));
+
+    var decoded: [64]u8 = undefined;
+    var decoded_len: u64 = 0;
+    var is_negative = false;
+    const decoded_code = v2.duckdb_v2_bignum_decode(&storage, storage_len, &decoded, decoded.len, &decoded_len, &is_negative, null);
+    try expectInt("bignum_decode succeeds", 1, @intFromBool(decoded_code == .ERROR_NONE));
+    try expectInt("the sign round-trips", 1, @intFromBool(is_negative));
+    try expectInt("the magnitude round-trips", 1, @intFromBool(std.mem.eql(u8, decoded[0..decoded_len], &magnitude)));
 }
 
 /// The tokens of `sql` as "CLASS:lexeme" words, separated by a space. Whitespace is not a token.
@@ -580,6 +707,9 @@ fn parameters(arena: std.mem.Allocator, s: *Session) !void {
 fn errors(arena: std.mem.Allocator, s: *Session) !void {
     // A table that does not exist is found while the statement is prepared, before anything runs.
     try expectFailure("binder error", runAll(arena, s, "SELECT nope FROM t"), .ERROR_QUERY_BINDER, "nope");
+    // error_info_get_raw_text: the same message's body, minus the "<Type> Error: " prefix error_text includes.
+    try expectInt("the raw text has no category prefix", 1, @intFromBool(error_raw_text.len < error_text.len));
+    try expectEqual("the raw text is the suffix of the full text", error_raw_text, error_text[error_text.len - error_raw_text.len ..]);
     // A cast that fails does so on the way through the rows.
     try expectFailure("runtime error", runAll(arena, s, "SELECT CAST(s AS INTEGER) FROM t"), .ERROR_TYPE_CONVERSION, "Could not convert");
     // A syntax error is found by the parser, which touches nothing else.

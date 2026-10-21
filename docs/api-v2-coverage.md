@@ -8,102 +8,97 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-609 functions (27 unstable) in 38 spec modules, from 70 scanned source files. Referenced by the extension: **356**; by the extension or the PoC: **367**.
+620 functions (620 unstable) in 39 spec modules, from 70 scanned source files. Referenced by the extension: **373**; by the extension or the PoC: **384**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
-| arena | 1 | 0 | 1 | 1 | 0 |
-| arrow | 21 | 0 | 14 | 14 | 7 |
-| catalog | 11 | 0 | 11 | 11 | 0 |
-| configuration | 17 | 0 | 11 | 11 | 6 |
-| configuration/custom_option | 17 | 0 | 0 | 0 | 17 |
-| connection | 4 | 0 | 2 | 2 | 2 |
-| data_chunk/column_data_collection | 14 | 0 | 10 | 11 | 3 |
-| data_chunk | 8 | 1 | 5 | 5 | 3 |
-| environment | 3 | 0 | 3 | 3 | 0 |
-| error | 6 | 0 | 5 | 5 | 1 |
-| expression | 9 | 0 | 5 | 5 | 4 |
-| factory | 3 | 0 | 2 | 2 | 1 |
-| filesystem/file_system | 24 | 0 | 14 | 14 | 10 |
-| function/aggregate | 45 | 0 | 34 | 34 | 11 |
-| function/cast | 14 | 0 | 11 | 11 | 3 |
-| function/copy | 79 | 6 | 47 | 47 | 32 |
-| function/docs | 3 | 0 | 3 | 3 | 0 |
-| function | 7 | 0 | 3 | 3 | 4 |
-| function/macro | 7 | 0 | 7 | 7 | 0 |
-| function/pragma | 11 | 0 | 0 | 0 | 11 |
-| function/replacement_scan | 15 | 0 | 0 | 7 | 8 |
-| function/scalar | 25 | 0 | 21 | 21 | 4 |
-| function/signature | 2 | 0 | 2 | 2 | 0 |
-| function/table | 84 | 19 | 49 | 49 | 35 |
-| identifier | 1 | 0 | 1 | 1 | 0 |
-| instance | 10 | 0 | 10 | 10 | 0 |
-| logging/log_sink | 12 | 0 | 0 | 0 | 12 |
-| logging | 3 | 0 | 1 | 1 | 2 |
-| logical_type/custom_type | 6 | 0 | 5 | 5 | 1 |
-| logical_type | 13 | 1 | 7 | 7 | 6 |
-| prepared_statement | 4 | 0 | 4 | 4 | 0 |
-| qname | 8 | 0 | 8 | 8 | 0 |
-| query_result | 10 | 0 | 6 | 6 | 4 |
-| schema | 3 | 0 | 3 | 3 | 0 |
-| sql_statement | 10 | 0 | 9 | 9 | 1 |
-| tokenizer | 4 | 0 | 4 | 4 | 0 |
-| value | 73 | 0 | 26 | 29 | 44 |
-| vector | 22 | 0 | 12 | 12 | 10 |
+| arena | 1 | 1 | 1 | 1 | 0 |
+| arrow | 21 | 21 | 14 | 14 | 7 |
+| catalog | 11 | 11 | 11 | 11 | 0 |
+| configuration | 17 | 17 | 11 | 11 | 6 |
+| configuration/custom_option | 17 | 17 | 0 | 0 | 17 |
+| connection | 4 | 4 | 2 | 2 | 2 |
+| data_chunk/column_data_collection | 14 | 14 | 10 | 11 | 3 |
+| data_chunk | 8 | 8 | 8 | 8 | 0 |
+| environment | 3 | 3 | 3 | 3 | 0 |
+| error | 6 | 6 | 6 | 6 | 0 |
+| expression | 9 | 9 | 5 | 5 | 4 |
+| factory | 3 | 3 | 3 | 3 | 0 |
+| filesystem/file_system | 24 | 24 | 14 | 14 | 10 |
+| function/aggregate | 45 | 45 | 34 | 34 | 11 |
+| function/cast | 14 | 14 | 11 | 11 | 3 |
+| function/copy | 79 | 79 | 47 | 47 | 32 |
+| function/docs | 3 | 3 | 3 | 3 | 0 |
+| function | 7 | 7 | 3 | 3 | 4 |
+| function/macro | 7 | 7 | 7 | 7 | 0 |
+| function/pragma | 11 | 11 | 0 | 0 | 11 |
+| function/replacement_scan | 15 | 15 | 0 | 7 | 8 |
+| function/scalar | 25 | 25 | 21 | 21 | 4 |
+| function/signature | 2 | 2 | 2 | 2 | 0 |
+| function/table | 84 | 84 | 49 | 49 | 35 |
+| identifier | 1 | 1 | 1 | 1 | 0 |
+| instance | 10 | 10 | 10 | 10 | 0 |
+| logging/log_sink | 12 | 12 | 0 | 0 | 12 |
+| logging | 3 | 3 | 3 | 3 | 0 |
+| logical_type/custom_type | 6 | 6 | 5 | 5 | 1 |
+| logical_type | 13 | 13 | 12 | 12 | 1 |
+| prepared_statement | 4 | 4 | 4 | 4 | 0 |
+| profiling/query_metrics | 11 | 11 | 0 | 0 | 11 |
+| qname | 8 | 8 | 8 | 8 | 0 |
+| query_result | 10 | 10 | 8 | 8 | 2 |
+| schema | 3 | 3 | 3 | 3 | 0 |
+| sql_statement | 10 | 10 | 9 | 9 | 1 |
+| tokenizer | 4 | 4 | 4 | 4 | 0 |
+| value | 73 | 73 | 27 | 30 | 43 |
+| vector | 22 | 22 | 14 | 14 | 8 |
 
 ## Not referenced
 
 By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable function.
 
-**arrow**: `prepared_statement_execute_arrow`, `arrow_result_step`, `arrow_result_wait`, `arrow_result_drain`, `arrow_result_get_result_type`, `arrow_result_get_statement_type`, `arrow_result_to_arrow_c_stream`
+**arrow**: `prepared_statement_execute_arrow` *(u)*, `arrow_result_step` *(u)*, `arrow_result_wait` *(u)*, `arrow_result_drain` *(u)*, `arrow_result_get_result_type` *(u)*, `arrow_result_get_statement_type` *(u)*, `arrow_result_to_arrow_c_stream` *(u)*
 
-**configuration**: `instance_get_config`, `connection_get_config`, `config_set_option_value`, `config_set_option_text`, `config_get_option_by_name`, `option_supports_scope`
+**configuration**: `instance_get_config` *(u)*, `connection_get_config` *(u)*, `config_set_option_value` *(u)*, `config_set_option_text` *(u)*, `config_get_option_by_name` *(u)*, `option_supports_scope` *(u)*
 
-**configuration/custom_option**: `custom_option_create`, `custom_option_set_name`, `custom_option_set_type`, `custom_option_set_default_value`, `custom_option_set_description`, `custom_option_set_default_scope`, `custom_option_set_supports_scope`, `custom_option_set_user_data`, `custom_option_set_update_callback`, `custom_option_update_get_user_data`, `custom_option_update_get_value`, `custom_option_update_set_value`, `custom_option_update_get_scope`, `custom_option_update_is_reset`, `connection_register_custom_option`, `extension_register_custom_option`, `custom_option_destroy`
+**configuration/custom_option**: `custom_option_create` *(u)*, `custom_option_set_name` *(u)*, `custom_option_set_type` *(u)*, `custom_option_set_default_value` *(u)*, `custom_option_set_description` *(u)*, `custom_option_set_default_scope` *(u)*, `custom_option_set_supports_scope` *(u)*, `custom_option_set_user_data` *(u)*, `custom_option_set_update_callback` *(u)*, `custom_option_update_get_user_data` *(u)*, `custom_option_update_get_value` *(u)*, `custom_option_update_set_value` *(u)*, `custom_option_update_get_scope` *(u)*, `custom_option_update_is_reset` *(u)*, `connection_register_custom_option` *(u)*, `extension_register_custom_option` *(u)*, `custom_option_destroy` *(u)*
 
-**connection**: `connection_interrupt`, `connection_progress_get`
+**connection**: `connection_interrupt` *(u)*, `connection_progress_get` *(u)*
 
-**data_chunk/column_data_collection**: `column_data_collection_reset`, `column_data_collection_clear`, `column_data_collection_combine`
+**data_chunk/column_data_collection**: `column_data_collection_reset` *(u)*, `column_data_collection_clear` *(u)*, `column_data_collection_combine` *(u)*
 
-**data_chunk**: `data_chunk_copy`, `data_chunk_clear`, `data_chunk_get_vector_count`
+**expression**: `expression_get_return_type` *(u)*, `expression_function_get_name` *(u)*, `expression_function_get_qname` *(u)*, `expression_cast_get_mode` *(u)*
 
-**error**: `error_info_get_raw_text`
+**filesystem/file_system**: `instance_get_file_system` *(u)*, `connection_get_file_system` *(u)*, `file_open_options_set_value` *(u)*, `file_system_path_exists` *(u)*, `file_system_path_is_remote` *(u)*, `file_system_path_expand` *(u)*, `file_system_path_glob` *(u)*, `file_system_path_move` *(u)*, `file_system_path_remove` *(u)*, `file_seek` *(u)*
 
-**expression**: `expression_get_return_type`, `expression_function_get_name`, `expression_function_get_qname`, `expression_cast_get_mode`
+**function/aggregate**: `aggregate_function_size_get_user_data` *(u)*, `aggregate_function_size_get_bind_data` *(u)*, `aggregate_function_init_get_user_data` *(u)*, `aggregate_function_init_get_bind_data` *(u)*, `aggregate_function_update_get_arg_count` *(u)*, `aggregate_function_combine_get_user_data` *(u)*, `aggregate_function_combine_get_bind_data` *(u)*, `aggregate_function_finalize_get_user_data` *(u)*, `aggregate_function_destroy_get_user_data` *(u)*, `aggregate_function_destroy_get_bind_data` *(u)*, `connection_register_aggregate_function` *(u)*
 
-**factory**: `instance_get_factory`
+**function/cast**: `cast_function_set_user_data` *(u)*, `cast_function_exec_get_user_data` *(u)*, `connection_register_cast_function` *(u)*
 
-**filesystem/file_system**: `instance_get_file_system`, `connection_get_file_system`, `file_open_options_set_value`, `file_system_path_exists`, `file_system_path_is_remote`, `file_system_path_expand`, `file_system_path_glob`, `file_system_path_move`, `file_system_path_remove`, `file_seek`
+**function/copy**: `copy_function_set_file_extension` *(u)*, `copy_function_set_user_data` *(u)*, `copy_to_bind_get_user_data` *(u)*, `copy_to_bind_get_file_path` *(u)*, `copy_to_batch_size_get_user_data` *(u)*, `copy_to_batch_size_get_bind_data` *(u)*, `copy_to_init_get_user_data` *(u)*, `copy_to_batch_get_user_data` *(u)*, `copy_to_batch_get_init_data` *(u)*, `copy_to_flush_get_user_data` *(u)*, `copy_to_flush_get_bind_data` *(u)*, `copy_to_finalize_get_user_data` *(u)*, `copy_to_finalize_get_bind_data` *(u)*, `copy_from_set_init_local_callback` *(u)*, `copy_from_bind_get_user_data` *(u)*, `copy_from_bind_get_column_name` *(u)*, `copy_from_init_global_get_user_data` *(u)*, `copy_from_init_local_get_user_data` *(u)*, `copy_from_init_local_get_bind_data` *(u)*, `copy_from_init_local_get_global_state` *(u)*, `copy_from_init_local_set_local_state` *(u)*, `copy_from_exec_get_user_data` *(u)*, `copy_from_exec_get_local_state` *(u)*, `copy_from_progress_get_user_data` *(u)*, `copy_from_progress_get_bind_data` *(u)*, `connection_register_copy_function` *(u)*, `copy_to_set_statistics_callback` *(u)*, `copy_to_statistics_get_user_data` *(u)*, `copy_to_statistics_get_bind_data` *(u)*, `copy_to_statistics_get_init_data` *(u)*, `copy_to_statistics_set_row_count` *(u)*, `copy_to_statistics_set_file_size` *(u)*
 
-**function/aggregate**: `aggregate_function_size_get_user_data`, `aggregate_function_size_get_bind_data`, `aggregate_function_init_get_user_data`, `aggregate_function_init_get_bind_data`, `aggregate_function_update_get_arg_count`, `aggregate_function_combine_get_user_data`, `aggregate_function_combine_get_bind_data`, `aggregate_function_finalize_get_user_data`, `aggregate_function_destroy_get_user_data`, `aggregate_function_destroy_get_bind_data`, `connection_register_aggregate_function`
+**function**: `function_bind_get_user_data` *(u)*, `function_bind_get_arg_count` *(u)*, `function_bind_get_arg_name` *(u)*, `function_bind_get_arg_index` *(u)*
 
-**function/cast**: `cast_function_set_user_data`, `cast_function_exec_get_user_data`, `connection_register_cast_function`
+**function/pragma**: `pragma_function_create` *(u)*, `pragma_function_set_name` *(u)*, `pragma_function_get_docs` *(u)*, `pragma_function_get_signature` *(u)*, `pragma_function_set_user_data` *(u)*, `pragma_function_set_query_callback` *(u)*, `pragma_function_set_exec_callback` *(u)*, `pragma_function_query_set_query` *(u)*, `connection_register_pragma_function` *(u)*, `extension_register_pragma_function` *(u)*, `pragma_function_destroy` *(u)*
 
-**function/copy**: `copy_function_set_file_extension`, `copy_function_set_user_data`, `copy_to_bind_get_user_data`, `copy_to_bind_get_file_path`, `copy_to_batch_size_get_user_data`, `copy_to_batch_size_get_bind_data`, `copy_to_init_get_user_data`, `copy_to_batch_get_user_data`, `copy_to_batch_get_init_data`, `copy_to_flush_get_user_data`, `copy_to_flush_get_bind_data`, `copy_to_finalize_get_user_data`, `copy_to_finalize_get_bind_data`, `copy_from_set_init_local_callback`, `copy_from_bind_get_user_data`, `copy_from_bind_get_column_name`, `copy_from_init_global_get_user_data`, `copy_from_init_local_get_user_data`, `copy_from_init_local_get_bind_data`, `copy_from_init_local_get_global_state`, `copy_from_init_local_set_local_state`, `copy_from_exec_get_user_data`, `copy_from_exec_get_local_state`, `copy_from_progress_get_user_data`, `copy_from_progress_get_bind_data`, `connection_register_copy_function`, `copy_to_set_statistics_callback` *(u)*, `copy_to_statistics_get_user_data` *(u)*, `copy_to_statistics_get_bind_data` *(u)*, `copy_to_statistics_get_init_data` *(u)*, `copy_to_statistics_set_row_count` *(u)*, `copy_to_statistics_set_file_size` *(u)*
+**function/replacement_scan**: `replacement_scan_set_user_data` *(u)*, `replacement_scan_get_user_data` *(u)*, `replacement_scan_add_named_argument` *(u)*, `replacement_scan_set_collection` *(u)*, `replacement_scan_set_subquery` *(u)*, `replacement_scan_set_alias` *(u)*, `connection_register_replacement_scan` *(u)*, `instance_register_replacement_scan` *(u)*
 
-**function**: `function_bind_get_user_data`, `function_bind_get_arg_count`, `function_bind_get_arg_name`, `function_bind_get_arg_index`
+**function/scalar**: `scalar_function_init_get_user_data` *(u)*, `scalar_function_init_get_bind_data` *(u)*, `scalar_function_exec_get_arg_count` *(u)*, `connection_register_scalar_function` *(u)*
 
-**function/pragma**: `pragma_function_create`, `pragma_function_set_name`, `pragma_function_get_docs`, `pragma_function_get_signature`, `pragma_function_set_user_data`, `pragma_function_set_query_callback`, `pragma_function_set_exec_callback`, `pragma_function_query_set_query`, `connection_register_pragma_function`, `extension_register_pragma_function`, `pragma_function_destroy`
+**function/table**: `table_function_init_global_get_user_data` *(u)*, `table_function_init_local_get_user_data` *(u)*, `table_function_init_local_get_bind_data` *(u)*, `table_function_init_local_get_column_count` *(u)*, `table_function_init_local_get_column_index` *(u)*, `table_function_progress_get_user_data` *(u)*, `table_function_progress_get_global_state` *(u)*, `table_function_filter_pushdown_get_user_data` *(u)*, `table_function_filter_pushdown_get_column_count` *(u)*, `table_function_partition_data_get_user_data` *(u)*, `table_function_partition_data_get_bind_data` *(u)*, `table_function_partition_data_get_global_state` *(u)*, `table_function_partition_data_requires_batch_index` *(u)*, `table_function_partitioning_get_user_data` *(u)*, `table_function_partitioning_get_bind_data` *(u)*, `connection_register_table_function` *(u)*, `table_function_set_claim_batch_callback` *(u)*, `table_function_claim_batch_get_user_data` *(u)*, `table_function_claim_batch_get_bind_data` *(u)*, `table_function_claim_batch_get_global_state` *(u)*, `table_function_claim_batch_get_local_state` *(u)*, `table_function_claim_batch_set_claimed` *(u)*, `table_function_set_get_bind_info_callback` *(u)*, `table_function_get_bind_info_get_user_data` *(u)*, `table_function_get_bind_info_get_bind_data` *(u)*, `table_function_get_bind_info_set_column_identifier` *(u)*, `table_function_get_bind_info_set_option` *(u)*, `multi_file_function_create` *(u)*, `multi_file_function_set_name` *(u)*, `multi_file_function_set_single_file_function` *(u)*, `multi_file_function_set_reader_type` *(u)*, `multi_file_function_set_file_extension` *(u)*, `connection_register_multi_file_function` *(u)*, `extension_register_multi_file_function` *(u)*, `multi_file_function_destroy` *(u)*
 
-**function/replacement_scan**: `replacement_scan_set_user_data`, `replacement_scan_get_user_data`, `replacement_scan_add_named_argument`, `replacement_scan_set_collection`, `replacement_scan_set_subquery`, `replacement_scan_set_alias`, `connection_register_replacement_scan`, `instance_register_replacement_scan`
+**logging/log_sink**: `log_sink_create` *(u)*, `log_sink_set_name` *(u)*, `log_sink_set_user_data` *(u)*, `log_sink_set_write_callback` *(u)*, `log_sink_set_flush_callback` *(u)*, `log_sink_write_info_get_connection_id` *(u)*, `log_sink_write_info_get_transaction_id` *(u)*, `log_sink_write_info_get_query_id` *(u)*, `log_sink_write_info_get_thread_id` *(u)*, `instance_register_log_sink` *(u)*, `extension_register_log_sink` *(u)*, `log_sink_destroy` *(u)*
 
-**function/scalar**: `scalar_function_init_get_user_data`, `scalar_function_init_get_bind_data`, `scalar_function_exec_get_arg_count`, `connection_register_scalar_function`
+**logical_type/custom_type**: `connection_register_custom_type` *(u)*
 
-**function/table**: `table_function_init_global_get_user_data`, `table_function_init_local_get_user_data`, `table_function_init_local_get_bind_data`, `table_function_init_local_get_column_count`, `table_function_init_local_get_column_index`, `table_function_progress_get_user_data`, `table_function_progress_get_global_state`, `table_function_filter_pushdown_get_user_data`, `table_function_filter_pushdown_get_column_count`, `table_function_partition_data_get_user_data`, `table_function_partition_data_get_bind_data`, `table_function_partition_data_get_global_state`, `table_function_partition_data_requires_batch_index`, `table_function_partitioning_get_user_data`, `table_function_partitioning_get_bind_data`, `connection_register_table_function`, `table_function_set_claim_batch_callback` *(u)*, `table_function_claim_batch_get_user_data` *(u)*, `table_function_claim_batch_get_bind_data` *(u)*, `table_function_claim_batch_get_global_state` *(u)*, `table_function_claim_batch_get_local_state` *(u)*, `table_function_claim_batch_set_claimed` *(u)*, `table_function_set_get_bind_info_callback` *(u)*, `table_function_get_bind_info_get_user_data` *(u)*, `table_function_get_bind_info_get_bind_data` *(u)*, `table_function_get_bind_info_set_column_identifier` *(u)*, `table_function_get_bind_info_set_option` *(u)*, `multi_file_function_create` *(u)*, `multi_file_function_set_name` *(u)*, `multi_file_function_set_single_file_function` *(u)*, `multi_file_function_set_reader_type` *(u)*, `multi_file_function_set_file_extension` *(u)*, `connection_register_multi_file_function` *(u)*, `extension_register_multi_file_function` *(u)*, `multi_file_function_destroy` *(u)*
+**logical_type**: `factory_create_common_type` *(u)*
 
-**logging/log_sink**: `log_sink_create`, `log_sink_set_name`, `log_sink_set_user_data`, `log_sink_set_write_callback`, `log_sink_set_flush_callback`, `log_sink_write_info_get_connection_id`, `log_sink_write_info_get_transaction_id`, `log_sink_write_info_get_query_id`, `log_sink_write_info_get_thread_id`, `instance_register_log_sink`, `extension_register_log_sink`, `log_sink_destroy`
+**profiling/query_metrics**: `connection_get_query_metrics` *(u)*, `connection_enable_profiling` *(u)*, `query_metrics_get_root` *(u)*, `query_metrics_node_get_name` *(u)*, `query_metrics_node_get_child_count` *(u)*, `query_metrics_node_get_child` *(u)*, `query_metrics_node_get_metric_count` *(u)*, `query_metrics_node_get_metric_name` *(u)*, `query_metrics_node_get_metric_value` *(u)*, `query_metrics_node_get_metric` *(u)*, `query_metrics_destroy` *(u)*
 
-**logging**: `instance_log`, `connection_log`
+**query_result**: `result_step` *(u)*, `result_wait` *(u)*
 
-**logical_type/custom_type**: `connection_register_custom_type`
+**sql_statement**: `statement_add_collection` *(u)*
 
-**logical_type**: `logical_type_copy`, `logical_type_is_equal`, `logical_type_get_name`, `logical_type_get_param_count`, `logical_type_get_param`, `factory_create_common_type` *(u)*
+**value**: `value_get_usmallint` *(u)*, `value_get_uint` *(u)*, `value_get_ubigint` *(u)*, `value_get_uhugeint` *(u)*, `value_get_hugeint` *(u)*, `value_get_blob` *(u)*, `value_get_date` *(u)*, `value_get_time` *(u)*, `value_get_time_ns` *(u)*, `value_get_time_tz` *(u)*, `value_get_timestamp` *(u)*, `value_get_timestamp_sec` *(u)*, `value_get_timestamp_ms` *(u)*, `value_get_timestamp_ns` *(u)*, `value_get_timestamp_tz` *(u)*, `value_get_timestamp_tz_ns` *(u)*, `value_get_interval` *(u)*, `value_get_uuid` *(u)*, `value_get_decimal` *(u)*, `value_create_null` *(u)*, `value_create_usmallint` *(u)*, `value_create_uint` *(u)*, `value_create_ubigint` *(u)*, `value_create_uhugeint` *(u)*, `value_create_hugeint` *(u)*, `value_create_date` *(u)*, `value_create_time` *(u)*, `value_create_time_ns` *(u)*, `value_create_time_tz` *(u)*, `value_create_timestamp` *(u)*, `value_create_timestamp_sec` *(u)*, `value_create_timestamp_ms` *(u)*, `value_create_timestamp_ns` *(u)*, `value_create_timestamp_tz` *(u)*, `value_create_timestamp_tz_ns` *(u)*, `value_create_interval` *(u)*, `value_create_decimal` *(u)*, `value_create_uuid` *(u)*, `value_create_bit` *(u)*, `value_create_bignum` *(u)*, `value_create_tuple` *(u)*, `value_get_logical_type` *(u)*, `value_to_string` *(u)*
 
-**query_result**: `result_step`, `result_wait`, `result_render_box`, `result_get_statement_type`
-
-**sql_statement**: `statement_add_collection`
-
-**value**: `value_get_utinyint`, `value_get_usmallint`, `value_get_uint`, `value_get_ubigint`, `value_get_uhugeint`, `value_get_hugeint`, `value_get_blob`, `value_get_date`, `value_get_time`, `value_get_time_ns`, `value_get_time_tz`, `value_get_timestamp`, `value_get_timestamp_sec`, `value_get_timestamp_ms`, `value_get_timestamp_ns`, `value_get_timestamp_tz`, `value_get_timestamp_tz_ns`, `value_get_interval`, `value_get_uuid`, `value_get_decimal`, `value_create_null`, `value_create_usmallint`, `value_create_uint`, `value_create_ubigint`, `value_create_uhugeint`, `value_create_hugeint`, `value_create_date`, `value_create_time`, `value_create_time_ns`, `value_create_time_tz`, `value_create_timestamp`, `value_create_timestamp_sec`, `value_create_timestamp_ms`, `value_create_timestamp_ns`, `value_create_timestamp_tz`, `value_create_timestamp_tz_ns`, `value_create_interval`, `value_create_decimal`, `value_create_uuid`, `value_create_bit`, `value_create_bignum`, `value_create_tuple`, `value_get_logical_type`, `value_to_string`
-
-**vector**: `vector_get_vector_type`, `vector_get_size`, `vector_cast`, `vector_make_constant`, `vector_make_sequence`, `vector_flat_get_validity_mutable`, `vector_constant_set_valid`, `vector_get_child_count`, `bignum_decode`, `bignum_encode`
+**vector**: `vector_get_vector_type` *(u)*, `vector_get_size` *(u)*, `vector_cast` *(u)*, `vector_make_constant` *(u)*, `vector_make_sequence` *(u)*, `vector_flat_get_validity_mutable` *(u)*, `vector_constant_set_valid` *(u)*, `vector_get_child_count` *(u)*
 

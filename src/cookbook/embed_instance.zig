@@ -169,6 +169,52 @@ fn environments(arena: std.mem.Allocator) !void {
         break :blk c2.ok(v2.duckdb_v2_instance_create_with_options(env, &late_names, &late_values, 1, &bad, c2.err()));
     }, .ERROR_INPUT_INVALID, "");
 
+    // instance_get_factory: another way to reach the factory, directly from the instance rather than through a
+    // connection or an extension context. DECIMAL(9, 2) exercises logical_type_copy, is_equal, get_name and
+    // get_param/get_param_count along the way: width and scale come back from get_param as UTINYINT values
+    // (see its own doc comment).
+    {
+        var instance_factory: v2.duckdb_v2_factory_handle = undefined;
+        try c.ok(v2.duckdb_v2_instance_get_factory(a, &instance_factory, c.err()));
+
+        var width_value: v2.duckdb_v2_value_handle = undefined;
+        try c.ok(v2.duckdb_v2_value_create_utinyint(instance_factory, 9, &width_value, c.err()));
+        defer _ = v2.duckdb_v2_value_destroy(&width_value);
+        var scale_value: v2.duckdb_v2_value_handle = undefined;
+        try c.ok(v2.duckdb_v2_value_create_utinyint(instance_factory, 2, &scale_value, c.err()));
+        defer _ = v2.duckdb_v2_value_destroy(&scale_value);
+        const decimal_params = [_]v2.duckdb_v2_value_handle{ width_value, scale_value };
+        var decimal_type: v2.duckdb_v2_logical_type_handle = undefined;
+        try c.ok(v2.duckdb_v2_factory_create_type_from_id(instance_factory, .LOGICAL_TYPE_ID_DECIMAL, null, &decimal_params, decimal_params.len, &decimal_type, c.err()));
+        defer _ = v2.duckdb_v2_logical_type_destroy(&decimal_type);
+
+        // get_name is the id's canonical name, not the parameterized text (that's logical_type_to_text).
+        var name: v2.duckdb_v2_identifier_t = undefined;
+        try c.ok(v2.duckdb_v2_logical_type_get_name(decimal_type, &name, c.err()));
+        try expectEqual("a type made via instance_get_factory, named", "DECIMAL", view(name));
+
+        var param_count: u64 = 0;
+        try c.ok(v2.duckdb_v2_logical_type_get_param_count(decimal_type, &param_count, c.err()));
+        try expectInt("DECIMAL has two parameters", 2, param_count);
+        const expected_params = [_]u8{ 9, 2 };
+        for (0..param_count) |i| {
+            var param_name: v2.duckdb_v2_identifier_t = undefined;
+            var param_value: v2.duckdb_v2_value_handle = undefined;
+            try c.ok(v2.duckdb_v2_logical_type_get_param(decimal_type, i, &param_name, &param_value, c.err()));
+            defer _ = v2.duckdb_v2_value_destroy(&param_value);
+            var param: u8 = 0;
+            try c.ok(v2.duckdb_v2_value_get_utinyint(param_value, @ptrCast(&param), c.err()));
+            try expectInt("DECIMAL's width/scale parameters", expected_params[i], param);
+        }
+
+        var copy_type: v2.duckdb_v2_logical_type_handle = undefined;
+        try c.ok(v2.duckdb_v2_logical_type_copy(decimal_type, &copy_type, c.err()));
+        defer _ = v2.duckdb_v2_logical_type_destroy(&copy_type);
+        var equal = false;
+        try c.ok(v2.duckdb_v2_logical_type_is_equal(decimal_type, copy_type, &equal, c.err()));
+        try expectInt("a copy is equal to the original", 1, @intFromBool(equal));
+    }
+
     _ = v2.duckdb_v2_instance_destroy(&a);
     try c.ok(v2.duckdb_v2_environment_get_instance_count(env, &count, c.err()));
     try expectInt("no instance left", 0, count);

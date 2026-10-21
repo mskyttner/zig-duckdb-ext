@@ -1004,8 +1004,12 @@ workload:
   multi-thread-only feature on a framework that can't run multi-threaded
   would be unverifiable. (2) the batch-claiming callback itself is gated
   behind `DUCKDB_V2_API_ALLOW_UNSTABLE` in the header and marked
-  "unstable: v2.0.0" — not even part of the stable v2.0.0 contract this
-  branch otherwise targets. Revisit both once/if the framework grows
+  "unstable: v2.0.0" — at the time this was written, not even part of the
+  stable v2.0.0 contract this branch otherwise targets; see the 2026-10-21
+  follow-up below the "member order is the ABI" bullet — as of the
+  `d54cbbe3df` pin, there is no stable contract left to be part of, so
+  this specific reason no longer singles batch-claiming out from anything
+  else. Revisit both once/if the framework grows
   multi-threaded scan support (a bigger, separate undertaking) and the
   claim-batch API stabilizes.
 - ~~**Other scalar numeric types untested live**~~ — **mostly done.**
@@ -1851,6 +1855,84 @@ static one for the static embedding (below).
   signatures over the same types, and runs `init` and the wrappers against a
   fake `get_api` (null `get_api`, refusing `get_api`, table copied so that
   freeing the original is safe).
+- **Follow-up, 2026-10-21: at the `d54cbbe3df`/`v2.0.0` pin, every single
+  one of the 620 spec'd functions is lifecycle-`unstable` — not a growing
+  minority (the previous pin, `f8f3f4dcd9`/`v2.0.0-alpha48730`, had 582
+  stable / 27 unstable out of 609), a blanket relabel.** Confirmed directly
+  against the raw spec, not just the generator's own count: every
+  `lifecycle:` block across every `api_spec/v2/**/*.yaml` file resolves to
+  the one tuple `["unstable", "v2.0.0", <date>]` — e.g.
+  `value/value.yaml`'s `value_get_bool`, a basic getter with no reason to
+  be risky, carries exactly that and nothing else. `grep`-ing every
+  `lifecycle:` entry project-wide for its `(state, version)` pair turns up
+  a single distinct pair, `("unstable", "v2.0.0")`, 620 times — no
+  `"stable"` anywhere.
+  - **Consequence for building this project's own extensions: none new.**
+    `build.zig` already passes `-DDUCKDB_V2_API_ALLOW_UNSTABLE=1` when
+    translating both v2 headers (`duckdb_v2.h` and
+    `duckdb_extension_v2.h`), and `gen-v2-bindings` is always invoked with
+    `--unstable` — this project was already opted into the full unstable
+    surface before this pin moved, for both the real `zig_ext_v2`
+    extension and the generated-bindings PoC. Nothing here needed to
+    change; the regeneration described above already produced a 1:1-ABI
+    match (`v2-check` clean, all three real v2 sqllogictest suites
+    passing — see the pin-bump commit).
+  - **Consequence for *building* against this header without that
+    macro: a hard compile-time `#error`, not a runtime check.** The
+    header itself says why, verbatim: `// No V2 function has been
+    stabilized yet, so without the unstable surface the function pointer
+    struct would be empty.`, followed by `#if !DUCKDB_V2_API_ALLOW_UNSTABLE`
+    / `#error "the V2 C API has no stable surface yet: build with
+    build_loadable_extension_capi_unstable or
+    build_static_extension_capi_unstable, which tie the extension to this
+    DuckDB version"`. So this is purely a compile-time gate on the
+    *extension-author's own build*, not a flag the DuckDB host checks at
+    `LOAD` time — `get_api` hands back the same full vtable regardless of
+    what macro the caller compiled with; the macro only controls which
+    member declarations exist in the *consumer's* copy of the header.
+  - **Answering directly: no, the CLI and a wasm build do not refuse to
+    `LOAD` an extension over this — there is no "allow unstable" runtime
+    flag on the loading side at all.** The gate is upstream of that,
+    at the point the extension itself was compiled: an extension built
+    without defining `DUCKDB_V2_API_ALLOW_UNSTABLE` simply cannot be
+    built at all right now (every function it might call is behind that
+    `#if`), so the question of a runtime refusal never arises — there is
+    no such extension to try loading. Once built with the macro (as this
+    project's extensions already are, for both the native CLI path and
+    `wasm-ext`/`wasm-ext-coi`), `LOAD` behaves exactly as it did at the
+    previous pin: the existing `allow_extensions_metadata_mismatch`/
+    `-unsigned` runtime flags this project already sets are the only
+    loader-side gates in play, unrelated to function-level lifecycle
+    state. The real-world consequence of "unstable" instead sits entirely
+    on the *build-time* side already described above in "The table's
+    member order is the ABI": per the header's own `#error` text, an
+    extension built this way is *tied to this exact DuckDB version* —
+    there is no promise the vtable layout, or any individual function,
+    survives to the next staged build untouched (exactly what the
+    `d54cbbe3df` regeneration above had to work around).
+  - **Coverage of the actual new surface: `task coverage:api-v2` (see
+    `docs/api-v2-coverage.md`) confirms it's exactly the 11 new functions,
+    0 referenced.** Diffing `docs/generated/api_v2_functions.tsv` by
+    function name between the two pins shows nothing removed and exactly
+    11 added, all in one brand-new module, `profiling/query_metrics`:
+    `connection_enable_profiling`, `connection_get_query_metrics`,
+    `query_metrics_get_root`, `query_metrics_destroy`, and 7
+    `query_metrics_node_get_*` accessors (name/children/metrics, walking
+    a tree of profiled query-plan nodes). The coverage table's
+    `ext`/`ext or poc` counts (356/367) are unchanged by this pin — the
+    new module's row is `11 | 11 | 0 | 0 | 11`, i.e. untouched by any
+    hand-written code; the only matches for these names anywhere in
+    `src/` are inside the generated bindings themselves
+    (`duckdb_v2_{types,static,dynamic}.zig`), not a consumer. This isn't
+    a regression (the real-extension coverage *percentage* only drops
+    because the denominator grew, 356/609 → 356/620); it's a genuinely
+    new, unwrapped capability — connection-level query profiling/EXPLAIN-
+    style metrics, read via a tree of opaque nodes rather than through
+    the scalar/table/aggregate function frameworks this project already
+    has. Doesn't fit any existing comptime framework (it's not a
+    SQL-callable function at all, more like a host-API recipe similar to
+    `src/cookbook`'s existing direct-`db.Connection` recipes). Candidate
+    for a future cookbook entry; not started.
 - **Link-and-run: `zig build v2-static-embed-poc-gen`** registers
   `gen_hello()` through the static declarations only and calls it from SQL.
   **`zig build v2-gen-poc`** builds the same source against the dynamic
