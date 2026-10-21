@@ -2312,24 +2312,25 @@ const MatmulCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_ct", struct {
     }
 }.eval, &.{ "a", "b", "m", "k", "n" });
 
-/// Benchmarks `matmulNaive` against `matmulSimd` on an m×k × k×n
+/// Benchmarks `matmulNaive` against `matmulSimd` and `matmulSimdParallel` on an m×k × k×n
 /// multiplication, run `iterations` times each, timed via
 /// `std.Io.Clock` (`std.time.Timer` no longer exists in Zig 0.17 — timing
 /// moved under the unified `Io` interface, same `std.Io.Threaded`
 /// construction the braille v2-poc demo already uses to get an `Io`
-/// instance outside of `std.process.Init`). Test data is a fixed
-/// deterministic pattern, not random — this is a throughput comparison,
-/// not a correctness fuzz test (that's `matmul.zig`'s own unit tests).
+/// instance outside of `std.process.Init`). The same `Threaded` instance built for timing also
+/// backs `matmulSimdParallel`'s `std.Io.Group` dispatch — one pool doing both jobs. Test data is a
+/// fixed deterministic pattern, not random — this is a throughput comparison, not a correctness
+/// fuzz test (that's `matmul.zig`'s own unit tests).
 const MatmulBenchState = struct {
-    kernel_names: [2][]const u8,
-    elapsed_ms: [2]f64,
-    gflops: [2]f64,
+    kernel_names: [3][]const u8,
+    elapsed_ms: [3]f64,
+    gflops: [3]f64,
     idx: usize,
 
     pub const Row = struct { kernel: []const u8, elapsed_ms: f64, gflops: f64 };
 
     pub fn init(m: i64, k: i64, n: i64, iterations: i64) @This() {
-        const failed: @This() = .{ .kernel_names = undefined, .elapsed_ms = undefined, .gflops = undefined, .idx = 2 };
+        const failed: @This() = .{ .kernel_names = undefined, .elapsed_ms = undefined, .gflops = undefined, .idx = 3 };
 
         const mu: usize = @intCast(@max(m, 1));
         const ku: usize = @intCast(@max(k, 1));
@@ -2348,6 +2349,7 @@ const MatmulBenchState = struct {
         var threaded: std.Io.Threaded = .init(std.heap.c_allocator, .{});
         defer threaded.deinit();
         const io = threaded.io();
+        const max_tasks = std.Thread.getCpuCount() catch 1;
 
         const flops: f64 = 2.0 * @as(f64, @floatFromInt(mu)) * @as(f64, @floatFromInt(nu)) * @as(f64, @floatFromInt(ku)) * @as(f64, @floatFromInt(iters));
 
@@ -2359,16 +2361,20 @@ const MatmulBenchState = struct {
         for (0..iters) |_| matmul.matmulSimd(matmul.default_rm, a, b, c, mu, ku, nu);
         const simd_ns: f64 = @floatFromInt(simd_start.durationTo(.now(io, .awake)).raw.nanoseconds);
 
+        const parallel_start: std.Io.Clock.Timestamp = .now(io, .awake);
+        for (0..iters) |_| matmul.matmulSimdParallel(matmul.default_rm, io, max_tasks, a, b, c, mu, ku, nu);
+        const parallel_ns: f64 = @floatFromInt(parallel_start.durationTo(.now(io, .awake)).raw.nanoseconds);
+
         return .{
-            .kernel_names = .{ "naive", "simd" },
-            .elapsed_ms = .{ naive_ns / 1e6, simd_ns / 1e6 },
-            .gflops = .{ flops / naive_ns, flops / simd_ns },
+            .kernel_names = .{ "naive", "simd", "simd_parallel" },
+            .elapsed_ms = .{ naive_ns / 1e6, simd_ns / 1e6, parallel_ns / 1e6 },
+            .gflops = .{ flops / naive_ns, flops / simd_ns, flops / parallel_ns },
             .idx = 0,
         };
     }
 
     pub fn next(self: *@This()) ?Row {
-        if (self.idx >= 2) return null;
+        if (self.idx >= 3) return null;
         defer self.idx += 1;
         return .{ .kernel = self.kernel_names[self.idx], .elapsed_ms = self.elapsed_ms[self.idx], .gflops = self.gflops[self.idx] };
     }
