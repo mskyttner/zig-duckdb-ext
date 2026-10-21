@@ -18,7 +18,7 @@ const abi_type = "C_STRUCT";
 /// footer says `C_STRUCT_UNSTABLE` with it: DuckDB then refuses to load the file in any other version, with a message.
 /// (With `C_STRUCT` and "v2.0.0" a build for one alpha loaded in another one and crashed it.) Move it with the pin in
 /// build.zig.zon.
-const v2_duckdb_version = "v2.0.0-alpha48730";
+const v2_duckdb_version = "v2.0.0";
 const v2_abi_type = "C_STRUCT_UNSTABLE";
 
 /// Map a resolved target to the platform string DuckDB's extension
@@ -758,7 +758,7 @@ pub fn build(b: *std.Build) void {
     const dist_version_v2 = b.option(
         []const u8,
         "dist-version-v2",
-        "DuckDB version the v2 extensions are built for: the directory `dist-v2` packages under and the version in their footer (default: v2.0.0-alpha48730)",
+        "DuckDB version the v2 extensions are built for: the directory `dist-v2` packages under and the version in their footer (default: v2.0.0)",
     ) orelse v2_duckdb_version;
     const extension_version_v2 = b.option([]const u8, "extension-version-v2", "Extension version recorded in the v2 extensions (default: v0.1.0)") orelse "v0.1.0";
 
@@ -970,7 +970,7 @@ pub fn build(b: *std.Build) void {
 
     const v2_api_spec = b.option([]const u8, "v2-api-spec", "Directory with DuckDB's v2 API spec (<duckdb checkout>/api_spec/v2), for `gen-v2-bindings`");
     const v2_api_spec_ref = b.option([]const u8, "v2-api-spec-ref", "Where the spec comes from, recorded in the generated files") orelse
-        "duckdb f8f3f4dcd9, v2.0.0-alpha48730";
+        "duckdb d54cbbe3df, v2.0.0";
     const gen_v2_bindings_step = b.step("gen-v2-bindings", "Regenerate src/lib/duckdb_v2_{types,static,dynamic}.zig from the DuckDB v2 API spec (needs -Dv2-api-spec=)");
     if (v2_api_spec) |spec_dir| {
         if (b.lazyDependency("yaml", .{ .target = b.graph.host, .optimize = .ReleaseSafe })) |yaml_dep| {
