@@ -52,6 +52,25 @@
 ///! are already row-major and already contiguous along the exact ranges `microTile` reads them
 ///! in, so there's little the kind of packing a column-major/arbitrary-stride BLAS needs would
 ///! add here — only the loop-order/panel-size change actually matters for this file's layout.
+///!
+///! STOPPED HERE, two negative results in a row, both confirmed by repeated trials (noise alone
+///! doesn't explain either):
+///!   1. `matmulSimdBlockedMc`/`matmulSimdParallelBlockedMc` themselves, with the full
+///!      `default_mc_bytes` per thread: a wash for the serial kernel at every size tried (one
+///!      thread never saturates memory bandwidth enough for `A`'s extra re-reads to matter), and
+///!      noisy-to-negative for the parallel one.
+///!   2. Dividing that budget by thread count (the fix the noisy parallel result above suggested
+///!      — every thread targeting the *same* L3 budget at once oversubscribes a cache that's
+///!      shared, not per-core): made the parallel kernel consistently *worse* instead, because
+///!      the smaller per-thread budget lands `panel_tiles` just under a thread's own already-small
+///!      tile range, so threads that get one extra tile from `m_tiles % tasks` now pay for an
+///!      entire extra N/K-panel sweep (all its loop overhead) to cover that single leftover row
+///!      tile. That's a quantization artifact of this specific division, not evidence against the
+///!      shared-L3 idea it was meant to test — the two effects are tangled together and untangling
+///!      them (e.g. skip the leftover panel below some minimum size) wasn't pursued.
+///! `matmulSimdParallelBlocked` (two-tier: `B` panel-blocked, no `A` panel-blocking) remains the
+///! best-measured kernel in this file for every size this PoC's benchmarking tried except the
+///! largest, where OpenBLAS still wins — see the benchmarking session's own numbers for specifics.
 const std = @import("std");
 
 /// Vector lane width for the SIMD kernel's inner loop — **picked at
