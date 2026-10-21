@@ -274,7 +274,11 @@ pub fn matmulSimdParallelBlocked(comptime RM: usize, io: std.Io, max_tasks: usiz
 /// `default_bn`'s panel of `B`, which needs to survive only across one thread's own row tiles,
 /// this slice of `A` needs to survive across `simdTileRangeBlocked`'s *entire* N/K sweep for a
 /// given M-panel — a much longer stretch — so it's sized for the bigger, slower cache tier.
-/// Same "fixed documented guess" caveat as `default_rm`/`default_bk`/`default_bn`.
+/// Same "fixed documented guess" caveat as `default_rm`/`default_bk`/`default_bn`. This is the
+/// *total* L3 budget for the matrix, not a per-thread one — `matmulSimdParallelBlockedMc` divides
+/// it by its own thread count before passing it to `simdTileRangeBlockedMc`, since L3 is shared:
+/// every thread targeting this many bytes resident *at once* would collectively oversubscribe a
+/// real L3 by a factor of the thread count.
 pub const default_mc_bytes: usize = 8 * 1024 * 1024;
 
 /// `simdTileRangeBlocked`, with `[tile_lo, tile_hi)` itself split into row-panels first — the
@@ -285,17 +289,19 @@ pub const default_mc_bytes: usize = 8 * 1024 * 1024;
 /// For a large `m`/`k`, that slice of `A` no longer fits any cache tier either, so those repeated
 /// sweeps start hitting RAM again, the same problem blocking `B` already fixed, just moved to the
 /// other operand. Splitting `[tile_lo, tile_hi)` into panels small enough that one panel's full-
-/// width (`panel_rows * k * 8` bytes, `default_mc_bytes`) slice of `A` fits a cache tier trades
-/// this: that slice of `A` now gets re-read from the *same* panel's own N/K sweep but should hit
-/// L3 (or L2, for a small enough `k`) instead of RAM — at the cost of `B` now being fully
-/// re-swept once per row-panel instead of once per thread's whole tile range, since each call to
-/// `simdTileRangeBlocked` below starts its own `B`-panel sweep from scratch. A net win only if
-/// what `A`'s repeated re-reads save (RAM → L3) outweighs what `B` loses (an extra full sweep per
-/// panel instead of one); see `zig_v2_matmul_bench_ct`'s own numbers for whether it does on a
-/// given machine and matrix size.
-fn simdTileRangeBlockedMc(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, k: usize, n: usize, tile_lo: usize, tile_hi: usize) void {
+/// width (`panel_rows * k * 8` bytes, `mc_bytes`) slice of `A` fits a cache tier trades this: that
+/// slice of `A` now gets re-read from the *same* panel's own N/K sweep but should hit L3 (or L2,
+/// for a small enough `k`) instead of RAM — at the cost of `B` now being fully re-swept once per
+/// row-panel instead of once per thread's whole tile range, since each call to
+/// `simdTileRangeBlocked` below starts its own `B`-panel sweep from scratch. `mc_bytes` is the
+/// caller's own budget to spend, already divided by thread count if there are several threads —
+/// this function doesn't know or care how many other callers are sharing the same L3 concurrently.
+/// A net win only if what `A`'s repeated re-reads save (RAM → L3) outweighs what `B` loses (an
+/// extra full sweep per panel instead of one); see `zig_v2_matmul_bench_ct`'s own numbers for
+/// whether it does on a given machine, matrix size and thread count.
+fn simdTileRangeBlockedMc(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, k: usize, n: usize, tile_lo: usize, tile_hi: usize, mc_bytes: usize) void {
     const bytes_per_row = @max(k, 1) * @sizeOf(f64);
-    const panel_tiles = @max(@as(usize, 1), (default_mc_bytes / bytes_per_row) / RM);
+    const panel_tiles = @max(@as(usize, 1), (mc_bytes / bytes_per_row) / RM);
 
     var it = tile_lo;
     while (it < tile_hi) : (it += panel_tiles) {
@@ -305,26 +311,30 @@ fn simdTileRangeBlockedMc(comptime RM: usize, a: []const f64, b: []const f64, c:
 }
 
 /// `matmulSimdBlocked`, with `A` also panel-blocked — see `simdTileRangeBlockedMc`'s doc comment.
+/// The sole caller/thread, so it spends the whole of `default_mc_bytes` itself.
 pub fn matmulSimdBlockedMc(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, m: usize, k: usize, n: usize) void {
     const m_tiles = m / RM;
-    simdTileRangeBlockedMc(RM, a, b, c, k, n, 0, m_tiles);
+    simdTileRangeBlockedMc(RM, a, b, c, k, n, 0, m_tiles, default_mc_bytes);
     scalarRowRemainder(a, b, c, m_tiles * RM, m, k, n);
 }
 
 /// `matmulSimdParallelBlocked`, with each thread's own row-tile range additionally panel-blocked
 /// by `simdTileRangeBlockedMc` instead of swept in one pass by `simdTileRangeBlocked` — see that
 /// function's doc comment. Thread dispatch is unchanged: the M-panel split happens *within* one
-/// thread's already-assigned range, not as a new axis of concurrency.
+/// thread's already-assigned range, not as a new axis of concurrency. `default_mc_bytes` is
+/// divided by `tasks` before being handed to any thread — all `tasks` threads share one L3, so
+/// each one claiming the whole budget for itself would oversubscribe it by that same factor.
 pub fn matmulSimdParallelBlockedMc(comptime RM: usize, io: std.Io, max_tasks: usize, a: []const f64, b: []const f64, c: []f64, m: usize, k: usize, n: usize) void {
     const m_tiles = m / RM;
     const tasks = @max(@as(usize, 1), @min(max_tasks, m_tiles));
+    const mc_bytes_per_task = @max(@as(usize, 1), default_mc_bytes / tasks);
 
     if (tasks <= 1) {
-        simdTileRangeBlockedMc(RM, a, b, c, k, n, 0, m_tiles);
+        simdTileRangeBlockedMc(RM, a, b, c, k, n, 0, m_tiles, mc_bytes_per_task);
     } else {
         const Task = struct {
-            fn run(aa: []const f64, bb: []const f64, cc: []f64, kk: usize, nn: usize, lo: usize, hi: usize) void {
-                simdTileRangeBlockedMc(RM, aa, bb, cc, kk, nn, lo, hi);
+            fn run(aa: []const f64, bb: []const f64, cc: []f64, kk: usize, nn: usize, lo: usize, hi: usize, mc: usize) void {
+                simdTileRangeBlockedMc(RM, aa, bb, cc, kk, nn, lo, hi, mc);
             }
         };
         var group: std.Io.Group = .init;
@@ -333,7 +343,7 @@ pub fn matmulSimdParallelBlockedMc(comptime RM: usize, io: std.Io, max_tasks: us
         var lo: usize = 0;
         for (0..tasks) |t| {
             const hi = lo + base + @as(usize, if (t < extra) 1 else 0);
-            group.concurrent(io, Task.run, .{ a, b, c, k, n, lo, hi }) catch Task.run(a, b, c, k, n, lo, hi);
+            group.concurrent(io, Task.run, .{ a, b, c, k, n, lo, hi, mc_bytes_per_task }) catch Task.run(a, b, c, k, n, lo, hi, mc_bytes_per_task);
             lo = hi;
         }
         group.await(io) catch {};
