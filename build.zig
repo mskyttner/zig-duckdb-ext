@@ -1575,6 +1575,34 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // ── v2 proof-of-concept: zio as a second `std.Io` backend (zio dependency, isolated) ───────
+    // Same full-isolation reasoning as braille/stipple above: the only place in the project
+    // pulling in `zio`, `lazy = true` in build.zig.zon, nothing else affected if it fails to
+    // fetch or build. See src/ext/init_v2_poc_zio.zig's own doc comment for what it benchmarks.
+    if (b.lazyDependency("zio", .{ .target = target, .optimize = optimize })) |zio_dep| {
+        const v2_poc_zio_lib = b.addLibrary(.{
+            .linkage = .dynamic,
+            .name = "zig_ext_v2_poc_zio",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ext/init_v2_poc_zio.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        v2_poc_zio_lib.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
+        v2_poc_zio_lib.root_module.addImport("v2_helpers", v2_helpers_mod);
+        v2_poc_zio_lib.root_module.addImport("comptime_table_v2", comptime_table_v2_mod);
+        v2_poc_zio_lib.root_module.addImport("matmul", matmul_mod);
+        v2_poc_zio_lib.root_module.addImport("zio", zio_dep.module("zio"));
+        v2_poc_zio_lib.root_module.link_libc = true;
+
+        const v2_poc_zio_output = addDuckdbExtensionMetadata(b, v2_poc_zio_lib, "zig_ext_v2_poc_zio", v2_duckdb_version, "v0.0.0-poc", v2_abi_type, duckdbPlatformString(target));
+        const install_v2_poc_zio = b.addInstallFile(v2_poc_zio_output, "lib/zig_ext_v2_poc_zio.duckdb_extension");
+
+        const v2_poc_zio_step = b.step("v2-poc-zio", "Build the zio-vs-std.Io.Threaded matmul benchmark v2 proof-of-concept .duckdb_extension file");
+        v2_poc_zio_step.dependOn(&install_v2_poc_zio.step);
+    }
+
     // ── Shared library (the DuckDB extension) ────────────────────────────
     const lib = b.addLibrary(.{
         .linkage = .dynamic,

@@ -21,6 +21,18 @@
 ///! rounding behavior, same as `matmulNaive`, not bit-identical to a
 ///! from-scratch BLAS but matching to float64 precision for the sizes
 ///! this demo targets.
+///!
+///! `matmulSimdParallel` adds a third axis this PoC's SIMD kernel alone
+///! doesn't have: multiple OS threads. It splits `matmulSimd`'s row
+///! tiles across `std.Io.Group.concurrent` tasks instead of running them
+///! on one thread — using Zig 0.17's `std.Io` concurrency interface
+///! (`Threaded`'s own worker pool), not a new dependency, since each
+///! tile writes disjoint output rows and needs no synchronization with
+///! the others. llamafile's own threading lives one layer up, in
+///! llama.cpp's scheduler, not inside tinyBLAS itself — so this has no
+///! direct tinyBLAS analogue to port from; it's this PoC's own answer to
+///! "can the matmul PoC use more than one thread" from its own
+///! benchmarking session.
 const std = @import("std");
 
 /// Vector lane width for the SIMD kernel's inner loop — **picked at
@@ -60,22 +72,17 @@ pub fn matmulNaive(a: []const f64, b: []const f64, c: []f64, m: usize, k: usize,
     }
 }
 
-/// Register-blocked SIMD kernel: `RM` rows of A/C are processed per
-/// outer-loop iteration, sharing each loaded vector of B across all `RM`
-/// row-accumulators — the "unroll the outer loop so a B load is reused
-/// across multiple FMAs" trick tinyblas_cpu.h's `gemm<RM, RN>` (and the
-/// blog post's `SLLMM4`/`SLLMM3X4` examples) describe, simplified to one
-/// vector-width of columns per iteration instead of full 2D (RM×RN)
-/// tiling. Falls back to a plain scalar loop for the `m % RM` row
-/// remainder and `n % vec_width` column remainder — not the reference's
-/// recursive edge-tiling (`mnpack`), a deliberate simplification for
-/// this POC.
-pub fn matmulSimd(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, m: usize, k: usize, n: usize) void {
-    const m_tiles = m / RM;
-    const n_vecs = n / vec_width;
-
-    var it: usize = 0;
-    while (it < m_tiles) : (it += 1) {
+/// One register-blocked tile per iteration over `[tile_lo, tile_hi)` of the `RM`-row tile index —
+/// the inner loop `matmulSimd` runs serially over the whole range, and `matmulSimdParallel` runs
+/// concurrently over disjoint sub-ranges of. `RM` rows of A/C share each loaded vector of B across
+/// all `RM` row-accumulators — the "unroll the outer loop so a B load is reused across multiple
+/// FMAs" trick tinyblas_cpu.h's `gemm<RM, RN>` (and the blog post's `SLLMM4`/`SLLMM3X4` examples)
+/// describe, simplified to one vector-width of columns per iteration instead of full 2D (RM×RN)
+/// tiling. The `n % vec_width` column remainder falls back to a plain scalar loop — not the
+/// reference's recursive edge-tiling (`mnpack`), a deliberate simplification for this POC.
+fn simdTileRange(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, k: usize, n: usize, n_vecs: usize, tile_lo: usize, tile_hi: usize) void {
+    var it = tile_lo;
+    while (it < tile_hi) : (it += 1) {
         const row0 = it * RM;
 
         var jv: usize = 0;
@@ -107,9 +114,12 @@ pub fn matmulSimd(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, 
             }
         }
     }
+}
 
-    // Row remainder (m % RM), scalar.
-    var i = m_tiles * RM;
+/// Row remainder (m % RM) past the last full tile, scalar — shared by `matmulSimd` and
+/// `matmulSimdParallel`, which both tile only `m / RM` whole groups of rows.
+fn scalarRowRemainder(a: []const f64, b: []const f64, c: []f64, m_tiles_end: usize, m: usize, k: usize, n: usize) void {
+    var i = m_tiles_end;
     while (i < m) : (i += 1) {
         for (0..n) |j| {
             var sum: f64 = 0;
@@ -117,6 +127,52 @@ pub fn matmulSimd(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, 
             c[i * n + j] = sum;
         }
     }
+}
+
+/// Serial register-blocked SIMD kernel: see `simdTileRange`'s doc comment for the kernel itself.
+pub fn matmulSimd(comptime RM: usize, a: []const f64, b: []const f64, c: []f64, m: usize, k: usize, n: usize) void {
+    const m_tiles = m / RM;
+    const n_vecs = n / vec_width;
+    simdTileRange(RM, a, b, c, k, n, n_vecs, 0, m_tiles);
+    scalarRowRemainder(a, b, c, m_tiles * RM, m, k, n);
+}
+
+/// `matmulSimd`, with the `RM`-row tiles split into up to `max_tasks` contiguous ranges run
+/// concurrently via `io` (an `std.Io.Group`) — each tile writes disjoint rows of `c`, so no
+/// synchronization is needed between tasks. Falls back to running a sub-range inline, on the
+/// calling thread, if `io`'s implementation can't grant concurrency for it (`Group.concurrent`'s
+/// `error.ConcurrencyUnavailable`) — e.g. a single-threaded `Io`.
+///
+/// Dispatch has real overhead (thread-pool task handoff, not free), so this only pays off once a
+/// task's share of the work clears that cost by a comfortable margin; for small matrices, more
+/// tasks can mean a slower result than `matmulSimd` alone. See `zig_v2_matmul_bench_ct`'s own
+/// numbers for where the crossover actually falls on a given machine.
+pub fn matmulSimdParallel(comptime RM: usize, io: std.Io, max_tasks: usize, a: []const f64, b: []const f64, c: []f64, m: usize, k: usize, n: usize) void {
+    const m_tiles = m / RM;
+    const n_vecs = n / vec_width;
+    const tasks = @max(@as(usize, 1), @min(max_tasks, m_tiles));
+
+    if (tasks <= 1) {
+        simdTileRange(RM, a, b, c, k, n, n_vecs, 0, m_tiles);
+    } else {
+        const Task = struct {
+            fn run(aa: []const f64, bb: []const f64, cc: []f64, kk: usize, nn: usize, nv: usize, lo: usize, hi: usize) void {
+                simdTileRange(RM, aa, bb, cc, kk, nn, nv, lo, hi);
+            }
+        };
+        var group: std.Io.Group = .init;
+        const base = m_tiles / tasks;
+        const extra = m_tiles % tasks;
+        var lo: usize = 0;
+        for (0..tasks) |t| {
+            const hi = lo + base + @as(usize, if (t < extra) 1 else 0);
+            group.concurrent(io, Task.run, .{ a, b, c, k, n, n_vecs, lo, hi }) catch Task.run(a, b, c, k, n, n_vecs, lo, hi);
+            lo = hi;
+        }
+        group.await(io) catch {};
+    }
+
+    scalarRowRemainder(a, b, c, m_tiles * RM, m, k, n);
 }
 
 /// The RM this project's DuckDB-facing functions use — 4 rows of
@@ -168,4 +224,27 @@ test "matmulSimd handles a 2x2 identity multiplication" {
     var c: [4]f64 = undefined;
     matmulSimd(1, &a, &b, &c, 2, 2, 2);
     try std.testing.expectEqualSlices(f64, &b, &c);
+}
+
+test "matmulSimdParallel agrees with matmulNaive, split across more tasks than there are tiles" {
+    const m = 37;
+    const k = 9;
+    const n = 23;
+    var a: [m * k]f64 = undefined;
+    var b: [k * n]f64 = undefined;
+    for (&a, 0..) |*v, i| v.* = @floatFromInt(i % 11);
+    for (&b, 0..) |*v, i| v.* = @floatFromInt((i % 6) + 1);
+
+    var c_naive: [m * n]f64 = undefined;
+    var c_parallel: [m * n]f64 = undefined;
+    matmulNaive(&a, &b, &c_naive, m, k, n);
+
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    // More tasks than m_tiles (37 / 4 = 9): exercises the "fewer tasks than asked for" clamp too.
+    matmulSimdParallel(default_rm, threaded.io(), 64, &a, &b, &c_parallel, m, k, n);
+
+    for (c_naive, c_parallel) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-9);
+    }
 }

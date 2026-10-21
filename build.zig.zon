@@ -216,6 +216,19 @@
             .hash = "zigcv-0.18.0-rNqqFhl8BABuG4b4Ve8vmxxUOmy9KlXiBTVZYliWYo3v",
             .lazy = true,
         },
+        // Work-stealing coroutine async-I/O runtime, needed only by the v2-poc
+        // `zig_v2_matmul_bench_io_ct` demo (src/ext/init_v2_poc_zio.zig) — a second `std.Io`
+        // backend tried against `matmul.matmulSimdParallel` alongside `std.Io.Threaded`, since
+        // `matmulSimdParallel` is written against `std.Io` generically and zio's own README
+        // claims code written against `std.Io` "runs on zio unmodified." `lazy = true`, same
+        // full-isolation reasoning as `zignal`/`zigcv` above: the only place in the project
+        // pulling this in, so nothing else is affected if it fails to fetch or build. Pinned to
+        // main's HEAD at the time this was added (no tagged release covers Zig 0.17 yet).
+        .zio = .{
+            .url = "git+https://github.com/lalinsky/zio#e6e7b546f135bf50a3757f78994fd7edfa2fac60",
+            .hash = "zio-0.19.0-xHbVVBk2LQC-Vxp1X6o0y0rI0qGck1Uy2ctsd-kQoHR8",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
