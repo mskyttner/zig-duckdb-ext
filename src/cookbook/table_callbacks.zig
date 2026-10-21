@@ -13,8 +13,9 @@
 ///!                   the block it works on), derived from the global state
 ///!   exec            per chunk, on any thread: claims a block from the global state, fills the chunk
 ///!   partition_data  after each exec, on the same thread: reports the **batch index** of the chunk, its position
-///!                   in the output order. With insertion order kept (the default), the engine needs it to let
-///!                   INSERT, COPY and query results run in parallel and still get the rows in order.
+///!                   in the output order, but only when `requires_batch_index` says the engine actually needs it.
+///!                   With insertion order kept (the default), it does: INSERT, COPY and query results use it to
+///!                   run in parallel and still get the rows in order.
 ///!
 ///! The function's **user data** is the block size: set once at registration, read in exec.
 const std = @import("std");
@@ -188,12 +189,16 @@ fn partitionData(
     err: Err,
 ) callconv(.c) void {
     _ = context;
+    // Not every consumer needs the batch index (an unordered sink, say); skip the lookup when none does.
+    var needed = false;
+    if (v2.duckdb_v2_table_function_partition_data_requires_batch_index(info, &needed, err) != .ERROR_NONE) return;
+    if (!needed) return;
+
     var local_ptr: ?*anyopaque = null;
     if (v2.duckdb_v2_table_function_partition_data_get_local_state(info, &local_ptr, err) != .ERROR_NONE) return;
     // SAFETY: `initLocal` stored a `*LocalState`.
     const local: *const LocalState = @ptrCast(@alignCast(local_ptr.?));
     // The block number is the batch index: unique across threads and increasing along each thread's chunks.
-    // It is reported even when nothing downstream asks for it (`partition_data_requires_batch_index`).
     _ = v2.duckdb_v2_table_function_partition_data_set_batch_index(info, local.block, err);
 }
 

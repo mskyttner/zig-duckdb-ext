@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-620 functions (620 unstable) in 39 spec modules, from 70 scanned source files. Referenced by the extension: **373**; by the extension or the PoC: **384**.
+620 functions (620 unstable) in 39 spec modules, from 70 scanned source files. Referenced by the extension: **374**; by the extension or the PoC: **385**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -35,7 +35,7 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | function/replacement_scan | 15 | 15 | 0 | 7 | 8 |
 | function/scalar | 25 | 25 | 21 | 21 | 4 |
 | function/signature | 2 | 2 | 2 | 2 | 0 |
-| function/table | 84 | 84 | 49 | 49 | 35 |
+| function/table | 84 | 84 | 50 | 50 | 34 |
 | identifier | 1 | 1 | 1 | 1 | 0 |
 | instance | 10 | 10 | 10 | 10 | 0 |
 | logging/log_sink | 12 | 12 | 0 | 0 | 12 |
@@ -84,7 +84,7 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **function/scalar**: `scalar_function_init_get_user_data` *(u)*, `scalar_function_init_get_bind_data` *(u)*, `scalar_function_exec_get_arg_count` *(u)*, `connection_register_scalar_function` *(u)*
 
-**function/table**: `table_function_init_global_get_user_data` *(u)*, `table_function_init_local_get_user_data` *(u)*, `table_function_init_local_get_bind_data` *(u)*, `table_function_init_local_get_column_count` *(u)*, `table_function_init_local_get_column_index` *(u)*, `table_function_progress_get_user_data` *(u)*, `table_function_progress_get_global_state` *(u)*, `table_function_filter_pushdown_get_user_data` *(u)*, `table_function_filter_pushdown_get_column_count` *(u)*, `table_function_partition_data_get_user_data` *(u)*, `table_function_partition_data_get_bind_data` *(u)*, `table_function_partition_data_get_global_state` *(u)*, `table_function_partition_data_requires_batch_index` *(u)*, `table_function_partitioning_get_user_data` *(u)*, `table_function_partitioning_get_bind_data` *(u)*, `connection_register_table_function` *(u)*, `table_function_set_claim_batch_callback` *(u)*, `table_function_claim_batch_get_user_data` *(u)*, `table_function_claim_batch_get_bind_data` *(u)*, `table_function_claim_batch_get_global_state` *(u)*, `table_function_claim_batch_get_local_state` *(u)*, `table_function_claim_batch_set_claimed` *(u)*, `table_function_set_get_bind_info_callback` *(u)*, `table_function_get_bind_info_get_user_data` *(u)*, `table_function_get_bind_info_get_bind_data` *(u)*, `table_function_get_bind_info_set_column_identifier` *(u)*, `table_function_get_bind_info_set_option` *(u)*, `multi_file_function_create` *(u)*, `multi_file_function_set_name` *(u)*, `multi_file_function_set_single_file_function` *(u)*, `multi_file_function_set_reader_type` *(u)*, `multi_file_function_set_file_extension` *(u)*, `connection_register_multi_file_function` *(u)*, `extension_register_multi_file_function` *(u)*, `multi_file_function_destroy` *(u)*
+**function/table**: `table_function_init_global_get_user_data` *(u)*, `table_function_init_local_get_user_data` *(u)*, `table_function_init_local_get_bind_data` *(u)*, `table_function_init_local_get_column_count` *(u)*, `table_function_init_local_get_column_index` *(u)*, `table_function_progress_get_user_data` *(u)*, `table_function_progress_get_global_state` *(u)*, `table_function_filter_pushdown_get_user_data` *(u)*, `table_function_filter_pushdown_get_column_count` *(u)*, `table_function_partition_data_get_user_data` *(u)*, `table_function_partition_data_get_bind_data` *(u)*, `table_function_partition_data_get_global_state` *(u)*, `table_function_partitioning_get_user_data` *(u)*, `table_function_partitioning_get_bind_data` *(u)*, `connection_register_table_function` *(u)*, `table_function_set_claim_batch_callback` *(u)*, `table_function_claim_batch_get_user_data` *(u)*, `table_function_claim_batch_get_bind_data` *(u)*, `table_function_claim_batch_get_global_state` *(u)*, `table_function_claim_batch_get_local_state` *(u)*, `table_function_claim_batch_set_claimed` *(u)*, `table_function_set_get_bind_info_callback` *(u)*, `table_function_get_bind_info_get_user_data` *(u)*, `table_function_get_bind_info_get_bind_data` *(u)*, `table_function_get_bind_info_set_column_identifier` *(u)*, `table_function_get_bind_info_set_option` *(u)*, `multi_file_function_create` *(u)*, `multi_file_function_set_name` *(u)*, `multi_file_function_set_single_file_function` *(u)*, `multi_file_function_set_reader_type` *(u)*, `multi_file_function_set_file_extension` *(u)*, `connection_register_multi_file_function` *(u)*, `extension_register_multi_file_function` *(u)*, `multi_file_function_destroy` *(u)*
 
 **logging/log_sink**: `log_sink_create` *(u)*, `log_sink_set_name` *(u)*, `log_sink_set_user_data` *(u)*, `log_sink_set_write_callback` *(u)*, `log_sink_set_flush_callback` *(u)*, `log_sink_write_info_get_connection_id` *(u)*, `log_sink_write_info_get_transaction_id` *(u)*, `log_sink_write_info_get_query_id` *(u)*, `log_sink_write_info_get_thread_id` *(u)*, `instance_register_log_sink` *(u)*, `extension_register_log_sink` *(u)*, `log_sink_destroy` *(u)*
 
