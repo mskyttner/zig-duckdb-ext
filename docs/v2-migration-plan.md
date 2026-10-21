@@ -1910,6 +1910,29 @@ static one for the static embedding (below).
     there is no promise the vtable layout, or any individual function,
     survives to the next staged build untouched (exactly what the
     `d54cbbe3df` regeneration above had to work around).
+  - **Coverage of the actual new surface: `task coverage:api-v2` (see
+    `docs/api-v2-coverage.md`) confirms it's exactly the 11 new functions,
+    0 referenced.** Diffing `docs/generated/api_v2_functions.tsv` by
+    function name between the two pins shows nothing removed and exactly
+    11 added, all in one brand-new module, `profiling/query_metrics`:
+    `connection_enable_profiling`, `connection_get_query_metrics`,
+    `query_metrics_get_root`, `query_metrics_destroy`, and 7
+    `query_metrics_node_get_*` accessors (name/children/metrics, walking
+    a tree of profiled query-plan nodes). The coverage table's
+    `ext`/`ext or poc` counts (356/367) are unchanged by this pin — the
+    new module's row is `11 | 11 | 0 | 0 | 11`, i.e. untouched by any
+    hand-written code; the only matches for these names anywhere in
+    `src/` are inside the generated bindings themselves
+    (`duckdb_v2_{types,static,dynamic}.zig`), not a consumer. This isn't
+    a regression (the real-extension coverage *percentage* only drops
+    because the denominator grew, 356/609 → 356/620); it's a genuinely
+    new, unwrapped capability — connection-level query profiling/EXPLAIN-
+    style metrics, read via a tree of opaque nodes rather than through
+    the scalar/table/aggregate function frameworks this project already
+    has. Doesn't fit any existing comptime framework (it's not a
+    SQL-callable function at all, more like a host-API recipe similar to
+    `src/cookbook`'s existing direct-`db.Connection` recipes). Candidate
+    for a future cookbook entry; not started.
 - **Link-and-run: `zig build v2-static-embed-poc-gen`** registers
   `gen_hello()` through the static declarations only and calls it from SQL.
   **`zig build v2-gen-poc`** builds the same source against the dynamic
