@@ -208,28 +208,36 @@ fn addCrossBuild(
     return addDuckdbExtensionMetadata(b, lib, unique_name, target_duckdb_version, extension_version, abi_type, platform);
 }
 
-/// One of `duckdb-wasm`'s three wasm extension platforms — `mvp` (plain WebAssembly 1.0),
-/// `coi` (exceptions + threads, needs a cross-origin-isolated page), and `eh` (exceptions,
-/// no threads) sits between them but isn't wired up here, nothing in this project's own
-/// code needing it over plain `mvp`. Each maps to the platform string DuckDB's own
-/// `extension_build_tools.cmake` writes into the footer (`DUCKDB_EXPLICIT_PLATFORM`), the
-/// Zig wasm CPU feature set needed to link against that platform's `wasm-opt`/`emcc`
-/// without a feature mismatch, and the extra `emcc` link flags that platform's own CMake
-/// passes (`coi`: `-pthread -sSHARED_MEMORY=1`, from that same cmake file's `LINK_FLAGS`).
+/// One of `duckdb-wasm`'s wasm extension platforms. `mvp` (plain WebAssembly 1.0) and `coi`
+/// (exceptions + threads, needs a cross-origin-isolated page, platform string `wasm_threads`)
+/// are haybarn-wasm's pair, still on DuckDB 1.5.x as of 2026-10-22 — unaffected by anything
+/// below, kept exactly as verified. `eh` (exceptions, no threads) is official `duckdb-wasm`'s
+/// new default as of its 2026-10-21 DuckDB-2.0.0 bump (duckdb/duckdb-wasm#2285): `wasm_mvp` was
+/// discontinued outright (not built in that fork's own CI anymore), and `wasm_eh`'s CMake
+/// (`lib/CMakeLists.txt` at that fork's merged commit) says plainly "All builds use WebAssembly
+/// exception handling" — not an opt-in feature like `coi`'s threads, the new baseline for every
+/// platform that fork ships. Each maps to the platform string DuckDB's own
+/// `extension_build_tools.cmake`/duckdb-wasm's own CMake writes into the footer
+/// (`DUCKDB_EXPLICIT_PLATFORM`), the Zig wasm CPU feature set needed to link against that
+/// platform's `wasm-opt`/`emcc` without a feature mismatch, and the extra `emcc` link flags that
+/// platform's own CMake passes.
 const WasmVariant = enum {
     mvp,
     coi,
+    eh,
+    eh_threads,
 
     fn platform(self: WasmVariant) []const u8 {
         return switch (self) {
             .mvp => "wasm_mvp",
-            .coi => "wasm_threads",
+            .coi, .eh_threads => "wasm_threads",
+            .eh => "wasm_eh",
         };
     }
 
     /// `mvp`: zero extra features — an older emsdk's bundled `wasm-opt` doesn't recognize
     /// post-MVP feature names like `bulk-memory-opt` (confirmed directly: emsdk 3.1.71,
-    /// official duckdb-wasm's own pin, failed with "Unknown option '--enable-bulk-memory-opt'"
+    /// official duckdb-wasm's own OLD pin, failed with "Unknown option '--enable-bulk-memory-opt'"
     /// when linking a lib built with Zig's default `generic` CPU model instead).
     /// `coi`: Zig's `generic` model (`bulk_memory`, `multivalue`, `mutable_globals`,
     /// `nontrapping_fptoint`, `reference_types`, `sign_ext`) plus `atomics` and `simd128` —
@@ -238,9 +246,32 @@ const WasmVariant = enum {
     /// directly that more is actively wrong here, not just unneeded: Zig's `bleeding_edge`
     /// model (which this used at first) adds `exception_handling`/`relaxed_simd`/`fp16`/
     /// `gc`/`tail_call`/`multimemory` — features even emsdk 6.0.12's `wasm-opt` doesn't
-    /// recognize, let alone duckdb-wasm's own coi-specific, older `3.1.57` pin. A module
+    /// recognize, let alone haybarn-wasm's own coi-specific, older `3.1.57` pin. A module
     /// built without `atomics` cannot link against a `-sSHARED_MEMORY=1` main module at
     /// all — the two sides' wasm "target features" custom sections have to agree.
+    /// `eh`: `generic` model plus `exception_handling` — the one new feature bit
+    /// `-fwasm-exceptions` (duckdb-wasm's own CMake flag for every platform now) implies on
+    /// the wasm binary's own "target features" custom section. Confirmed live, 2026-10-22:
+    /// loaded via `dlopen()` against a real post-bump engine (built from the merged PR's own
+    /// CI run — official duckdb-wasm's `main` branch itself had not produced a fresh green
+    /// run yet as of that date, so the engine came from the bump PR's own run instead),
+    /// `zig_hello` called and correct, through the Node "blocking" bindings with
+    /// `allowUnsignedExtensions: true`.
+    /// `eh_threads`: `eh`'s feature set (`exception_handling`) plus `coi`'s (`atomics`,
+    /// `simd128`) — duckdb-wasm's new threaded platform turned out to need both simultaneously
+    /// (its CMake applies `-fwasm-exceptions` to every platform, then adds the pthread flags
+    /// on top for this one), not a straight swap of `coi`'s old scheme. Same platform string
+    /// as `coi` (`wasm_threads`) since that's what the *loader* keys off, even though the two
+    /// variants' actual link flags differ — `coi` targets haybarn-wasm's unchanged, older
+    /// `-sSHARED_MEMORY=1` scheme; this targets duckdb-wasm's new `-sUSE_PTHREADS=1`-based one.
+    /// Prompted by duckdb-wasm#2285's own PR body ("Loadable builds work with threads
+    /// (extension loading and dlopen served from the main thread; emscripten glue patched for
+    /// a joined-thread bug)") — and confirmed live, 2026-10-22: loaded in a real headless
+    /// browser (Playwright/Chromium) against that same post-bump engine, `crossOriginIsolated`
+    /// true, every one of the usual checks (zig_hello/zig_add_numbers/zig_tokenize/
+    /// ct_add_numbers/ct_tokenize/tp_bar) correct. The upstream bug ADR-0008 found blocking
+    /// official duckdb-wasm's threaded platform specifically (haybarn-wasm's own coi engine
+    /// was never affected) is fixed as of this bump.
     fn resolveTarget(self: WasmVariant, b: *std.Build) std.Build.ResolvedTarget {
         var query: std.Target.Query = .{ .cpu_arch = .wasm32, .os_tag = .emscripten };
         switch (self) {
@@ -248,6 +279,14 @@ const WasmVariant = enum {
             .coi => {
                 query.cpu_model = .{ .explicit = &std.Target.wasm.cpu.generic };
                 query.cpu_features_add = std.Target.wasm.featureSet(&.{ .atomics, .simd128 });
+            },
+            .eh => {
+                query.cpu_model = .{ .explicit = &std.Target.wasm.cpu.generic };
+                query.cpu_features_add = std.Target.wasm.featureSet(&.{.exception_handling});
+            },
+            .eh_threads => {
+                query.cpu_model = .{ .explicit = &std.Target.wasm.cpu.generic };
+                query.cpu_features_add = std.Target.wasm.featureSet(&.{ .exception_handling, .atomics, .simd128 });
             },
         }
         return b.resolveTargetQuery(query);
@@ -257,6 +296,8 @@ const WasmVariant = enum {
         return switch (self) {
             .mvp => &.{},
             .coi => &.{ "-pthread", "-sSHARED_MEMORY=1" },
+            .eh => &.{"-fwasm-exceptions"},
+            .eh_threads => &.{ "-fwasm-exceptions", "-sUSE_PTHREADS=1", "-sPTHREAD_POOL_SIZE=8", "-pthread", "-Wl,--wrap=pthread_create" },
         };
     }
 };
@@ -1658,6 +1699,22 @@ pub fn build(b: *std.Build) void {
     const install_wasm_ext_coi = b.addInstallFile(wasm_ext_coi_output, b.fmt("lib/wasm_threads/{s}.duckdb_extension.wasm", .{extension_name}));
     const wasm_ext_coi_step = b.step("wasm-ext-coi", "Build the wasm32-emscripten SIDE_MODULE, coi (threads+exceptions) platform (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
     wasm_ext_coi_step.dependOn(&install_wasm_ext_coi.step);
+
+    // ── "wasm-ext-eh" step: official duckdb-wasm's new default platform post-2.0.0-bump
+    // (exceptions, no threads; see WasmVariant's own doc comment) — needs an emsdk 6.0.9
+    // emcc, the same -Demcc-path= mechanism as wasm-ext/wasm-ext-coi ─────────────────────
+    const wasm_ext_eh_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, emcc_path, .eh);
+    const install_wasm_ext_eh = b.addInstallFile(wasm_ext_eh_output, b.fmt("lib/wasm_eh/{s}.duckdb_extension.wasm", .{extension_name}));
+    const wasm_ext_eh_step = b.step("wasm-ext-eh", "Build the wasm32-emscripten SIDE_MODULE, eh (exceptions, no threads) platform (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
+    wasm_ext_eh_step.dependOn(&install_wasm_ext_eh.step);
+
+    // ── "wasm-ext-eh-threads" step: official duckdb-wasm's new threaded platform (same
+    // emsdk 6.0.9 as wasm-ext-eh, not haybarn-wasm's 6.0.12 — see WasmVariant.eh_threads's
+    // own doc comment for why this isn't just wasm-ext-coi retargeted) ───────────────────
+    const wasm_ext_eh_threads_output = addWasmEmscriptenBuild(b, translate_c_dep, duckdb_headers_v1_dep, build_options_mod, extension_name, dist_version, extension_version, emcc_path, .eh_threads);
+    const install_wasm_ext_eh_threads = b.addInstallFile(wasm_ext_eh_threads_output, b.fmt("lib/wasm_eh_threads/{s}.duckdb_extension.wasm", .{extension_name}));
+    const wasm_ext_eh_threads_step = b.step("wasm-ext-eh-threads", "Build the wasm32-emscripten SIDE_MODULE, duckdb-wasm's new threaded platform (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
+    wasm_ext_eh_threads_step.dependOn(&install_wasm_ext_eh_threads.step);
 
     // ── "dist" step: arrange and gzip `cross`'s output into the DuckDB
     // custom-extension-repository layout `INSTALL ... FROM '<url>'`

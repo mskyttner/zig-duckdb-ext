@@ -138,10 +138,32 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   without an extension involved — see the migration doc).
 - ~~**`wasm_mvp` only.**~~ `coi` added 2026-10-20 (`WasmVariant`, `wasm-ext-coi`), verified
   live against `haybarn-wasm`'s real `coi` engine in a real headless browser (Node has no
-  `coi` bindings in either fork). Official `duckdb-wasm`'s own `coi` cannot be targeted at
-  all right now: its `coi`-specific Emscripten pin (`3.1.57`, different from its `mvp`/`eh`
-  pin) has a real, independently-reproduced version-skew bug — its bundled `wasm-opt`
-  predates a flag `emcc`'s own driver unconditionally requests for any `SIDE_MODULE`+
-  `pthread` link with real static data. Not this project's bug; not pursued further. `eh`
-  (exceptions, no threads) remains genuinely untried — nothing in `root.zig` needs it over
-  `mvp`, so low priority.
+  `coi` bindings in either fork). Official `duckdb-wasm`'s own `coi` could not be targeted
+  at all at the time: its `coi`-specific Emscripten pin (`3.1.57`, different from its
+  `mvp`/`eh` pin) had a real, independently-reproduced version-skew bug — its bundled
+  `wasm-opt` predated a flag `emcc`'s own driver unconditionally requests for any
+  `SIDE_MODULE`+`pthread` link with real static data.
+  ~~Resolved, 2026-10-22: official `duckdb-wasm` bumped to DuckDB 2.0.0 (duckdb/duckdb-wasm#2285,
+  merged 2026-10-21), collapsing the platform matrix to `eh` (exceptions, no threads — the new
+  default, `mvp` discontinued outright) and a rebuilt `threads` platform (same `wasm_threads`
+  footer string `coi` already used, but duckdb-wasm's new CMake needs different link flags —
+  `-fwasm-exceptions` plus `-sUSE_PTHREADS=1 -sPTHREAD_POOL_SIZE=8 -pthread
+  -Wl,--wrap=pthread_create`, not `coi`'s old `-sSHARED_MEMORY=1` — see `WasmVariant.eh_threads`'s
+  own doc comment), both on a single emsdk `6.0.9` pin (no more split `mvp`/`eh`/`coi` pins).
+  Both new variants (`eh`, `eh_threads`) confirmed live against a real engine built from the
+  bump PR's own merged commit (official duckdb-wasm's `main` branch itself had not produced a
+  fresh green CI run yet as of this date, so `fetch_engine.sh`'s "latest success on default
+  branch" was — and remained, as of this date — still serving a month-old pre-bump artifact;
+  fetched the bump commit's own run directly instead, one-off, for this verification). `eh`:
+  Node "blocking" bindings, `zig_hello` correct. `eh_threads`: real headless browser,
+  `crossOriginIsolated` true, the full check set correct — the exact upstream bug this entry
+  used to describe is fixed as of this bump; official duckdb-wasm's threaded platform is no
+  longer blocked.~~
+  Found and fixed on the way: `tools/wasm_verify/verify_wasm_load.cjs` hardcoded the old
+  `mvp`/`duckdb-mvp.wasm` bundle key and filename; the new engine's rewritten Node bindings use
+  `base`/`duckdb-base.wasm` instead and throw on the old key (not just a missing-file error) —
+  now detected by which file actually exists in the target directory, verified against both
+  engines, no regression. `verify_wasm_load_browser.cjs` and `tools/wasm_verify/browser/index.html`
+  were not updated the same way (the `eh_threads` browser verification above used an ad hoc,
+  uncommitted copy with the new filenames substituted in, not the committed tool) — a real
+  remaining gap if this needs to become a repeatable, CI-driven check rather than a one-off.

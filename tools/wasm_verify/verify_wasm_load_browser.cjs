@@ -51,9 +51,22 @@ async function main() {
     }
 
     const browserDir = path.join(__dirname, 'browser');
+    // `base`/`duckdb-base.wasm`: official duckdb-wasm's naming as of its 2026-10-21
+    // DuckDB-2.0.0 bump (duckdb/duckdb-wasm#2285). `mvp`/`duckdb-mvp.wasm`: haybarn-wasm's
+    // unchanged naming. Detected by which file actually exists, not guessed from the
+    // engine's identity — see verify_wasm_load.cjs's own comment for the Node-side version
+    // of this same fix. The `--coi` engine files are not auto-detected the same way: that
+    // engine's own new `threads` platform needs different bundle files too
+    // (`duckdb-threads.wasm` etc.) and a different page (`index.html`'s hardcoded
+    // `duckdb-coi.wasm`/`duckdb-browser-coi.*` references), not updated here — see
+    // docs/rationale/0008_wasm-emscripten-side-module.md's "wasm_mvp only" entry for the
+    // one-off, uncommitted verification that was done instead.
+    const usesBase = fs.existsSync(path.join(distDir, 'duckdb-base.wasm'));
     const engineFiles = coi
         ? ['duckdb-coi.wasm', 'duckdb-browser-coi.worker.js', 'duckdb-browser-coi.pthread.worker.js', 'duckdb-browser.mjs']
-        : ['duckdb-mvp.wasm', 'duckdb-browser-mvp.worker.js', 'duckdb-browser.mjs'];
+        : usesBase
+          ? ['duckdb-base.wasm', 'duckdb-browser-base.worker.js', 'duckdb-browser.mjs']
+          : ['duckdb-mvp.wasm', 'duckdb-browser-mvp.worker.js', 'duckdb-browser.mjs'];
     const mime = { '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript', '.wasm': 'application/wasm' };
 
     const server = http.createServer((req, res) => {
@@ -95,7 +108,7 @@ async function main() {
         const consoleErrors = [];
         page.on('pageerror', err => consoleErrors.push(err.message));
 
-        const pageUrl = `http://127.0.0.1:${port}/index.html?name=${encodeURIComponent(extBase)}${coi ? '&coi=1' : ''}`;
+        const pageUrl = `http://127.0.0.1:${port}/index.html?name=${encodeURIComponent(extBase)}${coi ? '&coi=1' : ''}${usesBase ? '&base=1' : ''}`;
         await page.goto(pageUrl, { waitUntil: 'load' });
         await page.waitForFunction(() => document.getElementById('result').textContent !== 'PENDING', { timeout: 30000 });
         const resultText = await page.textContent('#result');
