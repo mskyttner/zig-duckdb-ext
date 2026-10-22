@@ -829,6 +829,11 @@ pub fn build(b: *std.Build) void {
     const stipple_demo_height = b.option(u32, "stipple-height", "Canvas height (chars) for `demo-stipple` (default: 40)") orelse 40;
     const stipple_demo_points = b.option(u32, "stipple-points", "Number of stipple points for `demo-stipple` (default: 2000)") orelse 2000;
     const stipple_demo_iterations = b.option(u32, "stipple-iterations", "Lloyd relaxation iterations for `demo-stipple` (default: 20)") orelse 20;
+    const stipple_demo_shade = b.option(
+        []const u8,
+        "stipple-shade",
+        "4-codepoint ascending-density glyph string for `demo-stipple` (default: the shade blocks ░▒▓█; e.g. ·★⦁● for a dot-size progression)",
+    ) orelse "░▒▓█";
 
     // `-Dname=`/`-Dapi-version=` must also reach `src/ext/init.zig`'s
     // actual exported entry point, not just the metadata footer —
@@ -1600,17 +1605,18 @@ pub fn build(b: *std.Build) void {
                 run_stipple_demo.addArgs(&.{ "-unsigned", "-no-init", "-list", "-c" });
                 run_stipple_demo.addFileArg2(v2_poc_stipple_output, .{
                     .prefix = "LOAD '",
-                    .suffix = b.fmt("'; SELECT stipple_from_url_ct('{s}', {d}, {d}, {d}, {d});", .{
+                    .suffix = b.fmt("'; SELECT stipple_from_url_ct('{s}', {d}, {d}, {d}, {d}, '{s}');", .{
                         sqlQuoteLiteral(b, stipple_demo_url),
                         stipple_demo_width,
                         stipple_demo_height,
                         stipple_demo_points,
                         stipple_demo_iterations,
+                        sqlQuoteLiteral(b, stipple_demo_shade),
                     }),
                 });
                 run_stipple_demo.stdio = .inherit;
 
-                const stipple_demo_step = b.step("demo-stipple", "Run stipple_from_url_ct against an image (default: the example leaves image), printing the rendered result to stdout. Override with -Dstipple-url=, -Dstipple-width=, -Dstipple-height=, -Dstipple-points=, -Dstipple-iterations=");
+                const stipple_demo_step = b.step("demo-stipple", "Run stipple_from_url_ct against an image (default: the example leaves image), printing the rendered result to stdout. Override with -Dstipple-url=, -Dstipple-width=, -Dstipple-height=, -Dstipple-points=, -Dstipple-iterations=, -Dstipple-shade=");
                 stipple_demo_step.dependOn(&run_stipple_demo.step);
             }
         }

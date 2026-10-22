@@ -4608,6 +4608,34 @@ leaves/ziggy regression cases (already close to the box's own aspect
 ratio, so only minimally affected) still render correctly. `task
 check:all` and `zig build v2-check` pass.
 
+### Follow-up: configurable shade glyphs, a quadrant-block utility (done, 2026-10-22)
+
+`renderCells`'s 4 ascending-fill shade characters (`░▒▓█`) are now a parameter
+(`shade_chars: [4]u21`, defaulting to `default_shade_chars`) instead of a hardcoded
+array — they're an ordered lookup by density bin with no fill-specific meaning
+attached, so an ascending *size* progression works just as well as an ascending
+*fill* one. Threaded through `stipple_image.stippleFromUrl` and
+`stipple_from_url_ct`'s new 6th argument, `shade_glyphs` (a VARCHAR of exactly 4
+codepoints; a wrong count falls back to the default rather than erroring).
+Confirmed live: `zig build demo-stipple -Dstipple-shade="·★⦁●"` against the same
+seed/image as the default run renders the identical point geometry with a visibly
+different, equally legible gradient (`·` sparse through `●` densest) in place of
+`░▒▓█`.
+
+Also added, prompted by a question about whether Braille's 2-wide × 4-tall
+sub-cell packing could use the Unicode "Block Elements" quadrant characters
+(U+2598-U+259F) instead: `quadrantGlyph(bits: u4) u21`, a correct, tested lookup
+from a 4-bit (UL/UR/LL/LR) mask to the matching quadrant glyph (e.g. bits
+UR+LL → U+259E `▞`). **Not wired into `renderCells`**: unlike `shade_chars`,
+swapping Braille for quadrant blocks isn't a 1:1 glyph substitution — covering the
+same 2×4 area needs *two* stacked 2×2 quadrant glyphs per cell, which means every
+other cell in that output row would also need to become two physical terminal
+rows tall to stay column-aligned, not just the sparse ones. That's a real layout
+decision for the caller (e.g. a distinct "quadrant mode" rendering the whole image
+at 2x vertical resolution, not a drop-in Braille replacement), left open rather
+than guessed at — `quadrantGlyph` is kept as a correct, ready-to-use building
+block for whichever way that decision goes.
+
 ## DuckDB 2.0 release date and community-extensions deploy changes (2026-10-16)
 
 Release date confirmed: **2026-10-21** — the trigger condition this

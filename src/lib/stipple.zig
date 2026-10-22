@@ -299,7 +299,68 @@ pub const CellGlyph = union(enum) {
     shade: u21,
 };
 
-const shade_chars = [4]u21{ '░', '▒', '▓', '█' };
+/// Default `shade_chars` for `renderCells` — ascending-fill shade blocks.
+/// Any 4 codepoints work: `renderCells` only uses them as an ordered
+/// lookup by density bin, with no other meaning attached, so an ascending
+/// *size* progression (e.g. `·`, `★`, `⦁`, `●`) reads just as validly as
+/// an ascending *fill* one.
+pub const default_shade_chars = [4]u21{ '░', '▒', '▓', '█' };
+
+/// Unicode "Block Elements" quadrant characters (U+2580-U+259F range),
+/// indexed by which of a 2x2 grid's 4 quadrants are filled, bit-packed as
+/// upper-left=1, upper-right=2, lower-left=4, lower-right=8 — e.g. index 6
+/// (upper-right + lower-left, no upper-left/lower-right) is U+259E `▞`.
+/// Not wired into `renderCells` yet: covering the same 2-wide x 4-tall
+/// area Braille's sparsest bin uses with quadrant blocks takes *two*
+/// stacked quadrant glyphs (one per 2x2 half), which — unlike swapping
+/// `shade_chars` — needs every other cell in that output row to also be
+/// two physical terminal rows tall, not just the sparse ones, to stay
+/// aligned. That's a real layout decision for whatever calls this, not
+/// something this function should guess at silently; kept here as a
+/// correct, tested, ready-to-use building block for whichever way that
+/// decision goes.
+pub fn quadrantGlyph(bits: u4) u21 {
+    const table = [16]u21{
+        ' ', // 0000: none
+        '▘', // 0001: UL            (U+2598)
+        '▝', // 0010: UR            (U+259D)
+        '▀', // 0011: UL+UR         (U+2580)
+        '▖', // 0100: LL            (U+2596)
+        '▌', // 0101: UL+LL         (U+258C)
+        '▞', // 0110: UR+LL         (U+259E)
+        '▛', // 0111: UL+UR+LL      (U+259B)
+        '▗', // 1000: LR            (U+2597)
+        '▚', // 1001: UL+LR         (U+259A)
+        '▐', // 1010: UR+LR         (U+2590)
+        '▜', // 1011: UL+UR+LR      (U+259C)
+        '▄', // 1100: LL+LR         (U+2584)
+        '▙', // 1101: UL+LL+LR      (U+2599)
+        '▟', // 1110: UR+LL+LR      (U+259F)
+        '█', // 1111: all           (U+2588)
+    };
+    return table[bits];
+}
+
+test "quadrantGlyph matches the Unicode quadrant-block names for every 4-bit combination" {
+    // UL=1, UR=2, LL=4, LR=8.
+    try std.testing.expectEqual(@as(u21, ' '), quadrantGlyph(0));
+    try std.testing.expectEqual(@as(u21, '▘'), quadrantGlyph(1));
+    try std.testing.expectEqual(@as(u21, '▝'), quadrantGlyph(2));
+    try std.testing.expectEqual(@as(u21, '▀'), quadrantGlyph(1 | 2));
+    try std.testing.expectEqual(@as(u21, '▖'), quadrantGlyph(4));
+    try std.testing.expectEqual(@as(u21, '▌'), quadrantGlyph(1 | 4));
+    // The example from the Unicode chart this was checked against: UR+LL -> U+259E '▞'.
+    try std.testing.expectEqual(@as(u21, '▞'), quadrantGlyph(2 | 4));
+    try std.testing.expectEqual(@as(u21, '▛'), quadrantGlyph(1 | 2 | 4));
+    try std.testing.expectEqual(@as(u21, '▗'), quadrantGlyph(8));
+    try std.testing.expectEqual(@as(u21, '▚'), quadrantGlyph(1 | 8));
+    try std.testing.expectEqual(@as(u21, '▐'), quadrantGlyph(2 | 8));
+    try std.testing.expectEqual(@as(u21, '▜'), quadrantGlyph(1 | 2 | 8));
+    try std.testing.expectEqual(@as(u21, '▄'), quadrantGlyph(4 | 8));
+    try std.testing.expectEqual(@as(u21, '▙'), quadrantGlyph(1 | 4 | 8));
+    try std.testing.expectEqual(@as(u21, '▟'), quadrantGlyph(2 | 4 | 8));
+    try std.testing.expectEqual(@as(u21, '█'), quadrantGlyph(15));
+}
 
 /// Counts how many of `points` fall within the pixel rectangle
 /// `[cell_x*cell_w, cell_x*cell_w+cell_w) x [cell_y*cell_h, cell_y*cell_h+cell_h)`,
@@ -366,6 +427,7 @@ pub fn renderCells(
     height: usize,
     cell_cols: usize,
     cell_rows: usize,
+    shade_chars: [4]u21,
 ) ![]CellGlyph {
     const cell_w = @max(1, width / cell_cols);
     const cell_h = @max(1, height / cell_rows);
@@ -468,7 +530,7 @@ test "renderCells still picks Braille for the sparsest cells when max_count is t
         .{ .x = 5, .y = 0 },
         .{ .x = 5, .y = 1 },
     };
-    const glyphs = try renderCells(allocator, &points, 6, 4, 3, 1);
+    const glyphs = try renderCells(allocator, &points, 6, 4, 3, 1, default_shade_chars);
     defer allocator.free(glyphs);
 
     try std.testing.expectEqual(@as(usize, 3), glyphs.len);
@@ -561,7 +623,7 @@ test "renderCells picks a Braille glyph for the sparsest bin and shade character
         .{ .x = 3, .y = 2 },
         .{ .x = 3, .y = 3 },
     };
-    const glyphs = try renderCells(allocator, &points, 4, 4, 2, 1);
+    const glyphs = try renderCells(allocator, &points, 4, 4, 2, 1, default_shade_chars);
     defer allocator.free(glyphs);
 
     try std.testing.expectEqual(@as(usize, 2), glyphs.len);
