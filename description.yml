@@ -24,8 +24,9 @@ extension:
   name: zig_ext
   description: >-
     A DuckDB extension written in Zig, demonstrating scalar and table
-    functions over the v1 C extension API, with an experimental parallel
-    port to DuckDB's unreleased v2.0 C API.
+    functions over the v1 C extension API, with a parallel port to
+    DuckDB 2.0's C API (released 2026-10-21; its C API surface remains
+    lifecycle-unstable per DuckDB's own metadata).
   version: 0.1.0
   language: Zig
   build: zig
@@ -48,5 +49,6 @@ docs:
     direct C-API interop (no C++ ABI coupling to DuckDB internals), and a
     comptime framework that generates vectorized callbacks and
     registration boilerplate from plain per-row Zig functions. A
-    parallel, in-progress port to DuckDB's staged, unreleased v2.0 C API
-    lives on this same repository's duckdb-v2-api branch.
+    parallel port to DuckDB 2.0's C API lives on this same repository's
+    main branch, and is also published as a separate, self-signed
+    extension repository.
