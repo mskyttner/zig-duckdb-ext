@@ -24,12 +24,17 @@ import * as duckdb from './duckdb-browser.mjs';
 const params = new URLSearchParams(location.search);
 const extName = params.get('name');
 const coi = params.get('coi') === '1';
+// Official duckdb-wasm's naming as of its 2026-10-21 DuckDB-2.0.0 bump (duckdb/duckdb-wasm#2285)
+// — `base`/`duckdb-base.wasm` instead of `mvp`/`duckdb-mvp.wasm`. Set by the caller
+// (verify_wasm_load_browser.cjs), which already knows which files actually exist in the
+// engine directory it's serving; this page can't detect that itself.
+const base = params.get('base') === '1';
 
 async function main() {
-    const worker = new Worker(coi ? './duckdb-browser-coi.worker.js' : './duckdb-browser-mvp.worker.js');
+    const worker = new Worker(coi ? './duckdb-browser-coi.worker.js' : base ? './duckdb-browser-base.worker.js' : './duckdb-browser-mvp.worker.js');
     const logger = new duckdb.ConsoleLogger();
     const db = new duckdb.AsyncDuckDB(logger, worker);
-    await db.instantiate(coi ? './duckdb-coi.wasm' : './duckdb-mvp.wasm', coi ? './duckdb-browser-coi.pthread.worker.js' : null);
+    await db.instantiate(coi ? './duckdb-coi.wasm' : base ? './duckdb-base.wasm' : './duckdb-mvp.wasm', coi ? './duckdb-browser-coi.pthread.worker.js' : null);
     await db.open({ allowUnsignedExtensions: true });
     const conn = await db.connect();
 

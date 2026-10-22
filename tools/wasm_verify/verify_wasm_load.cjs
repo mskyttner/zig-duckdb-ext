@@ -128,10 +128,19 @@ async function main() {
 
     try {
         const duckdb = require(path.join(distDir, 'duckdb-node-blocking.cjs'));
+        // `base`/`duckdb-base.wasm`: official duckdb-wasm's bundle key and filenames as of its
+        // 2026-10-21 DuckDB-2.0.0 bump (duckdb/duckdb-wasm#2285) — confirmed live, the hard
+        // way: the OLD `mvp` key throws `TypeError: Cannot read properties of undefined
+        // (reading 'mainModule')` inside the new `duckdb-node-blocking.cjs`, not just a
+        // missing file. `mvp`/`duckdb-mvp.wasm`: haybarn-wasm's naming, unchanged, still on
+        // DuckDB 1.5.x as of the same date — detected by which file actually exists in
+        // `distDir`, not by guessing from the engine's identity.
+        const usesBase = fs.existsSync(path.join(distDir, 'duckdb-base.wasm'));
+        const bundleKey = usesBase ? 'base' : 'mvp';
         const bundles = {
-            mvp: {
-                mainModule: path.join(distDir, 'duckdb-mvp.wasm'),
-                mainWorker: path.join(distDir, 'duckdb-node-mvp.worker.cjs'),
+            [bundleKey]: {
+                mainModule: path.join(distDir, usesBase ? 'duckdb-base.wasm' : 'duckdb-mvp.wasm'),
+                mainWorker: path.join(distDir, usesBase ? 'duckdb-node-base.worker.cjs' : 'duckdb-node-mvp.worker.cjs'),
             },
         };
         const logger = new duckdb.ConsoleLogger();
