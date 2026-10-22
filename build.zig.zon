@@ -40,54 +40,51 @@
             .url = "https://codeberg.org/ziglang/translate-c/archive/875969d3493e245e01bf5d7860f792d8f3eb9ef5.tar.gz",
             .hash = "translate_c-0.0.0-Q_BUWoFOBwAhz77Zd15HCVuhTKzdUKc94kezmCeJ7IC_",
         },
-        // Pinned, content-hashed DuckDB v2.0 alpha CLI binaries — replaces
+        // Pinned, content-hashed DuckDB v2.0 CLI binaries — replaces
         // the machine-local, unpinned `DUCKDB_VERSION=alpha bash
         // <(curl https://install.duckdb.org)` install this project's own
         // docs (docs/v2-migration-plan.md's "Testing infrastructure gaps")
-        // previously required by hand, for the two host platforms DuckDB
-        // actually publishes a CLI for at this staged URL today (confirmed
-        // live, 2026-10-12: macOS/Windows return 404 here — only Linux
-        // amd64/arm64 exist under this path). `lazy = true` so only the
-        // one matching the build host is ever actually fetched (see
-        // `duckdbV2CliLazyPath` in build.zig); the other stays undownloaded.
+        // previously required by hand, for the two host platforms this
+        // repo builds/tests on. `lazy = true` so only the one matching the
+        // build host is ever actually fetched (see `duckdbV2CliLazyPath`
+        // in build.zig); the other stays undownloaded.
         //
-        // CAUTION: this is a *staged*, not a tagged-release, artifact.
-        // Pinned to the immutable `duckdb-staging.duckdb.org/<commit>/
-        // <version>/...` path (`d54cbbe3df`/`v2.0.0`; earlier pins were
-        // `f8f3f4dcd9`/`v2.0.0-alpha48730` and `b15358c371`/
-        // `v2.0.0-alpha46057`), not the floating
-        // `artifacts.duckdb.org/staged/v2.0-cyanoptera/...` alias this was
-        // originally pinned via — confirmed, 2026-10-16, by reading
-        // `duckdb/duckdb-install-scripts`' own `install.sh` (the official
-        // installer `curl install.duckdb.org | sh` runs): it hits exactly
-        // this `duckdb-staging.duckdb.org/<commit>/<version>/duckdb/duckdb/
-        // github_release/...` shape for `DUCKDB_STAGED=<commit>/<version>`.
+        // RESOLVED, 2026-10-22: `v2.0.0` ("Cyanoptera") is now a real,
+        // non-draft, non-prerelease tagged GitHub release (`gh api
+        // repos/duckdb/duckdb/releases/tags/v2.0.0`, published
+        // 2026-10-21), confirmed to target exactly commit `d54cbbe3df`
+        // (`target_commitish` in that same API response) — the commit
+        // this project had already pinned via the staging mirror below.
+        // Re-pinned to the permanent `github.com/duckdb/duckdb/releases/
+        // download/v2.0.0/...` URLs the earlier caveats here said to
+        // switch to once a tagged release existed. The content hashes
+        // below are unchanged: `zig fetch` against each new URL produced
+        // the identical hash already recorded (byte-for-byte the same
+        // artifact as the staging mirror served, confirmed live for all
+        // five assets this project fetches from this release), so no
+        // bindings regeneration or re-verification of the test suite was
+        // needed — only the URLs moved.
         //
-        // CAUTION, 2026-10-21: that alias no longer matches this pin. The
-        // same commit `d54cbbe3df` has two differently-labeled staged
-        // builds — the floating alias still 302s to
-        // `d54cbbe3df/v2.0.0-alpha49225` (confirmed live, different content
-        // hash, CLI reports `version()` = `v2.0.0-alpha49225`), while this
-        // pin uses the separately-staged `d54cbbe3df/v2.0.0` path, whose
-        // CLI reports `version()` = plain `v2.0.0` (confirmed live, and the
-        // same string is embedded in the static-libs archive below). So
-        // the commit is believed to be the one DuckDB tags as v2.0.0, but
-        // there is no tagged GitHub release yet (`gh api
-        // repos/duckdb/duckdb/releases` still tops out at v1.5.6,
-        // confirmed 2026-10-21) and the normal alpha-channel alias is not
-        // what served this particular build — it was staged under the
-        // `v2.0.0` label directly, out of step with the floating alias's
-        // own numbering. Re-verify both facts (tag existence, alias
-        // target) before trusting this pin as "the" v2.0.0, and still
-        // switch to the real `github.com/duckdb/duckdb/releases/
-        // download/...` pattern once an actual tagged release exists.
+        // Prior pin history, for reference: staged at
+        // `duckdb-staging.duckdb.org/d54cbbe3df/v2.0.0/duckdb/duckdb/
+        // github_release/...` (confirmed, 2026-10-16, to be exactly the
+        // shape `duckdb/duckdb-install-scripts`' own `install.sh` hits for
+        // `DUCKDB_STAGED=<commit>/<version>`) — itself reached not via the
+        // floating `artifacts.duckdb.org/staged/v2.0-cyanoptera/...` alias
+        // this was originally pinned via (that alias pointed at a
+        // differently-labeled, differently-hashed staged build,
+        // `d54cbbe3df/v2.0.0-alpha49225`, confirmed live 2026-10-21 to
+        // still disagree even after the real release shipped — the alias
+        // was never meant to track the tagged release). Earlier pins
+        // before that: `f8f3f4dcd9`/`v2.0.0-alpha48730` and
+        // `b15358c371`/`v2.0.0-alpha46057`.
         .duckdb_cli_v2_linux_amd64 = .{
-            .url = "https://duckdb-staging.duckdb.org/d54cbbe3df/v2.0.0/duckdb/duckdb/github_release/duckdb-cli-linux-amd64.tar.gz",
+            .url = "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz",
             .hash = "N-V-__8AADj2ngSI3vX6n2jU0wwwn19lzCioODSBEWMre_ZJ",
             .lazy = true,
         },
         .duckdb_cli_v2_linux_arm64 = .{
-            .url = "https://duckdb-staging.duckdb.org/d54cbbe3df/v2.0.0/duckdb/duckdb/github_release/duckdb-cli-linux-arm64.tar.gz",
+            .url = "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-arm64.tar.gz",
             .hash = "N-V-__8AAHjSfATfl4KE0emz5vLpo7k7Y8fV6BF3bkzNnwCY",
             .lazy = true,
         },
@@ -115,23 +112,12 @@
             .url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-src.zip",
             .hash = "N-V-__8AANq4rwEjjrNWz619N1Pu61lS5GAi7o4Qx9cHU7aN",
         },
-        // v2: staged `v2.0.0`, commit `d54cbbe3df`, which the CLI of the
-        // same path reports via `-version` (not diffed byte-for-byte
-        // against this commit's tree, but the bindings generated from the
-        // API spec match its headers closely enough that the whole test
-        // suite runs against it — same confidence level as the previous
-        // pin). Pinned via the immutable `duckdb-staging.duckdb.org/
-        // <commit>/<version>/...` path — see the `duckdb_cli_v2_*` entries
-        // above for the 2026-10-21 caveat: the floating
-        // `artifacts.duckdb.org/staged/v2.0-cyanoptera/...` alias does NOT
-        // currently point at this same `<commit>/<version>` pair (it 302s
-        // to `d54cbbe3df/v2.0.0-alpha49225` instead, a different content
-        // hash) — so this is believed to be the commit DuckDB will tag as
-        // v2.0.0, confirmed only by its own staged build's version string,
-        // not by a real tagged release or by the alias agreeing. Still
-        // needs re-pinning once DuckDB 2.0 ships as a real tagged release.
+        // v2: the real, tagged `v2.0.0` release, commit `d54cbbe3df` — see
+        // the `duckdb_cli_v2_*` entries above for the 2026-10-22
+        // resolution (tag confirmed, content hash unchanged from the
+        // staging pin this replaced).
         .duckdb_headers_v2 = .{
-            .url = "https://duckdb-staging.duckdb.org/d54cbbe3df/v2.0.0/duckdb/duckdb/github_release/libduckdb-src.zip",
+            .url = "https://github.com/duckdb/duckdb/releases/download/v2.0.0/libduckdb-src.zip",
             .hash = "N-V-__8AAAMVFQBoV63YG3t4d_XYQ813sZwDyKSE6f-eovyC",
         },
         // A real, compiled `libduckdb_static.a` (+ matching full headers)
@@ -149,12 +135,10 @@
         // (plain `v2.0.0`), not just trusting the URL path.
         // `lazy = true`: only the `v2-static-embed-poc` step (itself
         // experimental, not part of any default build) ever fetches
-        // this — large and single-purpose. Pinned via the same immutable
-        // `duckdb-staging.duckdb.org/<commit>/<version>/...` path as
-        // `duckdb_cli_v2_*`/`duckdb_headers_v2` above, not the floating
-        // alias (see its caveat above — it does not currently agree).
+        // this — large and single-purpose. Pinned via the real tagged
+        // `v2.0.0` release now — see `duckdb_cli_v2_*` above.
         .duckdb_static_libs_v2_linux_amd64 = .{
-            .url = "https://duckdb-staging.duckdb.org/d54cbbe3df/v2.0.0/duckdb/duckdb/github_release/duckdb-static-libs-linux-amd64.tar.gz",
+            .url = "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-static-libs-linux-amd64.tar.gz",
             .hash = "N-V-__8AAEQMEws0Kz5i4m88XTVpwG4bpBD_O4wjeT6bFETr",
             .lazy = true,
         },
@@ -162,7 +146,7 @@
         // `duckdb-static-libs-windows-amd64` tarball, which is an MSVC build (`.lib`, 206 MB). Only the
         // `v2-static-embed-poc` steps ever fetch it, when built with `-Dtarget=x86_64-windows-gnu`.
         .duckdb_static_libs_v2_windows_mingw = .{
-            .url = "https://duckdb-staging.duckdb.org/d54cbbe3df/v2.0.0/duckdb/duckdb/github_release/duckdb-static-libs-windows-mingw.tar.gz",
+            .url = "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-static-libs-windows-mingw.tar.gz",
             .hash = "N-V-__8AACwVvQpNi6g3ansv5W37gY6A4SPVNXcStlcs1cBz",
             .lazy = true,
         },

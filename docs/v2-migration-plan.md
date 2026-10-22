@@ -4792,3 +4792,47 @@ from the new bind-input accessor, with the relation's rows delivered
 through the ordinary `init_local`/`exec` pull-iterator shape already in
 place for every other table function. Not started, since there is
 currently nothing on the C API side to wrap.
+
+## DuckDB 2.0.0 shipped as a real tagged release; re-pinned off the staging mirror (2026-10-22)
+
+The trigger condition the "DuckDB 2.0 release date" entry above was
+waiting on landed on schedule: `v2.0.0` ("Cyanoptera") is now a real,
+non-draft, non-prerelease GitHub release, published 2026-10-21 (`gh api
+repos/duckdb/duckdb/releases/tags/v2.0.0`).
+
+**The commit matches exactly.** That same API response's
+`target_commitish` is `d54cbbe3df17e8e5ce68312f483b4155836112aa` — the
+commit this project had already pinned via the staging mirror
+(`c1b4931`, this plan's "blanket unstable relabel" entry). No surprise
+API changes, no new functions to reconcile, nothing to regenerate.
+
+**Re-pinned `build.zig.zon`'s five v2 dependencies from the
+`duckdb-staging.duckdb.org/d54cbbe3df/v2.0.0/...` mirror to the
+permanent `github.com/duckdb/duckdb/releases/download/v2.0.0/...`
+URLs** (the two CLI binaries, the headers zip, and the two static-lib
+archives) — exactly the "still needs re-pinning once DuckDB 2.0 ships
+as a real tagged release" each of those entries' own comments already
+flagged. Verified, not assumed: `zig fetch`ing each new URL produced
+the identical content hash already recorded for the staging mirror, so
+this is purely a URL change — no bindings regeneration, no re-running
+the "is this really the same build" verification the earlier pin did
+by hand, and no change to the hash a lockfile/CI cache would key on.
+`task check:all` and the 125-block v2 sqllogictest suite both re-ran
+clean against the re-pinned URLs.
+
+**Found and fixed a real, independent staleness bug while re-pinning**:
+`.github/workflows/release.yml`'s `DUCKDB_V2_VERSION`/
+`DUCKDB_V2_CLI_URL` env vars were still `v2.0.0-alpha48730`/
+`f8f3f4dcd9` — two pins behind `build.zig`'s own `v2_duckdb_version`
+constant (already `"v2.0.0"`), which they override via
+`-Ddist-version-v2`. They were never updated when the project moved
+off that alpha pin. Consequence: the release workflow's `verify-v2` job
+was downloading a DuckDB CLI from a two-pins-old build and using it to
+validate extensions built for a newer one — not validating what it
+claimed to, silently, since nothing failed loudly either way this could
+go. Fixed to `v2.0.0`/the same permanent GitHub release URL above.
+
+Also closes the "two things worth revisiting once the release lands"
+note at the end of the entry above — the community-extensions
+submission question (ADR-0004 §5) remains open and separate, not
+addressed here.
