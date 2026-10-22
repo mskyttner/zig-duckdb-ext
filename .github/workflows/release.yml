@@ -7,7 +7,19 @@ name: Release extension
 #
 # `INSTALL zig_ext FROM 'https://<owner>.github.io/<repo>/';` then works
 # against the published tree (after `SET allow_unsigned_extensions=true;`
-# — see that ADR for why this isn't signed).
+# — see that ADR for why v1's tree isn't signed).
+#
+# The v2 extensions are ALSO published a second time, signed, under dist/signed/ — if the
+# DUCKDB_EXT_SIGNING_KEY repo secret is set (an RSA-2048 private key PEM; the matching public key
+# is committed at signing/zig-duckdb-ext-signing-key.pub). That lets a v2.0+ client install with
+# no -unsigned at all, via DuckDB's CREATE EXTENSION REPOSITORY mechanism, confirmed working end
+# to end in the ADR above:
+#   SET allow_extension_repositories='allowed';
+#   CREATE EXTENSION REPOSITORY zigduckdbext WITH PREFIX 'https://<owner>.github.io/<repo>/signed/';
+#   INSTALL zig_ext_v2 FROM zigduckdbext;
+#   LOAD zig_ext_v2 FROM zigduckdbext;
+# If the secret isn't set, the signing step and its verify job both no-op cleanly — the unsigned
+# v1/v2 trees still publish exactly as before.
 
 on:
   push:
@@ -89,6 +101,32 @@ jobs:
             -Dextension-version-v2="${EXTENSION_VERSION_V2}"
           find "dist/${DUCKDB_V2_VERSION}" -type f
 
+      # Second, signed copy of the v2 extensions, under dist/signed/ — see this file's own top
+      # comment. The private key never appears in any log: it's written straight from the secrets
+      # context into a 600-mode temp file via `printf`, never echoed, and removed once signing is
+      # done (the runner is destroyed after the job regardless; this is defense in depth, not the
+      # only safeguard). No-ops cleanly, leaving dist/signed/ absent, if the secret isn't set.
+      - name: Sign the v2 extensions for the self-hosted signed-repository path
+        env:
+          SIGNING_KEY: ${{ secrets.DUCKDB_EXT_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "DUCKDB_EXT_SIGNING_KEY secret not set; skipping the signed distribution tree"
+            exit 0
+          fi
+          key_path="$RUNNER_TEMP/signing-key.pem"
+          ( umask 077; printf '%s\n' "$SIGNING_KEY" > "$key_path" )
+          zig build sign-extension-tool
+          zig build dist-v2-signed \
+            -Dsigning-key="$key_path" \
+            -Ddist-version-v2="${DUCKDB_V2_VERSION}" \
+            -Dextension-version-v2="${EXTENSION_VERSION_V2}"
+          rm -f "$key_path"
+          mkdir -p dist/signed/.well-known
+          cp signing/duckdb-extension-repo.json dist/signed/.well-known/duckdb-extension-repo.json
+          find "dist/signed/${DUCKDB_V2_VERSION}" -type f
+
       - name: Assemble the landing page and API docs alongside the extension repository
         run: |
           set -euo pipefail
@@ -129,8 +167,34 @@ jobs:
       - name: Install both extensions from the tree and use them
         run: tools/verify_dist_v2.sh "$RUNNER_TEMP/duckdb-v2/duckdb" dist
 
+  # Same, but through the SIGNED repository path (CREATE EXTENSION REPOSITORY ... USING PUBLIC
+  # KEY / LOAD ... FROM, no -unsigned) — see tools/verify_dist_v2_signed.sh. No-ops cleanly if
+  # dist/signed doesn't exist (the signing secret wasn't set in the build job), so this job always
+  # succeeds and never blocks deploy on a secret that's legitimately absent (e.g. a fork's CI run).
+  verify-v2-signed:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Fetch the DuckDB alpha CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/duckdb-v2"
+          curl -fsSL "${DUCKDB_V2_CLI_URL}" | tar -xz -C "$RUNNER_TEMP/duckdb-v2"
+          "$RUNNER_TEMP/duckdb-v2/duckdb" --version
+      - name: Install both signed extensions via CREATE EXTENSION REPOSITORY, no -unsigned
+        run: |
+          if [ ! -d "dist/signed" ]; then
+            echo "dist/signed does not exist (DUCKDB_EXT_SIGNING_KEY secret not set) — nothing to verify"
+            exit 0
+          fi
+          tools/verify_dist_v2_signed.sh "$RUNNER_TEMP/duckdb-v2/duckdb" signing/zig-duckdb-ext-signing-key.pub dist/signed
+
   deploy:
-    needs: [build, verify-v2]
+    needs: [build, verify-v2, verify-v2-signed]
     if: github.event_name != 'workflow_dispatch' || inputs.publish
     runs-on: ubuntu-latest
     environment:

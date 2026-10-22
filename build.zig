@@ -1835,6 +1835,56 @@ pub fn build(b: *std.Build) void {
     const sign_extension_step = b.step("sign-extension-tool", "Build the extension-signing tool (zig-out/bin/sign_extension)");
     sign_extension_step.dependOn(&install_sign_extension.step);
 
+    // ── "dist-v2-signed" step: `dist-v2`'s cross-built v2 extensions, signed with a private key,
+    // arranged and gzipped into a SEPARATE dist/signed/<version>/<platform>/<name>.duckdb_extension.gz
+    // tree — for `CREATE EXTENSION REPOSITORY ... USING PUBLIC KEY` / `LOAD ... FROM`, confirmed
+    // working end to end (docs/rationale/0004_extension-distribution-and-signing.md). Only runs
+    // when `-Dsigning-key=<path to a PEM private key>` is given; omitted (the default for a plain
+    // local build), this step does nothing, so it never surprises a plain `zig build`/
+    // `zig build dist-v2`. The release workflow passes the path to a temp file it decoded a
+    // GitHub Actions secret into — the key itself never appears as a `-D` value in any log, only
+    // the path to where it was written.
+    const signing_key_path = b.option([]const u8, "signing-key", "Path to a PEM private key; if set, dist-v2-signed also signs the v2 extensions into a parallel dist/signed/ tree");
+    const dist_v2_signed_step = b.step("dist-v2-signed", "Cross-compile and sign the v2 extensions into dist/signed/<dist-version-v2>/<platform>/<name>.duckdb_extension.gz (needs -Dsigning-key=<path>)");
+    if (signing_key_path) |key_path| {
+        for ([_]V2Extension{ .zig_ext_v2, .zig_ext_cookbook }) |extension| {
+            const ext_file_name = b.fmt("{s}.duckdb_extension", .{@tagName(extension)});
+            const run_dist_signed = b.addRunArtifact(dist_tool);
+            run_dist_signed.addArg("zig-out/lib-v2-signed");
+            run_dist_signed.addArg("dist/signed");
+            run_dist_signed.addArg(@tagName(extension));
+            run_dist_signed.addArg(dist_version_v2);
+
+            for (cross_targets) |query| {
+                const platform = duckdbPlatformString(b.resolveTargetQuery(query));
+                const signed_dir = b.fmt("zig-out/lib-v2-signed/{s}", .{platform});
+
+                const make_signed_dir = b.addSystemCommand(&.{ "mkdir", "-p", signed_dir });
+                make_signed_dir.step.dependOn(cross_v2_step);
+
+                const run_sign = b.addRunArtifact(sign_extension_exe);
+                run_sign.step.dependOn(&make_signed_dir.step);
+                run_sign.addArg(b.fmt("zig-out/lib-v2/{s}/{s}", .{ platform, ext_file_name }));
+                run_sign.addArg(key_path);
+                run_sign.addArg(b.fmt("{s}/{s}", .{ signed_dir, ext_file_name }));
+
+                run_dist_signed.step.dependOn(&run_sign.step);
+            }
+
+            dist_v2_signed_step.dependOn(&run_dist_signed.step);
+        }
+    }
+    // Installs both from dist/signed/ via `CREATE EXTENSION REPOSITORY ... USING PUBLIC KEY` +
+    // `LOAD ... FROM`, with no -unsigned — run `dist-v2-signed` first. Defaults to this project's
+    // one real committed public key; override the second arg for a throwaway test key.
+    const verify_dist_v2_signed_step = b.step("verify-dist-v2-signed", "Install the signed v2 extensions from dist/signed/ into the pinned DuckDB CLI via CREATE EXTENSION REPOSITORY, no -unsigned (run dist-v2-signed first)");
+    {
+        const verify_signed = b.addSystemCommand(&.{"tools/verify_dist_v2_signed.sh"});
+        if (duckdb_cli_v2) |cli| verify_signed.addFileArg(cli) else verify_signed.addArg("duckdb");
+        verify_signed.addArg("signing/zig-duckdb-ext-signing-key.pub");
+        verify_dist_v2_signed_step.dependOn(&verify_signed.step);
+    }
+
     // ── SQL logic tests against the real v1 AND v2 extensions ─────────────
     // DuckDB's own native .test format (require/statement/query blocks),
     // run via a small native Zig runner (src/sqllogictest_main.zig) that
