@@ -398,6 +398,66 @@ declared in the file"), not something this change tries to also solve.
 (same output path, `zig-out/index.html`, now populated by generation
 instead of a copy).
 
+### Follow-up: self-signed v2 distribution, wired into CI (done, 2026-10-22)
+
+DuckDB 2.0 shipped as a real tagged release 2026-10-21 (see
+`docs/v2-migration-plan.md`'s own entry for that), so the condition the
+"What this changes for the actual decision below" note above was
+waiting on is now met. Built the actual self-signed distribution path
+this ADR had confirmed working by hand but left unwired:
+
+- Generated a real RSA-2048 keypair (`~/.ssh/zig-duckdb-ext-signing-key`
+  `[.pub]`), fingerprint
+  `sha256:4c421548f19f09dc51f5c1ec62c5f2ede6e26787af26ebce76dbadb08c98e994`.
+  The private key is a GitHub Actions repository secret
+  (`DUCKDB_EXT_SIGNING_KEY`) and never committed; the public key is
+  committed at `signing/zig-duckdb-ext-signing-key.pub`, alongside
+  `signing/duckdb-extension-repo.json` — the `.well-known` document
+  DuckDB's own repository-key auto-discovery expects
+  (`{"signature_keys": ["<the same PEM>"]}`).
+- `build.zig` gained a `dist-v2-signed` step (needs `-Dsigning-key=
+  <path to a PEM private key>`; a no-op without it, so a plain local
+  build is unaffected): signs `dist-v2`'s cross-built v2 extensions
+  with `sign_extension` and arranges them, gzipped, into a *separate*
+  `dist/signed/<version>/<platform>/...` tree — the unsigned tree this
+  ADR's "Decision" already publishes stays exactly as it was,
+  unaffected, at its original path.
+- `tools/verify_dist_v2_signed.sh` (+ `zig build verify-dist-v2-signed`)
+  proves the signed tree actually loads the way a real user would:
+  `CREATE EXTENSION REPOSITORY ... USING PUBLIC KEY` +
+  `LOAD ... FROM <repo>`, no `-unsigned` anywhere — mirrors
+  `verify_dist_v2.sh`'s existing unsigned-tree check, but deliberately
+  can't share its script, since a bare `LOAD` (what the unsigned
+  checker uses) never trusts a user repository's key by design (this
+  ADR's own earlier finding) — the two paths need genuinely different
+  SQL, not just a different URL.
+- **Verified end to end locally before wiring CI**, re-running this
+  ADR's earlier by-hand reproduction, now through the real build graph
+  and the real tagged `v2.0.0` CLI: `zig build dist-v2-signed
+  -Dsigning-key=~/.ssh/zig-duckdb-ext-signing-key` produced a correct
+  gzipped tree for every `cross_targets` platform, an independent
+  `openssl pkeyutl -verify` confirmed the written signature, and
+  `zig build verify-dist-v2-signed` (driving the real DuckDB CLI
+  through `CREATE EXTENSION REPOSITORY`/`INSTALL`/`LOAD ... FROM`)
+  installed and called both `zig_ext_v2` and `zig_ext_cookbook`
+  successfully, with no `-unsigned` flag, straight from the gzipped
+  files a real repository would serve.
+- `.github/workflows/release.yml`'s `build` job now also signs the v2
+  extensions into `dist/signed/` (decoding the secret into a 600-mode
+  temp file, never logged, deleted once signing finishes), and a new
+  `verify-v2-signed` job checks the result the same way
+  `verify_dist_v2_signed.sh` does locally, gating `deploy` alongside
+  the existing `verify-v2` job. Both the signing step and its verify
+  job no-op cleanly (exit 0, nothing published under `dist/signed/`)
+  if `DUCKDB_EXT_SIGNING_KEY` isn't set — e.g. a fork's own CI run,
+  which has no access to this repository's secrets — so nothing here
+  can break the existing unsigned v1/v2 publish path.
+- Not done here, left as a user-facing follow-up: updating the public
+  docs/landing page with the `CREATE EXTENSION REPOSITORY ... WITH
+  PREFIX 'https://<pages-url>/signed/'` instructions — this entry
+  records the mechanism now existing and working, not yet that it's
+  been announced anywhere outside this ADR.
+
 ## Consequences
 
 - Distribution becomes achievable with a GitHub Actions workflow this
@@ -411,11 +471,11 @@ instead of a copy).
   path specifically* unless/until this extension goes through
   community-extensions — stated here so it isn't rediscovered as a
   surprise or mistaken for a bug in the signing setup. It is NOT a
-  permanent fact of distributing this extension in general: v2's
-  `CREATE EXTENSION REPOSITORY` mechanism (see above) is a real, already-
-  confirmed path to self-signed, `-unsigned`-free distribution once this
-  extension is built against a shipped 2.0 and the v2 signing procedure
-  is worked out.
+  permanent fact of distributing this extension in general: the v2
+  extensions, as of the "self-signed v2 distribution, wired into CI"
+  follow-up below, publish a second, signed tree via `CREATE EXTENSION
+  REPOSITORY`/`LOAD ... FROM`, genuinely `-unsigned`-free, alongside
+  the unsigned tree every extension here still also publishes.
 - This is scoped to the real v1 extension (the one `zig build cross`
   already targets) — the parallel v2 extension stays an unreleased,
   unpublished prototype until DuckDB 2.0 actually ships, consistent with
