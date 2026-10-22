@@ -9,6 +9,12 @@ const zignal = @import("zignal");
 const zigcv = @import("zigcv");
 const stipple = @import("stipple.zig");
 
+/// Re-exported so callers that only have this module wired in (e.g.
+/// `init_v2_poc_stipple.zig`, which build.zig only imports as
+/// `stipple_image`) can still reach `stipple.default_shade_chars` without
+/// a separate `addImport("stipple", ...)`.
+pub const stipple_lib = stipple;
+
 /// Contrast boost applied to density during Lloyd relaxation's weighted-
 /// centroid sum (see `stipple.relaxOnce`'s own doc comment) — matches
 /// the reference `Weighted-Voronoi-Stippling` C++ tool (OpenCV's
@@ -39,6 +45,7 @@ pub fn stippleFromUrl(
     n_points: usize,
     iterations: usize,
     seed: u64,
+    shade_chars: [4]u21,
 ) ![]u8 {
     if (width == 0 or height == 0) return error.InvalidDimensions;
 
@@ -121,7 +128,7 @@ pub fn stippleFromUrl(
 
     try stipple.relax(allocator, points, density, w, h, iterations, contrast_gamma);
 
-    const glyphs = try stipple.renderCells(allocator, points, w, h, width, height);
+    const glyphs = try stipple.renderCells(allocator, points, w, h, width, height, shade_chars);
     defer allocator.free(glyphs);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
