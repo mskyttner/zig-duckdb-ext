@@ -102,6 +102,22 @@ jobs:
   # threaded target, confirmed live 2026-10-22 to work again after the bump) is not in this
   # job yet — verified so far only via an ad hoc, uncommitted browser page, not the committed
   # `verify_wasm_load_browser.cjs`/`browser/index.html` pair this job actually runs.
+  #
+  # duckdb-wasm's own leg is `continue-on-error`, 2026-10-22: confirmed, the hard way, that
+  # `fetch_engine.sh`'s "latest success on default branch" can't currently resolve to
+  # anything post-bump — official duckdb-wasm's `main.yml` has `on: push:` with no branch
+  # filter, so it should have run on the merge commit, but has zero check-runs attached to it
+  # at all (confirmed via that commit's own status API); the only green run found for the
+  # bump turned out to be a *different*, abandoned branch (`bump-duckdb-v2.0.0-alpha44357`,
+  # confirmed diverged from `main` — `ahead_by`/`behind_by: 44`, not an ancestor). The engine
+  # is real and live (shell.duckdb.org redeployed it the same day, `version()` reports
+  # `v2.0.0`/`Cyanoptera`, confirmed by downloading its actual `duckdb-eh.*.wasm`), just not
+  # reachable through this script's GitHub-Actions-artifact path — and that live deployment's
+  # own JS can't substitute either: its glue is generated together with that exact wasm build
+  # (confirmed: pairing it with the npm package's JS throws `ASM_CONSTS[e] is not a function`,
+  # an Emscripten JS/wasm version-pairing mismatch, not a defect in the built extension), and
+  # its worker is a bespoke, undocumented protocol, not the npm `createDuckDB` API this job's
+  # scripts drive. No reliable fresh artifact exists yet; self-heals once one does.
   wasm-verify:
     name: wasm-verify (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -114,11 +130,13 @@ jobs:
             emsdk_version: "6.0.12"
             wasm_step: "wasm-ext"
             platform: "wasm_mvp"
+            allow_failure: false
           - name: duckdb-wasm
             repo: duckdb/duckdb-wasm
             emsdk_version: "6.0.9"
             wasm_step: "wasm-ext-eh"
             platform: "wasm_eh"
+            allow_failure: true
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -144,6 +162,7 @@ jobs:
         run: bash tools/wasm_verify/fetch_engine.sh ${{ matrix.repo }} .tmp/engine
 
       - name: Verify the extension loads and runs for real (Node bindings)
+        continue-on-error: ${{ matrix.allow_failure }}
         run: |
           cd tools/wasm_verify
           npm install --no-audit --no-fund --silent
@@ -158,6 +177,7 @@ jobs:
         run: cd tools/wasm_verify && npx playwright install --with-deps chromium
 
       - name: Verify the extension loads and runs for real (real headless browser)
+        continue-on-error: ${{ matrix.allow_failure }}
         run: |
           cd tools/wasm_verify
           NODE_PATH="$(pwd)/node_modules" node verify_wasm_load_browser.cjs \
