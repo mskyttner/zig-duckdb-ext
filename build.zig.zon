@@ -213,6 +213,24 @@
             .hash = "zio-0.19.0-xHbVVBk2LQC-Vxp1X6o0y0rI0qGck1Uy2ctsd-kQoHR8",
             .lazy = true,
         },
+        // Parquet reader/writer (chicagobuss/zpq), needed only by the v2-poc
+        // `zig_v2_read_parquet` demo (src/ext/init_v2_poc_zpq.zig). Only
+        // `core.parquet`/`core.filter` are used (footer parsing, per-column-
+        // chunk decode, row-group pruning) — confirmed live that this
+        // never pulls in zpq's own `core.scan` aggregate-pipeline worker
+        // pool or its `io.*` surface (S3/TLS/epoll): `io.tls`'s
+        // `@import("boring_tls")` is only reached if something actually
+        // dereferences `zpq.io.*`, which this demo never does, so the
+        // fetched `boring_tls`/BoringSSL dependency sits in the package
+        // cache unbuilt (checked: no BoringSSL object files compile).
+        // `lazy = true`, same full-isolation reasoning as `zignal`/`zigcv`/
+        // `zio` above. Pinned to `main`'s HEAD at the time this was added
+        // (zpq has no tagged release yet).
+        .zpq = .{
+            .url = "git+https://github.com/chicagobuss/zpq#cbeea41c9c0c59c7692d6ed92091b7ecb42dd48d",
+            .hash = "zpq-0.5.1-LzbMxHSKegGiu6Ejyd4zi4664oAsRd3IlS-WzqS9M9Xt",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
