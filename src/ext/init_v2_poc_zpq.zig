@@ -22,6 +22,27 @@
 ///! zpq's scratch allocations accumulate across all of them, and vectorize the validity-bit
 ///! writer (`writeValidityBits` below: one `@reduce(.Or, ...)` per 64-row word instead of 64
 ///! scalar read-modify-writes) — see git history for the step-by-step benchmark progression.
+///!
+///! Filter pushdown (`pushdown` below, up to `max_pushdown_filters` recognized comparisons of
+///! `value <op> constant`): two independent layers, both built on zpq's `core.filter` surface, not
+///! `core.scan`'s aggregate engine —
+///!   - Whole-row-group skip: `filter_prune.pruneRowGroup` judges a row group from its column
+///!     chunk statistics alone (min/max/null_count), before any decode. `unknown`/`keep` still
+///!     decode normally; `skip` means the row group's bytes are never even sliced out of
+///!     `file_bytes`, let alone decoded; `always_match` (a full-match proof) skips the per-row
+///!     recheck below for that row group's rows, since they're already known to all pass.
+///!   - Per-row filter + compaction: no page-level statistics are wired (that would need the
+///!     footer's ColumnIndex/OffsetIndex, out of scope here), so a `keep`/`unknown` row group
+///!     still decodes in full; a `SelectionVector` then marks which decoded rows actually pass
+///!     (a NULL row never passes any comparison — standard SQL filter semantics), and its
+///!     iterator walks the marked rows in order while `filterCompact` compacts them down in
+///!     place inside the output vector's own buffer (same no-extra-copy approach `exec`'s
+///!     unfiltered path already uses for decode).
+///! Only `pruneRowGroup`'s metadata-only judgment is ever allowed to be an under-approximation
+///! (an OOM mid-`ast.join` falls back to a single leaf instead of the full AND, which only prunes
+///! less — always safe). The per-row step has no such fallback: an OOM building the
+///! `SelectionVector` fails the query with a real error instead of silently returning unfiltered
+///! rows, since skipping the filter there would be a correctness bug, not just a slower query.
 const std = @import("std");
 const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
@@ -30,6 +51,9 @@ const zpq = @import("zpq");
 const schema = zpq.core.schema;
 const metadata = zpq.core.parquet.metadata;
 const column = zpq.core.parquet.column;
+const ast = zpq.core.filter.ast;
+const prune = zpq.core.filter.prune;
+const selection = zpq.core.filter.selection;
 
 const Err = *v2.duckdb_v2_error_info_handle;
 
@@ -43,11 +67,20 @@ fn fail(err: Err, code: v2.DUCKDB_V2_ERROR, comptime fmt: []const u8, args: anyt
 const max_file_bytes = 1 << 30; // 1 GiB — PoC guardrail, not a real limit.
 const max_rows_per_batch = 2048;
 
+/// A recognized `value <op> constant` pushdown predicate, independent of DuckDB's own
+/// `v2.duckdb_v2_expression_handle` (which doesn't outlive the `pushdown` callback) and of zpq's
+/// `ast.Leaf(i64)` (which needs `col_idx` — not known as a fixed constant here the way a literal
+/// struct field would be, since it's `bind_data.col_idx`, resolved per file at bind time).
+const FilterSpec = struct { op: ast.Operator, value: i64 };
+const max_pushdown_filters = 4;
+
 const BindData = struct {
     file_bytes: []u8,
     meta: schema.FileMetaData,
     col_idx: usize,
     max_def: i32,
+    filters: [max_pushdown_filters]FilterSpec = undefined,
+    filter_count: usize = 0,
 };
 
 fn destroyBindData(ptr: *anyopaque) callconv(.c) void {
@@ -62,6 +95,12 @@ const GlobalState = struct {
     rg_idx: usize,
     reader: ?column.ColumnChunkReader(i64),
     done: bool,
+    /// Whether `pruneRowGroup` already proved every row of the row group
+    /// currently open in `reader` passes the pushed-down filter — set by
+    /// `openNextRowGroup`, read by `exec` to skip the redundant per-row
+    /// recheck for that row group. Meaningless (never read) when
+    /// `BindData.filter_count == 0`.
+    row_group_always_match: bool = true,
 };
 
 fn destroyGlobalState(ptr: *anyopaque) callconv(.c) void {
@@ -174,6 +213,29 @@ fn openNextRowGroup(state: *GlobalState, bind_data: *const BindData) void {
     while (state.rg_idx < bind_data.meta.row_groups.items.len) {
         const rg = &bind_data.meta.row_groups.items[state.rg_idx];
         state.rg_idx += 1;
+
+        state.row_group_always_match = true;
+        if (bind_data.filter_count > 0) {
+            var leaves: [max_pushdown_filters]ast.Filter = undefined;
+            for (bind_data.filters[0..bind_data.filter_count], 0..) |spec, i| {
+                leaves[i] = .{ .int64 = .{ .col_idx = bind_data.col_idx, .op = spec.op, .value = spec.value } };
+            }
+            // `ast.join` only allocates (the flattened `children` slice) when
+            // combining 2+ operands; the single-filter case returns that
+            // leaf unchanged, no allocation at all. An OOM here falls back
+            // to pruning with just the first filter instead of the full
+            // AND — a weaker, still-correct judgment (it can only prune
+            // LESS aggressively), unlike the per-row step below, which has
+            // no safe way to under-apply the filter.
+            const combined: ast.Filter = if (bind_data.filter_count == 1)
+                leaves[0]
+            else
+                ast.join(state.arena.allocator(), true, leaves[0..bind_data.filter_count]) catch leaves[0];
+            const decision = prune.pruneRowGroup(rg, combined, &bind_data.meta);
+            if (decision == .skip) continue; // whole row group pruned — never even sliced out of file_bytes
+            state.row_group_always_match = (decision == .always_match);
+        }
+
         const chunk = &rg.columns.items[bind_data.col_idx];
         const col_meta = chunk.meta_data orelse continue;
         const start = col_meta.dictionary_page_offset orelse col_meta.data_page_offset;
@@ -227,6 +289,50 @@ fn writeValidityBits(bits: [*]u64, def_levels: []const u32) void {
     }
 }
 
+fn evalFilters(specs: []const FilterSpec, value: i64) bool {
+    for (specs) |s| {
+        const pass = switch (s.op) {
+            .Eq => value == s.value,
+            .NotEq => value != s.value,
+            .Lt => value < s.value,
+            .LtEq => value <= s.value,
+            .Gt => value > s.value,
+            .GtEq => value >= s.value,
+        };
+        if (!pass) return false;
+    }
+    return true;
+}
+
+/// Filters and compacts `dest` in place against `specs`, using a `SelectionVector` to mark which
+/// rows pass (a NULL row never passes — standard SQL filter semantics: a NULL comparison is
+/// UNKNOWN, which WHERE treats as false) and its iterator to walk the marked rows in order while
+/// compacting — the write index never passes the read index, so this is safe in place. Every kept
+/// row is therefore non-NULL, so the caller never needs to touch the validity mask for the result
+/// of this call. Returns the compacted row count, or `null` if it already reported a real query
+/// failure through `err` — see this file's module doc comment on why there's no safe fallback
+/// here, unlike `pruneRowGroup`'s.
+fn filterCompact(specs: []const FilterSpec, max_def: i32, dest: []i64, def_levels: []const u32, err: Err) ?usize {
+    var sel = selection.SelectionVector.init(std.heap.c_allocator, dest.len) catch {
+        fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "zig_v2_read_parquet: out of memory building selection vector", .{});
+        return null;
+    };
+    defer sel.deinit();
+
+    for (0..dest.len) |i| {
+        const is_valid = max_def == 0 or def_levels[i] == 1;
+        if (!is_valid or !evalFilters(specs, dest[i])) sel.set(i, false);
+    }
+
+    var w: usize = 0;
+    var it = sel.iterator();
+    while (it.next()) |r| {
+        if (r != w) dest[w] = dest[r];
+        w += 1;
+    }
+    return w;
+}
+
 fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
     _ = context;
     var chunk: v2.duckdb_v2_data_chunk_handle = undefined;
@@ -274,7 +380,7 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
             state.reader.?.decode(dest)
         else
             state.reader.?.decodeWithLevels(dest, &def_levels);
-        const row_count = n catch {
+        var row_count = n catch {
             state.reader = null;
             state.done = true;
             break;
@@ -283,6 +389,25 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
             state.reader = null;
             openNextRowGroup(state, bind_data);
             continue;
+        }
+
+        if (bind_data.filter_count > 0 and !state.row_group_always_match) {
+            row_count = filterCompact(bind_data.filters[0..bind_data.filter_count], bind_data.max_def, dest[0..row_count], def_levels[0..row_count], err) orelse return;
+            // Zero matches in THIS BATCH is not the same thing as the
+            // reader being exhausted — `state.reader` is still mid-row-
+            // group and may well have a match a few batches further in
+            // (confirmed live: a batch straddling a selective filter's
+            // match can easily decode 2048 non-matching rows before
+            // reaching the one that passes). `continue` re-enters the
+            // `while (state.reader != null)` loop and decodes the next
+            // batch off the SAME still-live reader; only `decode`/
+            // `decodeWithLevels` itself returning 0 (checked above, before
+            // filtering) means the row group is actually done.
+            if (row_count == 0) continue;
+            // Every row `filterCompact` kept is non-NULL (see its doc
+            // comment), so there's no validity mask to write here.
+            if (v2.duckdb_v2_vector_set_size(value_vec, row_count, err) != .ERROR_NONE) return;
+            return;
         }
 
         if (v2.duckdb_v2_vector_set_size(value_vec, row_count, err) != .ERROR_NONE) return;
@@ -299,6 +424,92 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
     }
 
     if (v2.duckdb_v2_vector_set_size(value_vec, 0, err) != .ERROR_NONE) return;
+}
+
+// --- filter pushdown -------------------------------------------------------------------------
+
+fn opOf(t: v2.DUCKDB_V2_EXPRESSION_TYPE) ?ast.Operator {
+    return switch (t) {
+        .EXPRESSION_TYPE_COMPARE_EQUAL => .Eq,
+        .EXPRESSION_TYPE_COMPARE_NOTEQUAL => .NotEq,
+        .EXPRESSION_TYPE_COMPARE_LESSTHAN => .Lt,
+        .EXPRESSION_TYPE_COMPARE_LESSTHANOREQUALTO => .LtEq,
+        .EXPRESSION_TYPE_COMPARE_GREATERTHAN => .Gt,
+        .EXPRESSION_TYPE_COMPARE_GREATERTHANOREQUALTO => .GtEq,
+        else => null,
+    };
+}
+
+fn typeOf(e: v2.duckdb_v2_expression_handle, err: Err) ?v2.DUCKDB_V2_EXPRESSION_TYPE {
+    var t: v2.DUCKDB_V2_EXPRESSION_TYPE = undefined;
+    if (v2.duckdb_v2_expression_get_type(e, &t, err) != .ERROR_NONE) return null;
+    return t;
+}
+
+/// Recognizes `value <op> BIGINT constant`, the column always on the left (the optimizer rewrites
+/// `90 < value` to `value > 90` before this callback ever sees it, per the equivalent cookbook
+/// recipe, `table_pushdown.zig`, which this follows closely). Null means "not mine, apply it
+/// yourself" — a declined predicate never breaks correctness, only an optimization opportunity.
+/// `err` here is a scratch slot (see `pushdown` below): a failed introspection call is also just
+/// "not mine," never a query failure.
+fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, filter: v2.duckdb_v2_expression_handle, scratch: Err) ?FilterSpec {
+    const op = opOf(typeOf(filter, scratch) orelse return null) orelse return null;
+    var count: u64 = 0;
+    if (v2.duckdb_v2_expression_get_child_count(filter, &count, scratch) != .ERROR_NONE or count != 2) return null;
+    var left: v2.duckdb_v2_expression_handle = undefined;
+    var right: v2.duckdb_v2_expression_handle = undefined;
+    if (v2.duckdb_v2_expression_get_child(filter, 0, &left, scratch) != .ERROR_NONE) return null;
+    if (v2.duckdb_v2_expression_get_child(filter, 1, &right, scratch) != .ERROR_NONE) return null;
+    if ((typeOf(left, scratch) orelse return null) != .EXPRESSION_TYPE_BOUND_COLUMN_REF) return null;
+    if ((typeOf(right, scratch) orelse return null) != .EXPRESSION_TYPE_VALUE_CONSTANT) return null;
+
+    // The index in the expression is among the columns the query reads; this function declares
+    // exactly one ("value", index 0), so anything else means the predicate isn't on our column —
+    // can't happen in practice (there's nothing else to push a filter onto), but checked anyway
+    // rather than assumed.
+    var referenced: u64 = 0;
+    if (v2.duckdb_v2_expression_column_ref_get_index(left, &referenced, scratch) != .ERROR_NONE) return null;
+    var declared: u64 = 0;
+    if (v2.duckdb_v2_table_function_filter_pushdown_get_column_index(info, referenced, &declared, scratch) != .ERROR_NONE) return null;
+    if (declared != 0) return null;
+
+    var constant: v2.duckdb_v2_value_handle = undefined;
+    if (v2.duckdb_v2_expression_constant_get_value(right, &constant, scratch) != .ERROR_NONE) return null;
+    defer _ = v2.duckdb_v2_value_destroy(&constant);
+    var is_null = false;
+    if (v2.duckdb_v2_value_is_null(constant, &is_null, scratch) != .ERROR_NONE or is_null) return null;
+    var c: i64 = 0;
+    if (v2.duckdb_v2_value_get_bigint(constant, &c, scratch) != .ERROR_NONE) return null;
+    return .{ .op = op, .value = c };
+}
+
+fn pushdown(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
+    _ = context;
+    var bind_ptr: ?*anyopaque = null;
+    if (v2.duckdb_v2_table_function_filter_pushdown_get_bind_data(info, &bind_ptr, err) != .ERROR_NONE) return;
+    const bind_data: *BindData = @ptrCast(@alignCast(bind_ptr orelse return));
+
+    var count: u64 = 0;
+    if (v2.duckdb_v2_table_function_filter_pushdown_get_filter_count(info, &count, err) != .ERROR_NONE) return;
+    for (0..count) |i| {
+        if (bind_data.filter_count >= max_pushdown_filters) break;
+        var filter: v2.duckdb_v2_expression_handle = undefined;
+        if (v2.duckdb_v2_table_function_filter_pushdown_get_filter(info, i, &filter, err) != .ERROR_NONE) return;
+
+        // A failed introspection on one predicate means "not recognized," not "fail the query" —
+        // same reasoning as `table_pushdown.zig`'s cookbook recipe: a scratch error slot of its
+        // own, discarded, rather than the real `err` the caller cares about.
+        var scratch_slot: ?v2.duckdb_v2_error_info_handle = null;
+        const scratch: Err = @ptrCast(&scratch_slot);
+        defer if (scratch_slot) |*e| {
+            _ = v2.duckdb_v2_error_info_destroy(e);
+        };
+        const spec = recognize(info, filter, scratch) orelse continue;
+        bind_data.filters[bind_data.filter_count] = spec;
+        bind_data.filter_count += 1;
+        // From here on the scan applies it itself: the engine stops.
+        if (v2.duckdb_v2_table_function_filter_pushdown_accept(info, i, err) != .ERROR_NONE) return;
+    }
 }
 
 fn registerReadParquet(input: *const v2.duckdb_v2_extension_input, err: Err) !void {
@@ -340,6 +551,9 @@ fn registerReadParquet(input: *const v2.duckdb_v2_extension_input, err: Err) !vo
     }
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) {
         return error.FailedToSetExecCallback;
+    }
+    if (v2.duckdb_v2_table_function_set_filter_pushdown_callback(function, &pushdown, err) != .ERROR_NONE) {
+        return error.FailedToSetFilterPushdownCallback;
     }
 
     if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) {
