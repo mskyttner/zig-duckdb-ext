@@ -124,6 +124,15 @@ file size, instead of `readFileAlloc`-ing everything. A `BindData` built this wa
 `std.Io.File` instead of a whole-file buffer, and each row group's bytes get a positioned read on
 demand at decode time.
 
+**A table function's batch size above `STANDARD_VECTOR_SIZE` (2048) is only safe when every
+filter is either absent or actually pushed down and accepted.** A larger `vector_set_size` crashes
+DuckDB (`Vector::SetSize out of range`) the moment a filter gets *declined* and DuckDB's own
+executor applies it after the scan — the FILTER operator it inserts ties the scan's own chunk to
+2048 regardless of what was reserved. Test any batch size larger than 2048 against a
+declined-filter query specifically, not just no-filter/accepted-filter cases — they're not
+equivalent, and this one took a multi-column prototype's forced pushdown-decline to actually
+surface (see ADR-0009's addendum).
+
 **Benchmarking this CLI build**: always pass `-no-agent`. Without it, the CLI's own
 `AI_AGENT`-triggered "agent mode" (it prints a row-count estimate per query) runs a hidden second
 planning pass, so `bind` gets called twice per query — an artifact of this test harness, not a

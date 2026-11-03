@@ -93,6 +93,25 @@ drove the scan's parallelism — a materially different architecture, not attemp
 
 Result: 1→24 thread speedup went from 2.7x to ~5.3x, close to native's 5.6x.
 
+## Addendum (2026-11-03): `max_rows_per_batch` above 2048 crashes with a declined filter pushdown
+
+Discovered while prototyping multi-column `schema` support (`PLAN-zpq-multi.md`), but not
+specific to it: raising `max_rows_per_batch` past DuckDB's own `STANDARD_VECTOR_SIZE` (2048) —
+this PoC had it at 122880, a no-measurable-difference experiment from the parallel-scan
+benchmarking above — crashes DuckDB outright (`Vector::SetSize out of range... capacity 2048`)
+whenever `pushdown` declines a filter and DuckDB's own executor applies it after the scan
+instead. Reproduced on the single-column path too (a filter shape `recognize` doesn't
+understand, not just multi-column's forced decline), so this was always latent, just never
+exercised by this project's own testing until a declined-filter query actually got run against
+it. The physical FILTER operator DuckDB inserts after a scan whose filter it didn't accept
+appears to tie that scan's own chunk to the standard 2048-row size regardless of what
+`vector_set_size` is asked to reserve. Fixed by reverting to 2048 — the only value confirmed safe
+across every pipeline shape this function can end up in, and already known to cost nothing.
+
+**Lesson for any future v2 table function experimenting with a larger-than-standard batch
+size**: verify it against a query whose filter is declined, not only against no-filter and
+accepted-filter cases — the three are not equivalent, and only the third kind caught this.
+
 ## Consequences
 
 - **Positive**: no whole-file-in-memory ceiling (`max_file_bytes` is gone — deleted along with
