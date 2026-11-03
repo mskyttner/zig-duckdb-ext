@@ -163,12 +163,106 @@ fn destroyGlobalState(ptr: *anyopaque) callconv(.c) void {
     std.heap.c_allocator.destroy(state);
 }
 
+/// Phase 2 of PLAN-zpq-multi.md: the fixed-width physical types `ColumnChunkReader(T)` already
+/// supports (confirmed by reading `column.zig`'s own `PlainDecoderFor` — `T` is one of `i32`,
+/// `i64`, `f32`, `f64`, `bool`, or `[]const u8`; byte arrays are `BYTE_ARRAY`/
+/// `FIXED_LEN_BYTE_ARRAY`, a different, still-unverified decode shape per the plan's own item 4,
+/// not attempted here). One physical type is resolved per column at bind time and carried in its
+/// own `ResolvedColumn`; `Reader` below is the type-erasure this needs the moment more than one
+/// physical type can appear — chosen once per column in `claimNextRowGroup`, switched on in
+/// `exec`'s decode step via `decodeColumn`.
+const PhysicalType = enum { boolean, int32, int64, float, double };
+
+fn ZigType(comptime p: PhysicalType) type {
+    return switch (p) {
+        .boolean => bool,
+        .int32 => i32,
+        .int64 => i64,
+        .float => f32,
+        .double => f64,
+    };
+}
+
+/// The DuckDB logical type a resolved column's physical type becomes in the result — same
+/// Zig-type-to-`LOGICAL_TYPE_ID` correspondence `comptime_scalar_v2.zig`'s own `duckdbV2TypeId`
+/// uses, just the Parquet-physical-type side of it instead of a Zig function's return type.
+fn duckdbTypeIdFor(p: PhysicalType) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
+    return switch (p) {
+        .boolean => .LOGICAL_TYPE_ID_BOOLEAN,
+        .int32 => .LOGICAL_TYPE_ID_INTEGER,
+        .int64 => .LOGICAL_TYPE_ID_BIGINT,
+        .float => .LOGICAL_TYPE_ID_FLOAT,
+        .double => .LOGICAL_TYPE_ID_DOUBLE,
+    };
+}
+
+/// The canonical SQL spelling an explicit `schema` entry's `type` field must match
+/// (case-insensitively) for this physical type — not DuckDB's own type-name resolution (this
+/// PoC never calls `create_type_from_name` on it), just a fixed string this file checks a
+/// column's *actual* physical type against, the same way "must be `'BIGINT'`" worked before
+/// more than one type existed.
+fn sqlNameFor(p: PhysicalType) []const u8 {
+    return switch (p) {
+        .boolean => "BOOLEAN",
+        .int32 => "INTEGER",
+        .int64 => "BIGINT",
+        .float => "FLOAT",
+        .double => "DOUBLE",
+    };
+}
+
+/// `null` for a missing type (groups/the root have none — never actually passed a leaf's own
+/// `element.type`, but the field itself is `?Type`) or a Parquet physical type this PoC doesn't
+/// support: `INT96` (legacy timestamp — Phase 2 item 6, low priority), `BYTE_ARRAY`/
+/// `FIXED_LEN_BYTE_ARRAY` (Phase 2 item 4, genuinely unverified, not just unimplemented — see
+/// this file's module doc comment).
+fn physicalTypeOf(t: ?schema.Type) ?PhysicalType {
+    return switch (t orelse return null) {
+        .BOOLEAN => .boolean,
+        .INT32 => .int32,
+        .INT64 => .int64,
+        .FLOAT => .float,
+        .DOUBLE => .double,
+        .INT96, .BYTE_ARRAY, .FIXED_LEN_BYTE_ARRAY => null,
+    };
+}
+
+/// Type-erased `ColumnChunkReader(T)`, one variant per `PhysicalType` — needed the moment more
+/// than one physical type can appear, even one column at a time across different queries (this
+/// is also Phase 1's own `readers: []?ColumnChunkReader(T)` type-erasure need, solved once here
+/// instead of twice, per PLAN-zpq-multi.md's own suggested order).
+const Reader = union(PhysicalType) {
+    boolean: column.ColumnChunkReader(bool),
+    int32: column.ColumnChunkReader(i32),
+    int64: column.ColumnChunkReader(i64),
+    float: column.ColumnChunkReader(f32),
+    double: column.ColumnChunkReader(f64),
+};
+
+/// Decodes up to `dest.len` rows of `reader`'s own physical type into `out_data` (the vector's
+/// own buffer, already reserved by the caller) and, when `max_def != 0`, into `def_levels` —
+/// one `switch` arm per `PhysicalType`, since each needs its own `T` for
+/// `ColumnChunkReader(T).decode`/`decodeWithLevels`. `n` bounds how many rows to decode (the
+/// batch's max capacity for column 0, or a already-known `row_count` for every other column —
+/// see `exec`).
+fn decodeColumn(reader: *Reader, max_def: i32, out_data: ?*anyopaque, n: usize, def_levels: []u32) column.Error!usize {
+    switch (reader.*) {
+        inline else => |*r, tag| {
+            const T = ZigType(tag);
+            // SAFETY: `out_data` is this column's own vector buffer, declared with the logical
+            // type `duckdbTypeIdFor` maps this same `PhysicalType` to in `bind`.
+            const out: [*]T = @ptrCast(@alignCast(out_data));
+            return if (max_def == 0) r.decode(out[0..n]) else r.decodeWithLevels(out[0..n], def_levels[0..n]);
+        },
+    }
+}
+
 /// One thread's own scan state — nothing here is ever touched by another thread.
 const LocalState = struct {
     arena: std.heap.ArenaAllocator,
     /// One reader per `BindData.cols` entry, same order, all backed by the same row group —
     /// see `claimNextRowGroup`. Owned (`std.heap.c_allocator`), sized once in `initLocal`.
-    readers: []?column.ColumnChunkReader(i64),
+    readers: []?Reader,
     /// `exec`'s own scratch for `decodeWithLevels`, one `max_rows_per_batch`-sized segment per
     /// column — allocated once here instead of per batch so a row group with many batches
     /// doesn't grow the arena repeatedly. Owned, sized `cols.len * max_rows_per_batch`.
@@ -211,18 +305,18 @@ fn copyArgString(info: v2.duckdb_v2_function_bind_info_handle, index: u64, err: 
     return std.heap.c_allocator.dupe(u8, ptr[0..out.len]);
 }
 
-const ResolvedColumn = struct { col_idx: usize, max_def: i32 };
+const ResolvedColumn = struct { col_idx: usize, max_def: i32, phys: PhysicalType };
 
 /// Resolves `column_name` to a leaf index and validates it's a shape this
-/// PoC supports: physical type INT64, not repeated (max_rep == 0), and at
-/// most singly-nullable (max_def <= 1 — REQUIRED or top-level OPTIONAL).
+/// PoC supports: a fixed-width physical type (`physicalTypeOf`), not repeated (max_rep == 0),
+/// and at most singly-nullable (max_def <= 1 — REQUIRED or top-level OPTIONAL).
 fn resolveSupportedColumn(meta: *const schema.FileMetaData, column_name: []const u8) !ResolvedColumn {
     const col_idx = try metadata.resolveColumn(meta, column_name);
     var scratch = schema.LeafIterator.init(meta.schema.items);
     const leaf = meta.leafAt(col_idx, &scratch) orelse return error.UnknownColumn;
     if (leaf.max_def > 1 or leaf.max_rep != 0) return error.UnsupportedColumnShape;
-    if (leaf.element.type != .INT64) return error.UnsupportedColumnType;
-    return .{ .col_idx = col_idx, .max_def = leaf.max_def };
+    const phys = physicalTypeOf(leaf.element.type) orelse return error.UnsupportedColumnType;
+    return .{ .col_idx = col_idx, .max_def = leaf.max_def, .phys = phys };
 }
 
 const Footer = struct { meta: schema.FileMetaData, footer_bytes: []u8 };
@@ -280,13 +374,15 @@ fn childVarcharDupe(value: v2.duckdb_v2_value_handle, index: u64, allocator: std
 
 /// Resolves the `schema` argument to the list of result columns, in output order: every entry of
 /// an explicit, non-empty `schema` MAP (keys are file column names; each entry's STRUCT child 0
-/// is the output name, child 1 the declared type — rejected unless `'BIGINT'`, this PoC's only
-/// supported physical type so far), or, when `schema` is empty (its default), every INT64-
-/// eligible leaf column in the file's own schema order, unrenamed. See this file's module doc
-/// comment for why an explicit `schema` is the only way to select fewer than all the eligible
-/// columns, and why a declared non-BIGINT type is a hard error rather than a silent skip (the
-/// caller asked for that column by name; silently dropping it is a correctness surprise, not an
-/// optimization).
+/// is the output name, child 1 the declared type — checked against the column's own *actual*
+/// resolved physical type, via `sqlNameFor`, not a fixed string: `'BIGINT'` for an INT64 column,
+/// `'INTEGER'` for INT32, and so on), or, when `schema` is empty (its default), every leaf column
+/// in the file's own schema order whose physical type this PoC supports at all (`physicalTypeOf`
+/// — fixed-width only, see this file's module doc comment), unrenamed. See this file's module
+/// doc comment for why an explicit `schema` is the only way to select fewer than all the eligible
+/// columns, and why a declared type that doesn't match the column's own is a hard error rather
+/// than a silent skip (the caller asked for that column by name; silently dropping it is a
+/// correctness surprise, not an optimization).
 fn resolveColumns(meta: *const schema.FileMetaData, schema_value: v2.duckdb_v2_value_handle, allocator: std.mem.Allocator, err: Err) ![]NamedColumn {
     var child_count: u64 = 0;
     if (v2.duckdb_v2_value_get_child_count(schema_value, &child_count, err) != .ERROR_NONE) {
@@ -302,10 +398,11 @@ fn resolveColumns(meta: *const schema.FileMetaData, schema_value: v2.duckdb_v2_v
     if (child_count == 0) {
         var it = schema.LeafIterator.init(meta.schema.items);
         while (it.next()) |leaf| {
-            if (leaf.max_rep != 0 or leaf.max_def > 1 or leaf.element.type != .INT64) continue;
+            if (leaf.max_rep != 0 or leaf.max_def > 1) continue;
+            const phys = physicalTypeOf(leaf.element.type) orelse continue;
             const name = try allocator.dupe(u8, leaf.element.name);
             errdefer allocator.free(name);
-            try cols.append(allocator, .{ .col = .{ .col_idx = leaf.index, .max_def = leaf.max_def }, .name = name });
+            try cols.append(allocator, .{ .col = .{ .col_idx = leaf.index, .max_def = leaf.max_def, .phys = phys }, .name = name });
         }
         if (cols.items.len == 0) return error.NoSupportedColumns;
         return cols.toOwnedSlice(allocator);
@@ -322,11 +419,11 @@ fn resolveColumns(meta: *const schema.FileMetaData, schema_value: v2.duckdb_v2_v
         }
         defer _ = v2.duckdb_v2_value_destroy(&entry);
 
+        const resolved = resolveSupportedColumn(meta, file_col_name) catch return error.UnsupportedSchemaColumn;
         const type_name = try childVarcharDupe(entry, 1, allocator, err);
         defer allocator.free(type_name);
-        if (!std.ascii.eqlIgnoreCase(type_name, "BIGINT")) return error.UnsupportedSchemaType;
+        if (!std.ascii.eqlIgnoreCase(type_name, sqlNameFor(resolved.phys))) return error.UnsupportedSchemaType;
 
-        const resolved = resolveSupportedColumn(meta, file_col_name) catch return error.UnsupportedSchemaColumn;
         const out_name = try childVarcharDupe(entry, 0, allocator, err);
         errdefer allocator.free(out_name);
         try cols.append(allocator, .{ .col = resolved, .name = out_name });
@@ -382,17 +479,20 @@ fn bind(
         std.heap.c_allocator.free(named_cols);
     }
 
-    var bigint_type: v2.duckdb_v2_logical_type_handle = undefined;
-    if (helpers.createTypeFromId(context, .LOGICAL_TYPE_ID_BIGINT, &bigint_type, err) != .ERROR_NONE) {
-        meta.deinit(std.heap.c_allocator);
-        std.heap.c_allocator.free(footer.footer_bytes);
-        file.close(io);
-        return;
-    }
-    defer _ = v2.duckdb_v2_logical_type_destroy(&bigint_type);
+    // One logical type per column — they're no longer all BIGINT now that Phase 2 resolves each
+    // column's own physical type (`nc.col.phys`); created and destroyed per iteration rather
+    // than hoisted, since `duckdbTypeIdFor` can differ from one column to the next.
     for (named_cols) |nc| {
+        var col_type: v2.duckdb_v2_logical_type_handle = undefined;
+        if (helpers.createTypeFromId(context, duckdbTypeIdFor(nc.col.phys), &col_type, err) != .ERROR_NONE) {
+            meta.deinit(std.heap.c_allocator);
+            std.heap.c_allocator.free(footer.footer_bytes);
+            file.close(io);
+            return;
+        }
+        defer _ = v2.duckdb_v2_logical_type_destroy(&col_type);
         const col_name = helpers.str(nc.name);
-        if (v2.duckdb_v2_table_function_bind_add_result_column(result, &col_name, bigint_type, err) != .ERROR_NONE) {
+        if (v2.duckdb_v2_table_function_bind_add_result_column(result, &col_name, col_type, err) != .ERROR_NONE) {
             meta.deinit(std.heap.c_allocator);
             std.heap.c_allocator.free(footer.footer_bytes);
             file.close(io);
@@ -452,7 +552,7 @@ fn initLocal(info: v2.duckdb_v2_table_function_init_local_info_handle, context: 
     if (v2.duckdb_v2_table_function_init_local_get_bind_data(info, &bind_ptr, err) != .ERROR_NONE) return;
     const bind_data: *const BindData = @ptrCast(@alignCast(bind_ptr orelse return));
 
-    const readers = std.heap.c_allocator.alloc(?column.ColumnChunkReader(i64), bind_data.cols.len) catch return;
+    const readers = std.heap.c_allocator.alloc(?Reader, bind_data.cols.len) catch return;
     @memset(readers, null);
     const def_levels = std.heap.c_allocator.alloc(u32, bind_data.cols.len * max_rows_per_batch) catch {
         std.heap.c_allocator.free(readers);
@@ -557,12 +657,14 @@ fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const
                 return false;
             }
 
-            reader_slot.* = column.ColumnChunkReader(i64).init(
-                chunk_bytes,
-                col_meta.codec,
-                .{ .max_def = spec.max_def, .max_rep = 0 },
-                local.arena.allocator(),
-            );
+            const levels: schema.Levels = .{ .max_def = spec.max_def, .max_rep = 0 };
+            reader_slot.* = switch (spec.phys) {
+                .boolean => .{ .boolean = column.ColumnChunkReader(bool).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
+                .int32 => .{ .int32 = column.ColumnChunkReader(i32).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
+                .int64 => .{ .int64 = column.ColumnChunkReader(i64).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
+                .float => .{ .float = column.ColumnChunkReader(f32).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
+                .double => .{ .double = column.ColumnChunkReader(f64).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
+            };
         }
         return true;
     }
@@ -604,6 +706,20 @@ fn writeValidityBits(bits: [*]u64, def_levels: []const u32) void {
     }
 }
 
+/// Moves element `r` to slot `w` of `ptr` — one `switch` arm per `PhysicalType`, needed because
+/// `outs` (see `exec`/`filterAndCompactAll`) is raw `*anyopaque`: columns can have different
+/// element sizes now (Phase 2), so a `[*]i64`-typed move would read/write the wrong stride for
+/// anything narrower (`bool`, `i32`, `f32`) or alias the wrong bytes entirely.
+fn moveElement(phys: PhysicalType, ptr: *anyopaque, w: usize, r: usize) void {
+    switch (phys) {
+        inline else => |tag| {
+            const T = ZigType(tag);
+            const p: [*]T = @ptrCast(@alignCast(ptr));
+            p[w] = p[r];
+        },
+    }
+}
+
 fn evalFilter(spec: FilterSpec, value: i64) bool {
     return switch (spec.op) {
         .Eq => value == spec.value,
@@ -628,7 +744,7 @@ fn evalFilter(spec: FilterSpec, value: i64) bool {
 /// row count, or `null` if it already reported a real query failure through `err` (an OOM
 /// building the selection vector) — see this file's module doc comment on why there's no safe
 /// fallback here, unlike `pruneRowGroup`'s.
-fn filterAndCompactAll(bind_data: *const BindData, local: *LocalState, outs: []const [*]i64, row_count: usize, err: Err) ?usize {
+fn filterAndCompactAll(bind_data: *const BindData, local: *LocalState, outs: []const *anyopaque, row_count: usize, err: Err) ?usize {
     var sel = selection.SelectionVector.init(std.heap.c_allocator, row_count) catch {
         fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory building selection vector", .{});
         return null;
@@ -637,7 +753,9 @@ fn filterAndCompactAll(bind_data: *const BindData, local: *LocalState, outs: []c
 
     for (bind_data.filters[0..bind_data.filter_count]) |spec| {
         const col = bind_data.cols[spec.declared_col];
-        const dest = outs[spec.declared_col];
+        // SAFETY: `pushdown` only ever accepts a filter whose column resolved to `.int64` (see
+        // its own guard), so this cast is sound.
+        const dest: [*]i64 = @ptrCast(@alignCast(outs[spec.declared_col]));
         const levels = defLevelsFor(local, spec.declared_col);
         for (0..row_count) |i| {
             const is_valid = col.max_def == 0 or levels[i] == 1;
@@ -649,8 +767,8 @@ fn filterAndCompactAll(bind_data: *const BindData, local: *LocalState, outs: []c
     var it = sel.iterator();
     while (it.next()) |r| {
         if (r != w) {
-            for (bind_data.cols, 0..) |spec, c| {
-                outs[c][w] = outs[c][r];
+            for (bind_data.cols, outs, 0..) |spec, out_ptr, c| {
+                moveElement(spec.phys, out_ptr, w, r);
                 if (spec.max_def != 0) {
                     const levels = defLevelsFor(local, c);
                     levels[w] = levels[r];
@@ -709,15 +827,11 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
         if (v2.duckdb_v2_vector_set_size(vec0, max_rows_per_batch, err) != .ERROR_NONE) return;
         var out0_data: ?*anyopaque = null;
         if (v2.duckdb_v2_vector_get_data_mutable(vec0, &out0_data, err) != .ERROR_NONE) return;
-        // SAFETY: `vec0` was declared BIGINT in `bind` above.
-        const out0: [*]i64 = @ptrCast(@alignCast(out0_data));
-        const dest0 = out0[0..max_rows_per_batch];
         const levels0 = defLevelsFor(local, 0);
 
-        const n = if (bind_data.cols[0].max_def == 0)
-            local.readers[0].?.decode(dest0)
-        else
-            local.readers[0].?.decodeWithLevels(dest0, levels0);
+        // SAFETY: `out0_data` is this column's own vector buffer, declared with the logical
+        // type `duckdbTypeIdFor` maps `bind_data.cols[0].phys` to in `bind`.
+        const n = decodeColumn(&local.readers[0].?, bind_data.cols[0].max_def, out0_data, max_rows_per_batch, levels0);
         var row_count = n catch {
             for (local.readers) |*r| r.* = null;
             local.done = true;
@@ -733,18 +847,21 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
         // reference any of them — collect each column's own vector handle and output pointer as
         // we go, needed either way: for the unfiltered write-out below, or to both evaluate and
         // then compact every column once filtering (if any) has decided the surviving rows.
-        // `local.arena` already backs this thread's own per-row-group scratch (reset in
-        // `claimNextRowGroup`), so these small per-batch arrays live there too.
+        // Raw `*anyopaque`, not a typed pointer: columns can now have different physical types
+        // (Phase 2), so `decodeColumn`/`moveElement`/the filtered column's own cast in
+        // `filterAndCompactAll` each pick the right `T` themselves. `local.arena` already backs
+        // this thread's own per-row-group scratch (reset in `claimNextRowGroup`), so these small
+        // per-batch arrays live there too.
         const vecs = local.arena.allocator().alloc(v2.duckdb_v2_vector_handle, bind_data.cols.len) catch {
             fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory", .{});
             return;
         };
         vecs[0] = vec0;
-        const outs = local.arena.allocator().alloc([*]i64, bind_data.cols.len) catch {
+        const outs = local.arena.allocator().alloc(*anyopaque, bind_data.cols.len) catch {
             fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory", .{});
             return;
         };
-        outs[0] = out0;
+        outs[0] = out0_data.?;
 
         // Every other column shares this row group's row count — decode each straight into its
         // own vector's buffer, bounded to exactly `row_count` (not the batch's max capacity):
@@ -759,12 +876,8 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
             if (v2.duckdb_v2_vector_set_size(vec, max_rows_per_batch, err) != .ERROR_NONE) return;
             var out_data: ?*anyopaque = null;
             if (v2.duckdb_v2_vector_get_data_mutable(vec, &out_data, err) != .ERROR_NONE) return;
-            const out: [*]i64 = @ptrCast(@alignCast(out_data));
             const levels = defLevelsFor(local, i);
-            const m = if (spec.max_def == 0)
-                reader_slot.*.?.decode(out[0..row_count])
-            else
-                reader_slot.*.?.decodeWithLevels(out[0..row_count], levels[0..row_count]);
+            const m = decodeColumn(&reader_slot.*.?, spec.max_def, out_data, row_count, levels);
             const count = m catch |e| {
                 fail(err, .ERROR_IO_GENERAL, "read_zpq: column {d} failed to decode row group {d}: {s}", .{ i, local.rg_idx, @errorName(e) });
                 return;
@@ -774,7 +887,7 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
                 return;
             }
             vecs[i] = vec;
-            outs[i] = out;
+            outs[i] = out_data.?;
         }
 
         if (bind_data.filter_count > 0 and !local.row_group_always_match) {
@@ -902,6 +1015,13 @@ fn pushdown(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, conte
             _ = v2.duckdb_v2_error_info_destroy(e);
         };
         const spec = recognize(info, filter, scratch) orelse continue;
+        // `value_get_bigint` above (inside `recognize`) already declines any constant that
+        // isn't integer-typed, which in practice means a comparison against a non-INT64 column
+        // would already fail there — but checked explicitly here too, rather than relied on
+        // incidentally: `evalFilter`/`filterAndCompactAll` read the filtered column's own
+        // decoded array as `[*]i64` (see their own doc comments), so this guard keeps that cast
+        // sound by construction, not just by accident of how DuckDB happens to type constants.
+        if (bind_data.cols[spec.declared_col].phys != .int64) continue;
         bind_data.filters[bind_data.filter_count] = spec;
         bind_data.filter_count += 1;
         // From here on the scan applies it itself: the engine stops.

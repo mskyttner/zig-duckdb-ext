@@ -85,6 +85,43 @@ Independent of phase 1 — can be done first, second, or interleaved.
    `core/parquet/int96.zig`, so the decode primitive exists; needs wiring plus a 12-byte →
    DuckDB-TIMESTAMP conversion. Low priority — only worth doing if a real file actually needs it.
 
+### Phase 2 items 1-3: implemented (2026-11-03)
+
+Verified before coding, not assumed: `column.zig`'s own `PlainDecoderFor(comptime T: type)` lists
+exactly `i32`, `i64`, `f32`, `f64`, `bool`, and `[]const u8` as the types `ColumnChunkReader(T)`
+supports — confirming items 1-2's "mechanically identical, modulo type erasure" claim before
+writing any code, and confirming `[]const u8` (item 4's byte-array case) is a separately-gated
+decode shape not touched here.
+
+Built as scoped: `PhysicalType` enum (`boolean`/`int32`/`int64`/`float`/`double`) plus
+`ZigType`/`duckdbTypeIdFor`/`sqlNameFor`/`physicalTypeOf` comptime/lookup helpers;
+`ResolvedColumn` gained a `phys` field; `Reader = union(PhysicalType) { ... ColumnChunkReader(T)
+... }` is the shared type-erasure both this phase and Phase 1's `readers: []?ColumnChunkReader(T)`
+needed (solved once, per the plan's own suggested order) — `LocalState.readers` is now
+`[]?Reader`. `bind` creates one logical type per column from its own `phys` instead of one shared
+BIGINT type for all. `exec`'s per-column decode goes through one new comptime-dispatched
+`decodeColumn` instead of five copy-pasted blocks; `filterAndCompactAll`'s per-column compaction
+goes through `moveElement`, since `outs` is now raw `*anyopaque` (columns can have different
+element sizes, so a `[*]i64`-typed move would read/write the wrong stride for anything
+narrower). Filter pushdown stays implicitly INT64-only: `pushdown` now explicitly rejects a
+filter whose column didn't resolve to `.int64` (previously true only by accident of
+`duckdb_v2_value_get_bigint` happening to fail for non-integer constants).
+
+An explicit `schema` entry's declared `type` now checks against the column's own *actual*
+resolved physical type via `sqlNameFor` (`'INTEGER'` for INT32, `'BOOLEAN'` for BOOLEAN, etc.),
+not a hardcoded `'BIGINT'` string; the empty-schema auto-select path picks up every
+Phase-2-supported physical type, not just INT64.
+
+Verified against a 5-column fixture (`BIGINT`/`INTEGER`/`BOOLEAN`/`FLOAT`/`DOUBLE`, matching
+real `COPY ... TO PARQUET` output types for each, not assumed to round-trip): default (all 5
+columns, mixed types) and explicit (renamed, mixed types) schemas against native `read_parquet`;
+a declared-type mismatch rejected with a clear error; a cross-type misalignment check (5 distinct
+per-row relationships checked at once, zero mismatches); filter pushdown declining on a non-
+INT64 column but staying correct (DuckDB's own post-scan filter), and still working on an INT64
+column alongside other-typed columns in the same query; `threads=1`/`24` correctness. All of
+Phase 1's own regression fixtures (TPCH, `multi3`, the nullable fixture, the declined-filter
+crash guard) re-checked and still passing.
+
 Validate each new type against DuckDB's own `COPY ... TO PARQUET` output for that type, the same
 way the INT64 OPTIONAL-by-default discovery happened — don't assume a type round-trips correctly
 until checked against a real file DuckDB itself wrote.
