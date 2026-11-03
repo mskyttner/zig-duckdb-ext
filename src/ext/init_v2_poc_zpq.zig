@@ -75,7 +75,25 @@ fn fail(err: Err, code: v2.DUCKDB_V2_ERROR, comptime fmt: []const u8, args: anyt
 }
 
 const max_file_bytes = 1 << 30; // 1 GiB — PoC guardrail, not a real limit.
-const max_rows_per_batch = 2048;
+/// Not DuckDB's `STANDARD_VECTOR_SIZE` (2048) — the real v2 API's own doc comment on
+/// `duckdb_v2_vector_set_size` ("reserves enough space for size logical elements") says nothing
+/// about a 2048 cap, unlike v1's fixed-size vectors. 122880 is the row-group size DuckDB's own
+/// docs (duckdb.org/docs/2.0/guides/performance/file_formats, "The Effect of Row Group Sizes")
+/// found fastest in a row-group-size microbenchmark — used here as a reasonable order of
+/// magnitude for "fewer, bigger `exec` calls," not a value with any special meaning on this side.
+///
+/// Confirmed live: genuinely honored, not silently clamped back to 2048 somewhere deeper in the
+/// engine (correctness, row order, and filtered-row counts all still match native `read_parquet`
+/// exactly at this size, re-checked after the change). But also confirmed live: it made no
+/// measurable difference to wall-clock time at either `threads=1` or `threads=24` on a 30M-row,
+/// 60-row-group file — same timings, same `user` CPU time, as at `max_rows_per_batch = 2048`.
+/// So the ~48x reduction in how many times `decode`/`decodeWithLevels` gets called per row group
+/// was never the bottleneck; whatever explains this PoC's weaker thread-count scaling than
+/// native `read_parquet`'s (2.7x vs 5.6x going 1->24 threads, see PLAN-zpq-parallel.md) lives
+/// somewhere else — likely how the engine schedules/dispatches `exec` calls across the claimed
+/// threads, not in this file's own decode loop. Kept at this size anyway: still correct, still
+/// fewer round-trips, just not the fix for the scaling gap it was tried as.
+const max_rows_per_batch = 122880;
 
 /// A recognized `value <op> constant` pushdown predicate, independent of DuckDB's own
 /// `v2.duckdb_v2_expression_handle` (which doesn't outlive the `pushdown` callback) and of zpq's
