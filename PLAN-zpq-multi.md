@@ -122,6 +122,26 @@ column alongside other-typed columns in the same query; `threads=1`/`24` correct
 Phase 1's own regression fixtures (TPCH, `multi3`, the nullable fixture, the declined-filter
 crash guard) re-checked and still passing.
 
+**Benchmarked against real TPCH data, not a synthetic fixture**: the real `dbgen(sf=5)`
+`lineitem` table, projected to `l_orderkey::BIGINT`, `l_linenumber::INTEGER`,
+`l_quantity::DOUBLE`, `l_discount::FLOAT`, `(l_returnflag = 'R') AS is_returned` (`BOOLEAN`) —
+29,999,795 rows, 60 row groups — so every Phase 2 type is exercised in one file, not just the
+single-type fixtures above. `SUM`/`count_if` over all 5 columns (forces full decode of every
+one), `-no-agent`, repeated runs for stability, same methodology as PLAN-zpq-parallel.md's own
+benchmark:
+
+| | `threads=1` | `threads=24` | speedup (1->24) |
+|---|---|---|---|
+| native `read_parquet` | ~0.232s | ~0.030s | ~7.6x |
+| `read_zpq` | ~0.208s | ~0.030s | ~6.9x |
+
+`read_zpq` is still ~1.1x faster single-threaded (same specialized-decode-loop advantage the
+INT64-only benchmark found), and at full parallelism the two are now essentially tied in
+absolute wall time — `read_zpq`'s own scaling (6.9x) is slightly weaker than native's (7.6x), the
+same shape as PLAN-zpq-parallel.md's own finding, but far closer than that doc's original
+2.7x-vs-5.6x gap (before the footer-only-read fix): going from one INT64 column to five mixed-
+type columns didn't introduce any new scaling cost of its own.
+
 Validate each new type against DuckDB's own `COPY ... TO PARQUET` output for that type, the same
 way the INT64 OPTIONAL-by-default discovery happened — don't assume a type round-trips correctly
 until checked against a real file DuckDB itself wrote.
