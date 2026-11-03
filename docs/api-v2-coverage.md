@@ -8,7 +8,7 @@ proof-of-concept extension and the worked examples. It says that something calls
 behavior a test pins. Functions marked *unstable* are only in the API table when DuckDB is built with
 `DUCKDB_V2_API_ALLOW_UNSTABLE`.
 
-620 functions (620 unstable) in 39 spec modules, from 71 scanned source files. Referenced by the extension: **374**; by the extension or the PoC: **385**.
+620 functions (620 unstable) in 39 spec modules, from 72 scanned source files. Referenced by the extension: **374**; by the extension or the PoC: **386**.
 
 | module | functions | unstable | ext | ext or poc | not referenced |
 |---|---:|---:|---:|---:|---:|
@@ -50,7 +50,7 @@ behavior a test pins. Functions marked *unstable* are only in the API table when
 | sql_statement | 10 | 10 | 9 | 9 | 1 |
 | tokenizer | 4 | 4 | 4 | 4 | 0 |
 | value | 73 | 73 | 27 | 30 | 43 |
-| vector | 22 | 22 | 14 | 14 | 8 |
+| vector | 22 | 22 | 14 | 15 | 7 |
 
 ## Not referenced
 
@@ -100,5 +100,5 @@ By module; the `duckdb_v2_` prefix is left out and *(u)* marks an unstable funct
 
 **value**: `value_get_usmallint` *(u)*, `value_get_uint` *(u)*, `value_get_ubigint` *(u)*, `value_get_uhugeint` *(u)*, `value_get_hugeint` *(u)*, `value_get_blob` *(u)*, `value_get_date` *(u)*, `value_get_time` *(u)*, `value_get_time_ns` *(u)*, `value_get_time_tz` *(u)*, `value_get_timestamp` *(u)*, `value_get_timestamp_sec` *(u)*, `value_get_timestamp_ms` *(u)*, `value_get_timestamp_ns` *(u)*, `value_get_timestamp_tz` *(u)*, `value_get_timestamp_tz_ns` *(u)*, `value_get_interval` *(u)*, `value_get_uuid` *(u)*, `value_get_decimal` *(u)*, `value_create_null` *(u)*, `value_create_usmallint` *(u)*, `value_create_uint` *(u)*, `value_create_ubigint` *(u)*, `value_create_uhugeint` *(u)*, `value_create_hugeint` *(u)*, `value_create_date` *(u)*, `value_create_time` *(u)*, `value_create_time_ns` *(u)*, `value_create_time_tz` *(u)*, `value_create_timestamp` *(u)*, `value_create_timestamp_sec` *(u)*, `value_create_timestamp_ms` *(u)*, `value_create_timestamp_ns` *(u)*, `value_create_timestamp_tz` *(u)*, `value_create_timestamp_tz_ns` *(u)*, `value_create_interval` *(u)*, `value_create_decimal` *(u)*, `value_create_uuid` *(u)*, `value_create_bit` *(u)*, `value_create_bignum` *(u)*, `value_create_tuple` *(u)*, `value_get_logical_type` *(u)*, `value_to_string` *(u)*
 
-**vector**: `vector_get_vector_type` *(u)*, `vector_get_size` *(u)*, `vector_cast` *(u)*, `vector_make_constant` *(u)*, `vector_make_sequence` *(u)*, `vector_flat_get_validity_mutable` *(u)*, `vector_constant_set_valid` *(u)*, `vector_get_child_count` *(u)*
+**vector**: `vector_get_vector_type` *(u)*, `vector_get_size` *(u)*, `vector_cast` *(u)*, `vector_make_constant` *(u)*, `vector_make_sequence` *(u)*, `vector_constant_set_valid` *(u)*, `vector_get_child_count` *(u)*
 

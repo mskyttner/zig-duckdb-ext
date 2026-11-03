@@ -11,8 +11,8 @@
 ///! pulling in `zpq`, so nothing else is ever affected if it has trouble building or fetching.
 ///!
 ///! Deliberately narrow: one INT64 column, REQUIRED or singly-OPTIONAL (max_def <= 1), never
-///! repeated; whole file read into memory; single-threaded scan; no filter pushdown, no row_gate.
-///! OPTIONAL support isn't a nice-to-have — DuckDB's own `COPY ... TO PARQUET` emits columns as
+///! repeated; whole file read into memory; no row_gate. OPTIONAL support isn't a nice-to-have —
+///! DuckDB's own `COPY ... TO PARQUET` emits columns as
 ///! OPTIONAL by default (confirmed live: a REQUIRED-only first cut rejected every file DuckDB
 ///! itself writes). Extending beyond max_def <= 1 (nested/repeated) is follow-up work.
 ///!
@@ -43,6 +43,16 @@
 ///! less — always safe). The per-row step has no such fallback: an OOM building the
 ///! `SelectionVector` fails the query with a real error instead of silently returning unfiltered
 ///! rows, since skipping the filter there would be a correctness bug, not just a slower query.
+///!
+///! Parallel row-group scanning (see PLAN-zpq-parallel.md for the scoping, and why zpq's own
+///! `core.scan` engine isn't reused for this): `GlobalState` holds only an atomic "next row group
+///! to claim" counter over the shared, read-only `BindData` — `ColumnChunkReader(i64)` already
+///! carries no state across row groups, so there's nothing else to share. Each thread's own
+///! `LocalState` holds its own arena/reader/`row_group_always_match`, claimed via
+///! `claimNextRowGroup`'s `fetchAdd`, so no two threads ever decode the same row group and no
+///! locking is needed in `exec` itself. `partition_data` reports the claimed row-group index as
+///! the batch index — row groups already have a stable file order, so the index doubles as the
+///! batch index for free, keeping output in file order under `preserve_insertion_order`.
 const std = @import("std");
 const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
@@ -90,21 +100,34 @@ fn destroyBindData(ptr: *anyopaque) callconv(.c) void {
     std.heap.c_allocator.destroy(data);
 }
 
+/// Shared by every thread of one scan. The only thing that needs sharing: which row group
+/// hasn't been claimed yet — see this file's own module doc comment on why nothing else does.
 const GlobalState = struct {
-    arena: std.heap.ArenaAllocator,
-    rg_idx: usize,
-    reader: ?column.ColumnChunkReader(i64),
-    done: bool,
-    /// Whether `pruneRowGroup` already proved every row of the row group
-    /// currently open in `reader` passes the pushed-down filter — set by
-    /// `openNextRowGroup`, read by `exec` to skip the redundant per-row
-    /// recheck for that row group. Meaningless (never read) when
-    /// `BindData.filter_count == 0`.
-    row_group_always_match: bool = true,
+    next_rg: std.atomic.Value(usize),
 };
 
 fn destroyGlobalState(ptr: *anyopaque) callconv(.c) void {
     const state: *GlobalState = @ptrCast(@alignCast(ptr));
+    std.heap.c_allocator.destroy(state);
+}
+
+/// One thread's own scan state — nothing here is ever touched by another thread.
+const LocalState = struct {
+    arena: std.heap.ArenaAllocator,
+    reader: ?column.ColumnChunkReader(i64),
+    done: bool,
+    /// Whether `pruneRowGroup` already proved every row of the row group currently open in
+    /// `reader` passes the pushed-down filter — set by `claimNextRowGroup`, read by `exec` to
+    /// skip the redundant per-row recheck for that row group. Meaningless (never read) when
+    /// `BindData.filter_count == 0`.
+    row_group_always_match: bool = true,
+    /// The row-group index backing `reader` right now — doubles as the batch index
+    /// `partition_data` reports, since row groups already have a stable file order.
+    rg_idx: usize = 0,
+};
+
+fn destroyLocalState(ptr: *anyopaque) callconv(.c) void {
+    const state: *LocalState = @ptrCast(@alignCast(ptr));
     state.arena.deinit();
     std.heap.c_allocator.destroy(state);
 }
@@ -186,35 +209,56 @@ fn bind(
 
 fn initGlobal(info: v2.duckdb_v2_table_function_init_global_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
     _ = context;
+    var bind_ptr: ?*anyopaque = null;
+    if (v2.duckdb_v2_table_function_init_global_get_bind_data(info, &bind_ptr, err) != .ERROR_NONE) return;
+    const bind_data: *const BindData = @ptrCast(@alignCast(bind_ptr orelse return));
+
+    // An upper bound: the engine may use fewer threads. More threads than row groups is wasted
+    // dispatch — each thread's share of the work would be too small to be worth it (the same
+    // lesson this project's matmul row-split benchmarking already learned).
+    const row_groups = bind_data.meta.row_groups.items.len;
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const max_threads = @max(@as(usize, 1), @min(cpu_count, row_groups));
+    if (v2.duckdb_v2_table_function_init_global_set_max_threads(info, max_threads, err) != .ERROR_NONE) return;
+
     const state = std.heap.c_allocator.create(GlobalState) catch return;
-    state.* = .{
-        .arena = std.heap.ArenaAllocator.init(std.heap.c_allocator),
-        .rg_idx = 0,
-        .reader = null,
-        .done = false,
-    };
+    state.* = .{ .next_rg = .init(0) };
     var boxed: v2.duckdb_v2_opaque = .{ .ptr = state, .destroy = destroyGlobalState, .equals = null };
     _ = v2.duckdb_v2_table_function_init_global_set_global_state(info, &boxed, err);
 }
 
-/// Opens the next row group's column chunk reader into `state.reader`, or
-/// sets `state.done` once row groups are exhausted or a chunk's byte range
-/// doesn't fit the file (the bounds check `metadata.checkFooterFields`
-/// explicitly leaves to its caller — see this PoC's scoping notes).
-///
-/// Resets the arena first: the previous row group's `ColumnChunkReader`
-/// (its scratch allocations, dictionary pages, etc.) is always gone by the
-/// time this runs — callers null `state.reader` before calling — so
-/// nothing here still needs that memory. Without this, scratch from every
-/// row group in the file accumulates for the whole scan instead of just
-/// the one currently being decoded.
-fn openNextRowGroup(state: *GlobalState, bind_data: *const BindData) void {
-    _ = state.arena.reset(.free_all);
-    while (state.rg_idx < bind_data.meta.row_groups.items.len) {
-        const rg = &bind_data.meta.row_groups.items[state.rg_idx];
-        state.rg_idx += 1;
+fn initLocal(info: v2.duckdb_v2_table_function_init_local_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
+    _ = context;
+    const state = std.heap.c_allocator.create(LocalState) catch return;
+    state.* = .{
+        .arena = std.heap.ArenaAllocator.init(std.heap.c_allocator),
+        .reader = null,
+        .done = false,
+    };
+    var boxed: v2.duckdb_v2_opaque = .{ .ptr = state, .destroy = destroyLocalState, .equals = null };
+    if (v2.duckdb_v2_table_function_init_local_set_local_state(info, &boxed, err) != .ERROR_NONE) destroyLocalState(state);
+}
 
-        state.row_group_always_match = true;
+/// Claims the next unclaimed row group (via `global.next_rg.fetchAdd` — every row group index
+/// is claimed by exactly one thread across the whole scan, whether it ends up pruned, invalid,
+/// or actually read) and opens its column chunk reader into `local.reader`, or sets
+/// `local.done` once row groups are exhausted. A claimed-but-skipped/invalid row group is never
+/// retried by this or any other thread — the global counter only ever moves forward.
+///
+/// Resets the arena first: the previous row group's `ColumnChunkReader` (its scratch
+/// allocations, dictionary pages, etc.) is always gone by the time this runs — callers null
+/// `local.reader` before calling — so nothing here still needs that memory. Without this,
+/// scratch from every row group this thread has read accumulates for the whole scan instead of
+/// just the one currently being decoded.
+fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const BindData) void {
+    _ = local.arena.reset(.free_all);
+    while (true) {
+        const idx = global.next_rg.fetchAdd(1, .monotonic);
+        if (idx >= bind_data.meta.row_groups.items.len) break;
+        const rg = &bind_data.meta.row_groups.items[idx];
+        local.rg_idx = idx;
+
+        local.row_group_always_match = true;
         if (bind_data.filter_count > 0) {
             var leaves: [max_pushdown_filters]ast.Filter = undefined;
             for (bind_data.filters[0..bind_data.filter_count], 0..) |spec, i| {
@@ -230,10 +274,10 @@ fn openNextRowGroup(state: *GlobalState, bind_data: *const BindData) void {
             const combined: ast.Filter = if (bind_data.filter_count == 1)
                 leaves[0]
             else
-                ast.join(state.arena.allocator(), true, leaves[0..bind_data.filter_count]) catch leaves[0];
+                ast.join(local.arena.allocator(), true, leaves[0..bind_data.filter_count]) catch leaves[0];
             const decision = prune.pruneRowGroup(rg, combined, &bind_data.meta);
             if (decision == .skip) continue; // whole row group pruned — never even sliced out of file_bytes
-            state.row_group_always_match = (decision == .always_match);
+            local.row_group_always_match = (decision == .always_match);
         }
 
         const chunk = &rg.columns.items[bind_data.col_idx];
@@ -244,15 +288,15 @@ fn openNextRowGroup(state: *GlobalState, bind_data: *const BindData) void {
         const length: u64 = @intCast(col_meta.total_compressed_size);
         if (length > bind_data.file_bytes.len or start_u > bind_data.file_bytes.len - length) continue;
         const chunk_bytes = bind_data.file_bytes[start_u .. start_u + length];
-        state.reader = column.ColumnChunkReader(i64).init(
+        local.reader = column.ColumnChunkReader(i64).init(
             chunk_bytes,
             col_meta.codec,
             .{ .max_def = bind_data.max_def, .max_rep = 0 },
-            state.arena.allocator(),
+            local.arena.allocator(),
         );
         return;
     }
-    state.done = true;
+    local.done = true;
 }
 
 /// Writes one validity bit per row of `def_levels` into `bits` (DuckDB's
@@ -356,13 +400,16 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
         return;
     }));
 
-    var state_ptr: ?*anyopaque = null;
-    if (v2.duckdb_v2_table_function_exec_get_global_state(info, &state_ptr, err) != .ERROR_NONE) return;
-    const state: *GlobalState = @ptrCast(@alignCast(state_ptr.?));
+    var global_ptr: ?*anyopaque = null;
+    if (v2.duckdb_v2_table_function_exec_get_global_state(info, &global_ptr, err) != .ERROR_NONE) return;
+    const global: *GlobalState = @ptrCast(@alignCast(global_ptr.?));
+    var local_ptr: ?*anyopaque = null;
+    if (v2.duckdb_v2_table_function_exec_get_local_state(info, &local_ptr, err) != .ERROR_NONE) return;
+    const local: *LocalState = @ptrCast(@alignCast(local_ptr.?));
 
-    if (state.reader == null and !state.done) openNextRowGroup(state, bind_data);
+    if (local.reader == null and !local.done) claimNextRowGroup(local, global, bind_data);
 
-    while (state.reader != null) {
+    while (local.reader != null) {
         // Decode straight into the output vector's own buffer — no stack
         // scratch + memcpy. Safe to size up to capacity before knowing the
         // real count: `max_rows_per_batch` matches DuckDB's standard
@@ -377,29 +424,29 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
 
         var def_levels: [max_rows_per_batch]u32 = undefined;
         const n = if (bind_data.max_def == 0)
-            state.reader.?.decode(dest)
+            local.reader.?.decode(dest)
         else
-            state.reader.?.decodeWithLevels(dest, &def_levels);
+            local.reader.?.decodeWithLevels(dest, &def_levels);
         var row_count = n catch {
-            state.reader = null;
-            state.done = true;
+            local.reader = null;
+            local.done = true;
             break;
         };
         if (row_count == 0) {
-            state.reader = null;
-            openNextRowGroup(state, bind_data);
+            local.reader = null;
+            claimNextRowGroup(local, global, bind_data);
             continue;
         }
 
-        if (bind_data.filter_count > 0 and !state.row_group_always_match) {
+        if (bind_data.filter_count > 0 and !local.row_group_always_match) {
             row_count = filterCompact(bind_data.filters[0..bind_data.filter_count], bind_data.max_def, dest[0..row_count], def_levels[0..row_count], err) orelse return;
             // Zero matches in THIS BATCH is not the same thing as the
-            // reader being exhausted — `state.reader` is still mid-row-
+            // reader being exhausted — `local.reader` is still mid-row-
             // group and may well have a match a few batches further in
             // (confirmed live: a batch straddling a selective filter's
             // match can easily decode 2048 non-matching rows before
             // reaching the one that passes). `continue` re-enters the
-            // `while (state.reader != null)` loop and decodes the next
+            // `while (local.reader != null)` loop and decodes the next
             // batch off the SAME still-live reader; only `decode`/
             // `decodeWithLevels` itself returning 0 (checked above, before
             // filtering) means the row group is actually done.
@@ -424,6 +471,21 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
     }
 
     if (v2.duckdb_v2_vector_set_size(value_vec, 0, err) != .ERROR_NONE) return;
+}
+
+/// After each `exec`, on the same thread: reports the claimed row group's own index as the
+/// batch index, but only when `requires_batch_index` says the engine actually needs one (an
+/// unordered sink, say) — skips the lookup entirely otherwise.
+fn partitionData(info: v2.duckdb_v2_table_function_partition_data_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
+    _ = context;
+    var needed = false;
+    if (v2.duckdb_v2_table_function_partition_data_requires_batch_index(info, &needed, err) != .ERROR_NONE) return;
+    if (!needed) return;
+
+    var local_ptr: ?*anyopaque = null;
+    if (v2.duckdb_v2_table_function_partition_data_get_local_state(info, &local_ptr, err) != .ERROR_NONE) return;
+    const local: *const LocalState = @ptrCast(@alignCast(local_ptr.?));
+    _ = v2.duckdb_v2_table_function_partition_data_set_batch_index(info, local.rg_idx, err);
 }
 
 // --- filter pushdown -------------------------------------------------------------------------
@@ -549,8 +611,14 @@ fn registerReadParquet(input: *const v2.duckdb_v2_extension_input, err: Err) !vo
     if (v2.duckdb_v2_table_function_set_init_global_callback(function, &initGlobal, err) != .ERROR_NONE) {
         return error.FailedToSetInitGlobalCallback;
     }
+    if (v2.duckdb_v2_table_function_set_init_local_callback(function, &initLocal, err) != .ERROR_NONE) {
+        return error.FailedToSetInitLocalCallback;
+    }
     if (v2.duckdb_v2_table_function_set_exec_callback(function, &exec, err) != .ERROR_NONE) {
         return error.FailedToSetExecCallback;
+    }
+    if (v2.duckdb_v2_table_function_set_partition_data_callback(function, &partitionData, err) != .ERROR_NONE) {
+        return error.FailedToSetPartitionDataCallback;
     }
     if (v2.duckdb_v2_table_function_set_filter_pushdown_callback(function, &pushdown, err) != .ERROR_NONE) {
         return error.FailedToSetFilterPushdownCallback;
