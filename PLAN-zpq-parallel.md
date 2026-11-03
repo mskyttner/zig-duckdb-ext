@@ -118,8 +118,36 @@ thread count. So per-call decode overhead was never the bottleneck; whatever exp
 weaker 1->24 scaling is somewhere else — plausibly how the engine schedules/dispatches `exec`
 calls across the claimed threads, not in this file's own decode loop. Kept at 122880 anyway
 (still correct, still fewer round-trips), but this specific fix attempt didn't pan out.
-Profiling where the scaling gap actually comes from (not guessing) is the natural next step if
-closing it matters.
+**Profiled where the scaling gap actually comes from.** `perf record` is blocked on this machine
+(`perf_event_paranoid=4`, needs a privileged sysctl change not made here), so profiled via direct
+in-process instrumentation instead: atomic counters for `init_local` calls (threads actually
+spun up), `exec` call count and total time, and time specifically inside `decode`/
+`decodeWithLevels`, plus separate timing around `bind`'s `readFileAlloc` and footer parse —
+temporary code, reverted after collecting the numbers below.
+
+Against the same SF=5 fixture:
+
+| | `threads=1` | `threads=24` |
+|---|---|---|
+| wall time | ~0.120-0.131s | ~0.048-0.051s |
+| `bind` (whole-file read, called **twice** per query by DuckDB v2's planning + execution binds) | ~26-32ms total | ~26-32ms total (unchanged) |
+| summed `exec` time across all threads | ~72-75ms | ~280-313ms (÷24 threads ≈ 12-13ms wall-equivalent) |
+| time inside `exec` NOT spent in `decode`/`decodeWithLevels` | <1ms | 2-17ms |
+
+Two things fall out of real numbers, not guesses: (1) dispatch overhead inside our own `exec` is
+negligible at any thread count — under 2% of `exec`'s own time is spent on anything other than
+`decode`/`decodeWithLevels` (vector/validity API calls, filter compaction, claiming the next row
+group). The weaker scaling is not caused by anything in this file's per-call dispatch path.
+(2) `bind`'s whole-file `readFileAlloc` is a **fixed, serial, per-query cost that does not shrink
+with more threads** — same ~26-32ms at `threads=1` and `threads=24` (and paid *twice*, since
+DuckDB v2 calls `bind` once during planning and again during execution). At `threads=1` that's
+~25% of wall time; at `threads=24` it's the dominant cost, which is exactly the Amdahl's-law
+reason `read_zpq`'s speedup caps out lower than native `read_parquet`'s — native almost certainly
+doesn't pay an equivalent fixed, unparallelized whole-file-into-one-heap-buffer cost on every
+bind. Closing this gap further would mean avoiding the double bind and/or moving away from
+"read the whole file into memory up front" toward reading only the row-group byte ranges each
+thread actually needs (same shape `PLAN-zpq-multi.md` already flags as a separate, real
+limitation) — not something attempted here; this plan's job was diagnosis, not the fix.
 
 ## Explicitly out of scope for this plan
 
