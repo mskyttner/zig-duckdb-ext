@@ -302,6 +302,85 @@ A 3+ column fixture (mixed REQUIRED/OPTIONAL, like the one `multi3.parquet` alre
    above and not just alignment.
 5. Filtered + `threads > 1` together, same as Phase 1's own parallel validation.
 
+## Phase 2.7: filter pushdown for non-INT64 columns (implemented, 2026-11-03)
+
+Built exactly as scoped below. One addition the scoping didn't call out in advance:
+`recognize` needed `bind_data` passed in (not just `info`/`filter`/`scratch`), since it now has
+to look up the referenced column's own `phys` to pick the right `value_get_*` — a small, obvious
+signature change, not a design surprise.
+
+All five validation cases passed against `types5.parquet` (`BIGINT`/`INTEGER`/`BOOLEAN`/`FLOAT`/
+`DOUBLE`): a pushed-down filter on `INTEGER`, `FLOAT`, and `DOUBLE` individually, each matching
+native `read_parquet` exactly; `WHERE flag` and `WHERE flag = true` both recognized and pushed
+down (DuckDB's planner apparently treats a bare boolean column reference as a `= true`
+comparison by the time this callback sees it — confirmed by both forms returning the identical,
+correct result, not assumed from the shape alone); `WHERE fval > ... AND dval < ...` (two
+different non-INT64 types AND'd) matching native exactly; a row-group-pruning sanity check
+(`WHERE int32col < 10`, same technique as Phase 1.6's) returning instantly with exactly the
+expected 10 rows; and `threads=1`/`24` correctness plus order preservation under a non-INT64
+filter. The full prior regression suite (TPCH single-column pushdown, `multi3`'s two-INT64-
+column AND, the nullable fixture, the declined-filter crash guard) re-run and still passing.
+Filter pushdown now covers every `PhysicalType` this PoC supports, not just INT64.
+
+## Phase 2.7 (original scoping, for reference)
+
+Checked against zpq's actual code and the v2 header, not assumed, before committing to a design
+— same discipline as Phase 1.6's scoping.
+
+**Both layers already support it.** zpq's `ast.Filter` is a union with a leaf variant per
+physical type (`int32: Leaf(i32)`, `float: Leaf(f32)`, `double: Leaf(f64)`, `boolean:
+Leaf(bool)`, alongside `int64`), and `prune.pruneRowGroup` already dispatches each to its own
+stats-based pruning (`pruneNumeric`/`pruneBoolean`) — no changes needed there, and its AND/OR
+combinator already handles a mix of leaf types in one filter (confirmed for mixed *columns* in
+Phase 1.6; the union covers mixed *value types* the same way, recursively, with no extra
+special-casing). The v2 C API has the value getters needed: `duckdb_v2_value_get_bool`/
+`get_int`/`get_float`/`get_double`, alongside `get_bigint` already in use.
+
+**A real gotcha that explains why Phase 2's `.phys != .int64` guard in `pushdown` was load-
+bearing, not just defensive**: `duckdb_v2_value_get_bigint`'s own doc comment says "a value of a
+different type is converted through the default cast set" — it does **not** fail for a
+FLOAT/DOUBLE/BOOLEAN constant, it silently casts it to a truncated/rounded int64. Without that
+guard, `recognize` would have kept producing a `FilterSpec` for a non-INT64 column filter all
+along, just a silently wrong one (e.g. `WHERE fval > 1.5` turning into `fval > 1` internally).
+Confirms the right fix is to pick the getter from the **column's own resolved `phys`**, never
+from whichever getter happens not to error.
+
+### What's new
+
+1. **`FilterSpec.value` becomes `FilterValue = union(PhysicalType) { boolean: bool, int32: i32,
+   int64: i64, float: f32, double: f64 }`** instead of a bare `i64`.
+2. **`recognize` needs `bind_data` too** (not just `info`/`filter`/`scratch`), to look up
+   `bind_data.cols[declared].phys` right after resolving `declared` and call the matching
+   `value_get_*` instead of always `get_bigint`. For a `.boolean` column, also reject any `op`
+   other than `Eq`/`NotEq` right here (declining, same as any other "not recognized" case) —
+   `<`/`>` on a boolean never comes from DuckDB's own planner, but `evalFilter` below has no
+   sound way to execute it if it somehow did, so the check belongs at recognition time, not
+   buried as an `unreachable` deeper in.
+3. **`pushdown`'s `.phys != .int64 => continue` guard goes away** — every `PhysicalType`
+   `recognize` can now produce a `FilterValue` for gets pushed down.
+4. **`claimNextRowGroup`'s AST leaf build** switches on `spec.value`'s own tag to pick the
+   matching `ast.Filter` variant (`.boolean`/`.int32`/.../`.double`) instead of always `.int64`.
+5. **`evalFilter` gains a `.boolean` arm plus an `inline` dispatch over the four ordered numeric
+   types** — `bool` has no `<`/`>`/`<=`/`>=` in Zig, so it can't share the same generic switch
+   over `Operator` the numeric types do; kept as its own explicit, non-generic arm (only `Eq`/
+   `NotEq`, matching the recognize-time restriction) rather than a comptime-conditional branch
+   inside one shared generic body.
+6. **`filterAndCompactAll`'s filtered-column read** stops assuming `[*]i64` and calls the
+   generalized `evalFilter(spec, outs[declared_col], row)` instead, which picks the right cast
+   itself from `spec.value`'s tag.
+
+### Validate with
+
+The mixed-type fixture already built for Phase 2 (`types5.parquet`: BIGINT/INTEGER/BOOLEAN/
+FLOAT/DOUBLE): a pushed-down filter on each of the four newly-supported types individually,
+matching native `read_parquet` exactly; a filter combining two different non-INT64 types in one
+AND (exercises the mixed-leaf-type AND path for the first time, not just mixed-column); a
+boolean filter via both `WHERE flag` and `WHERE flag = true` shapes, to see which (if either)
+`recognize` actually receives as a comparison it can match; row-group pruning actually skipping
+groups for a non-INT64 filter (the same `WHERE col < small_value` sanity check Phase 1.6 used);
+and the full regression suite (TPCH, `multi3`, nullable, declined-filter crash guard,
+threads=1/24) re-run once more.
+
 ## Explicitly out of scope for both phases
 
 **Nested/repeated types (`LIST`/`STRUCT`/`MAP`, `max_rep > 0`)** — not a type-dispatch problem,

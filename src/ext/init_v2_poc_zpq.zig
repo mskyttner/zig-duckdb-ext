@@ -113,15 +113,24 @@ const parquet_magic: [4]u8 = .{ 'P', 'A', 'R', '1' };
 /// guaranteed safe everywhere, since it's what every other chunk in the engine assumes.
 const max_rows_per_batch = 2048;
 
+/// The constant side of a recognized pushdown predicate, one variant per `PhysicalType` — a
+/// filtered column can be any of them now (Phase 2.7), not just INT64. Picked at recognition
+/// time from the *column's own* resolved physical type, never from whichever `value_get_*`
+/// happens not to error: `duckdb_v2_value_get_bigint`'s own doc comment says a value of a
+/// different type is converted through the default cast set, so it does NOT fail for a
+/// FLOAT/DOUBLE/BOOLEAN constant — it silently casts it, which would have made the wrong
+/// comparison look "recognized" if that incidental success were trusted instead.
+const FilterValue = union(PhysicalType) { boolean: bool, int32: i32, int64: i64, float: f32, double: f64 };
+
 /// A recognized `<column> <op> constant` pushdown predicate, independent of DuckDB's own
 /// `v2.duckdb_v2_expression_handle` (which doesn't outlive the `pushdown` callback) and of zpq's
-/// `ast.Leaf(i64)` (which needs `col_idx` — not known as a fixed constant here the way a literal
+/// `ast.Leaf(T)` (which needs `col_idx` — not known as a fixed constant here the way a literal
 /// struct field would be, since it's `bind_data.cols[declared_col].col_idx`, resolved per file at
 /// bind time). `declared_col` is a position into `bind_data.cols` (which of the *selected*
 /// columns this filter applies to), not the file's own `col_idx` — needed both to build that
 /// `ast.Leaf` in `claimNextRowGroup` and to index the right decoded array in `exec`/
-/// `filterCompact`.
-const FilterSpec = struct { declared_col: usize, op: ast.Operator, value: i64 };
+/// `filterAndCompactAll`.
+const FilterSpec = struct { declared_col: usize, op: ast.Operator, value: FilterValue };
 const max_pushdown_filters = 4;
 
 const BindData = struct {
@@ -607,14 +616,23 @@ fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const
         local.row_group_always_match = true;
         if (bind_data.filter_count > 0) {
             // Each filter names its own column (`declared_col`, a position in `bind_data.cols`)
-            // — `pruneRowGroup`'s AND/OR combination resolves each leaf's own `col_idx`
-            // independently (confirmed by reading `core/filter/prune.zig` directly: its
+            // and carries its own value type (`spec.value`'s own tag, Phase 2.7) — both resolve
+            // independently per leaf. `pruneRowGroup`'s AND/OR combination resolves each leaf's
+            // own `col_idx` (confirmed by reading `core/filter/prune.zig` directly: its
             // `and_filter`/`or_filter` case recurses per child and combines the resulting
-            // `Decision`s, with no assumption the children share a column), so leaves on
-            // different columns combine correctly here with no special-casing.
+            // `Decision`s, with no assumption the children share a column or a value type), so
+            // leaves on different columns, of different `ast.Filter` variants, combine correctly
+            // here with no special-casing.
             var leaves: [max_pushdown_filters]ast.Filter = undefined;
             for (bind_data.filters[0..bind_data.filter_count], 0..) |spec, i| {
-                leaves[i] = .{ .int64 = .{ .col_idx = bind_data.cols[spec.declared_col].col_idx, .op = spec.op, .value = spec.value } };
+                const col_idx = bind_data.cols[spec.declared_col].col_idx;
+                leaves[i] = switch (spec.value) {
+                    .boolean => |v| .{ .boolean = .{ .col_idx = col_idx, .op = spec.op, .value = v } },
+                    .int32 => |v| .{ .int32 = .{ .col_idx = col_idx, .op = spec.op, .value = v } },
+                    .int64 => |v| .{ .int64 = .{ .col_idx = col_idx, .op = spec.op, .value = v } },
+                    .float => |v| .{ .float = .{ .col_idx = col_idx, .op = spec.op, .value = v } },
+                    .double => |v| .{ .double = .{ .col_idx = col_idx, .op = spec.op, .value = v } },
+                };
             }
             // `ast.join` only allocates (the flattened `children` slice) when
             // combining 2+ operands; the single-filter case returns that
@@ -720,15 +738,36 @@ fn moveElement(phys: PhysicalType, ptr: *anyopaque, w: usize, r: usize) void {
     }
 }
 
-fn evalFilter(spec: FilterSpec, value: i64) bool {
-    return switch (spec.op) {
-        .Eq => value == spec.value,
-        .NotEq => value != spec.value,
-        .Lt => value < spec.value,
-        .LtEq => value <= spec.value,
-        .Gt => value > spec.value,
-        .GtEq => value >= spec.value,
-    };
+/// `ptr[row] <op> spec.value`, reading `ptr` as whichever `PhysicalType` `spec.value`'s own tag
+/// says the filtered column actually is. `bool` has no `<`/`>`/`<=`/`>=` in Zig, so it can't
+/// share the generic `inline` dispatch the four ordered numeric types do — kept as its own
+/// explicit arm, `Eq`/`NotEq` only, matching the restriction `recognize` already enforces before
+/// a boolean filter is ever accepted (not a comptime-conditional branch buried inside one
+/// shared generic body).
+fn evalFilter(spec: FilterSpec, ptr: *anyopaque, row: usize) bool {
+    switch (spec.value) {
+        .boolean => |want| {
+            const p: [*]bool = @ptrCast(ptr);
+            return switch (spec.op) {
+                .Eq => p[row] == want,
+                .NotEq => p[row] != want,
+                else => unreachable, // recognize() never accepts an ordering op on a boolean column
+            };
+        },
+        inline .int32, .int64, .float, .double => |want, tag| {
+            const T = ZigType(tag);
+            const p: [*]T = @ptrCast(@alignCast(ptr));
+            const got = p[row];
+            return switch (spec.op) {
+                .Eq => got == want,
+                .NotEq => got != want,
+                .Lt => got < want,
+                .LtEq => got <= want,
+                .Gt => got > want,
+                .GtEq => got >= want,
+            };
+        },
+    }
 }
 
 /// Builds one `SelectionVector` by evaluating every pushed-down filter against its own column's
@@ -753,13 +792,11 @@ fn filterAndCompactAll(bind_data: *const BindData, local: *LocalState, outs: []c
 
     for (bind_data.filters[0..bind_data.filter_count]) |spec| {
         const col = bind_data.cols[spec.declared_col];
-        // SAFETY: `pushdown` only ever accepts a filter whose column resolved to `.int64` (see
-        // its own guard), so this cast is sound.
-        const dest: [*]i64 = @ptrCast(@alignCast(outs[spec.declared_col]));
+        const ptr = outs[spec.declared_col];
         const levels = defLevelsFor(local, spec.declared_col);
         for (0..row_count) |i| {
             const is_valid = col.max_def == 0 or levels[i] == 1;
-            if (!is_valid or !evalFilter(spec, dest[i])) sel.set(i, false);
+            if (!is_valid or !evalFilter(spec, ptr, i)) sel.set(i, false);
         }
     }
 
@@ -958,14 +995,14 @@ fn typeOf(e: v2.duckdb_v2_expression_handle, err: Err) ?v2.DUCKDB_V2_EXPRESSION_
     return t;
 }
 
-/// Recognizes `<column> <op> BIGINT constant`, the column always on the left (the optimizer
-/// rewrites `90 < value` to `value > 90` before this callback ever sees it, per the equivalent
-/// cookbook recipe, `table_pushdown.zig`, which this follows closely) — `<column>` may be any of
-/// `bind_data.cols`, not just the first. Null means "not mine, apply it yourself" — a declined
-/// predicate never breaks correctness, only an optimization opportunity. `err` here is a scratch
-/// slot (see `pushdown` below): a failed introspection call is also just "not mine," never a
-/// query failure.
-fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, filter: v2.duckdb_v2_expression_handle, scratch: Err) ?FilterSpec {
+/// Recognizes `<column> <op> constant`, the column always on the left (the optimizer rewrites
+/// `90 < value` to `value > 90` before this callback ever sees it, per the equivalent cookbook
+/// recipe, `table_pushdown.zig`, which this follows closely) — `<column>` may be any of
+/// `bind_data.cols`, of any supported `PhysicalType` (Phase 2.7), not just the first or INT64.
+/// Null means "not mine, apply it yourself" — a declined predicate never breaks correctness,
+/// only an optimization opportunity. `err` here is a scratch slot (see `pushdown` below): a
+/// failed introspection call is also just "not mine," never a query failure.
+fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, bind_data: *const BindData, filter: v2.duckdb_v2_expression_handle, scratch: Err) ?FilterSpec {
     const op = opOf(typeOf(filter, scratch) orelse return null) orelse return null;
     var count: u64 = 0;
     if (v2.duckdb_v2_expression_get_child_count(filter, &count, scratch) != .ERROR_NONE or count != 2) return null;
@@ -982,15 +1019,50 @@ fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, filt
     if (v2.duckdb_v2_expression_column_ref_get_index(left, &referenced, scratch) != .ERROR_NONE) return null;
     var declared: u64 = 0;
     if (v2.duckdb_v2_table_function_filter_pushdown_get_column_index(info, referenced, &declared, scratch) != .ERROR_NONE) return null;
+    if (declared >= bind_data.cols.len) return null;
+    const phys = bind_data.cols[declared].phys;
+    // `<`/`>`/`<=`/`>=` on a boolean never comes from DuckDB's own planner, but `evalFilter` has
+    // no sound way to execute it if it somehow did — declined here, at recognition time, rather
+    // than left as a deeper `unreachable`.
+    if (phys == .boolean and op != .Eq and op != .NotEq) return null;
 
     var constant: v2.duckdb_v2_value_handle = undefined;
     if (v2.duckdb_v2_expression_constant_get_value(right, &constant, scratch) != .ERROR_NONE) return null;
     defer _ = v2.duckdb_v2_value_destroy(&constant);
     var is_null = false;
     if (v2.duckdb_v2_value_is_null(constant, &is_null, scratch) != .ERROR_NONE or is_null) return null;
-    var c: i64 = 0;
-    if (v2.duckdb_v2_value_get_bigint(constant, &c, scratch) != .ERROR_NONE) return null;
-    return .{ .declared_col = declared, .op = op, .value = c };
+
+    // Picked from the *column's* own resolved type, never from whichever getter happens not to
+    // error — see `FilterValue`'s own doc comment on why `get_bigint`'s implicit cast makes that
+    // unsafe to rely on.
+    const value: FilterValue = switch (phys) {
+        .boolean => blk: {
+            var v: bool = false;
+            if (v2.duckdb_v2_value_get_bool(constant, &v, scratch) != .ERROR_NONE) return null;
+            break :blk .{ .boolean = v };
+        },
+        .int32 => blk: {
+            var v: i32 = 0;
+            if (v2.duckdb_v2_value_get_int(constant, &v, scratch) != .ERROR_NONE) return null;
+            break :blk .{ .int32 = v };
+        },
+        .int64 => blk: {
+            var v: i64 = 0;
+            if (v2.duckdb_v2_value_get_bigint(constant, &v, scratch) != .ERROR_NONE) return null;
+            break :blk .{ .int64 = v };
+        },
+        .float => blk: {
+            var v: f32 = 0;
+            if (v2.duckdb_v2_value_get_float(constant, &v, scratch) != .ERROR_NONE) return null;
+            break :blk .{ .float = v };
+        },
+        .double => blk: {
+            var v: f64 = 0;
+            if (v2.duckdb_v2_value_get_double(constant, &v, scratch) != .ERROR_NONE) return null;
+            break :blk .{ .double = v };
+        },
+    };
+    return .{ .declared_col = declared, .op = op, .value = value };
 }
 
 fn pushdown(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
@@ -1014,14 +1086,7 @@ fn pushdown(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, conte
         defer if (scratch_slot) |*e| {
             _ = v2.duckdb_v2_error_info_destroy(e);
         };
-        const spec = recognize(info, filter, scratch) orelse continue;
-        // `value_get_bigint` above (inside `recognize`) already declines any constant that
-        // isn't integer-typed, which in practice means a comparison against a non-INT64 column
-        // would already fail there — but checked explicitly here too, rather than relied on
-        // incidentally: `evalFilter`/`filterAndCompactAll` read the filtered column's own
-        // decoded array as `[*]i64` (see their own doc comments), so this guard keeps that cast
-        // sound by construction, not just by accident of how DuckDB happens to type constants.
-        if (bind_data.cols[spec.declared_col].phys != .int64) continue;
+        const spec = recognize(info, bind_data, filter, scratch) orelse continue;
         bind_data.filters[bind_data.filter_count] = spec;
         bind_data.filter_count += 1;
         // From here on the scan applies it itself: the engine stops.
