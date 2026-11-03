@@ -131,7 +131,32 @@ reverting `max_rows_per_batch` to 2048 — already known to cost nothing (the 12
 itself a no-measurable-difference experiment) and now confirmed to be the only value safe in
 every pipeline shape this function can end up in.
 
-## Phase 1.6: filter pushdown generalization (scoped, not implemented)
+## Phase 1.6: filter pushdown generalization (implemented, 2026-11-03)
+
+Built exactly as scoped below: `FilterSpec.declared_col`, `recognize`/`pushdown` accepting any
+column, `claimNextRowGroup` building each AST leaf from its own filter's column (confirmed live,
+not just by reading `prune.zig`: a row-group-pruning sanity check — `WHERE a < 10` against the
+6-row-group `multi3.parquet` fixture, where only row group 0 can contain matches — returned
+exactly the 10 matching rows, confirming the other 5 row groups were actually skipped). `exec`
+now always decodes every selected column before any filtering, and `filterAndCompactAll`
+replaces `filterCompact`: one `SelectionVector` built by checking each filter against its own
+column, then every column's own output array *and* `def_levels` buffer compacted with it, then
+validity bits written for every column afterward (not skipped, since a kept row can be NULL in
+a column with no filter on it — exactly the gap this phase's own scoping flagged).
+
+All five validation cases from the scoping below passed, re-checked against `multi3.parquet`
+(300k rows, 6 row groups, columns `a`/`b`/`c` with `b = a*1000`, `c = -a` or NULL every 11th
+row — distinguishable values chosen specifically to catch misalignment): a filter on column 0
+with alignment checked on `b`/`c`; a filter on `c` (a non-zero `declared_col`, exercised for the
+first time) alone and matching native `read_parquet` exactly; `a > ... AND c < ...` (two
+different columns AND'd) matching native exactly; a filter on `a` only, with `c`'s own NULL count
+among kept rows matching native exactly (the validity-mask case); and the same filtered query at
+`threads=1` and `threads=24`, plus order preservation (byte-identical CSV diff against native at
+`threads=24`). Also re-confirmed: single-column pushdown filtering is unaffected, and a filter
+`recognize` doesn't understand (declined, applied by DuckDB post-scan) still doesn't crash — the
+`max_rows_per_batch` fix from Phase 1 stays in effect.
+
+## Phase 1.6 (original scoping, for reference)
 
 The one Phase 1 item left undone on purpose (see "Phase 1: implemented" above) — a plan for it,
 not an implementation. Checked against zpq's actual code rather than assumed, since the design

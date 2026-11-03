@@ -113,11 +113,15 @@ const parquet_magic: [4]u8 = .{ 'P', 'A', 'R', '1' };
 /// guaranteed safe everywhere, since it's what every other chunk in the engine assumes.
 const max_rows_per_batch = 2048;
 
-/// A recognized `value <op> constant` pushdown predicate, independent of DuckDB's own
+/// A recognized `<column> <op> constant` pushdown predicate, independent of DuckDB's own
 /// `v2.duckdb_v2_expression_handle` (which doesn't outlive the `pushdown` callback) and of zpq's
 /// `ast.Leaf(i64)` (which needs `col_idx` — not known as a fixed constant here the way a literal
-/// struct field would be, since it's `bind_data.col_idx`, resolved per file at bind time).
-const FilterSpec = struct { op: ast.Operator, value: i64 };
+/// struct field would be, since it's `bind_data.cols[declared_col].col_idx`, resolved per file at
+/// bind time). `declared_col` is a position into `bind_data.cols` (which of the *selected*
+/// columns this filter applies to), not the file's own `col_idx` — needed both to build that
+/// `ast.Leaf` in `claimNextRowGroup` and to index the right decoded array in `exec`/
+/// `filterCompact`.
+const FilterSpec = struct { declared_col: usize, op: ast.Operator, value: i64 };
 const max_pushdown_filters = 4;
 
 const BindData = struct {
@@ -502,12 +506,15 @@ fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const
 
         local.row_group_always_match = true;
         if (bind_data.filter_count > 0) {
-            // Filter pushdown only ever accepts a filter when exactly one column is selected
-            // (see `pushdown`'s own guard), so `bind_data.cols[0]` is always the filtered column
-            // whenever this branch runs at all.
+            // Each filter names its own column (`declared_col`, a position in `bind_data.cols`)
+            // — `pruneRowGroup`'s AND/OR combination resolves each leaf's own `col_idx`
+            // independently (confirmed by reading `core/filter/prune.zig` directly: its
+            // `and_filter`/`or_filter` case recurses per child and combines the resulting
+            // `Decision`s, with no assumption the children share a column), so leaves on
+            // different columns combine correctly here with no special-casing.
             var leaves: [max_pushdown_filters]ast.Filter = undefined;
             for (bind_data.filters[0..bind_data.filter_count], 0..) |spec, i| {
-                leaves[i] = .{ .int64 = .{ .col_idx = bind_data.cols[0].col_idx, .op = spec.op, .value = spec.value } };
+                leaves[i] = .{ .int64 = .{ .col_idx = bind_data.cols[spec.declared_col].col_idx, .op = spec.op, .value = spec.value } };
             }
             // `ast.join` only allocates (the flattened `children` slice) when
             // combining 2+ operands; the single-filter case returns that
@@ -597,45 +604,59 @@ fn writeValidityBits(bits: [*]u64, def_levels: []const u32) void {
     }
 }
 
-fn evalFilters(specs: []const FilterSpec, value: i64) bool {
-    for (specs) |s| {
-        const pass = switch (s.op) {
-            .Eq => value == s.value,
-            .NotEq => value != s.value,
-            .Lt => value < s.value,
-            .LtEq => value <= s.value,
-            .Gt => value > s.value,
-            .GtEq => value >= s.value,
-        };
-        if (!pass) return false;
-    }
-    return true;
+fn evalFilter(spec: FilterSpec, value: i64) bool {
+    return switch (spec.op) {
+        .Eq => value == spec.value,
+        .NotEq => value != spec.value,
+        .Lt => value < spec.value,
+        .LtEq => value <= spec.value,
+        .Gt => value > spec.value,
+        .GtEq => value >= spec.value,
+    };
 }
 
-/// Filters and compacts `dest` in place against `specs`, using a `SelectionVector` to mark which
-/// rows pass (a NULL row never passes — standard SQL filter semantics: a NULL comparison is
-/// UNKNOWN, which WHERE treats as false) and its iterator to walk the marked rows in order while
-/// compacting — the write index never passes the read index, so this is safe in place. Every kept
-/// row is therefore non-NULL, so the caller never needs to touch the validity mask for the result
-/// of this call. Returns the compacted row count, or `null` if it already reported a real query
-/// failure through `err` — see this file's module doc comment on why there's no safe fallback
-/// here, unlike `pruneRowGroup`'s.
-fn filterCompact(specs: []const FilterSpec, max_def: i32, dest: []i64, def_levels: []const u32, err: Err) ?usize {
-    var sel = selection.SelectionVector.init(std.heap.c_allocator, dest.len) catch {
+/// Builds one `SelectionVector` by evaluating every pushed-down filter against its own column's
+/// decoded value and validity (a NULL row never passes a filter actually declared on its own
+/// column — standard SQL filter semantics: a NULL comparison is UNKNOWN, which WHERE treats as
+/// false — but an *unfiltered* column being NULL never disqualifies a row; that guarantee only
+/// held in the single-column original this generalizes, where there was nothing else to check),
+/// then compacts every selected column's own `outs[i]` array and `defLevelsFor(local, i)` buffer
+/// in place using that one shared selection — the write index never passes the read index, so
+/// this is safe in place. Unlike the single-column original, a kept row here is *not* guaranteed
+/// non-NULL in every column (only in whichever columns actually have a filter on them), so the
+/// caller still needs to write validity bits for every column afterward. Returns the compacted
+/// row count, or `null` if it already reported a real query failure through `err` (an OOM
+/// building the selection vector) — see this file's module doc comment on why there's no safe
+/// fallback here, unlike `pruneRowGroup`'s.
+fn filterAndCompactAll(bind_data: *const BindData, local: *LocalState, outs: []const [*]i64, row_count: usize, err: Err) ?usize {
+    var sel = selection.SelectionVector.init(std.heap.c_allocator, row_count) catch {
         fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory building selection vector", .{});
         return null;
     };
     defer sel.deinit();
 
-    for (0..dest.len) |i| {
-        const is_valid = max_def == 0 or def_levels[i] == 1;
-        if (!is_valid or !evalFilters(specs, dest[i])) sel.set(i, false);
+    for (bind_data.filters[0..bind_data.filter_count]) |spec| {
+        const col = bind_data.cols[spec.declared_col];
+        const dest = outs[spec.declared_col];
+        const levels = defLevelsFor(local, spec.declared_col);
+        for (0..row_count) |i| {
+            const is_valid = col.max_def == 0 or levels[i] == 1;
+            if (!is_valid or !evalFilter(spec, dest[i])) sel.set(i, false);
+        }
     }
 
     var w: usize = 0;
     var it = sel.iterator();
     while (it.next()) |r| {
-        if (r != w) dest[w] = dest[r];
+        if (r != w) {
+            for (bind_data.cols, 0..) |spec, c| {
+                outs[c][w] = outs[c][r];
+                if (spec.max_def != 0) {
+                    const levels = defLevelsFor(local, c);
+                    levels[w] = levels[r];
+                }
+            }
+        }
         w += 1;
     }
     return w;
@@ -708,33 +729,29 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
             continue;
         }
 
-        if (bind_data.filter_count > 0 and !local.row_group_always_match) {
-            // Only ever reachable with exactly one column selected (`pushdown`'s own guard), so
-            // there's nothing else in `bind_data.cols[1..]` to decode this batch.
-            row_count = filterCompact(bind_data.filters[0..bind_data.filter_count], bind_data.cols[0].max_def, dest0[0..row_count], levels0[0..row_count], err) orelse return;
-            // Zero matches in THIS BATCH is not the same thing as the
-            // reader being exhausted — `local.readers[0]` is still mid-
-            // row-group and may well have a match a few batches further
-            // in (confirmed live: a batch straddling a selective filter's
-            // match can easily decode 2048 non-matching rows before
-            // reaching the one that passes). `continue` re-enters the
-            // `while (local.readers[0] != null)` loop and decodes the
-            // next batch off the SAME still-live reader; only `decode`/
-            // `decodeWithLevels` itself returning 0 (checked above,
-            // before filtering) means the row group is actually done.
-            if (row_count == 0) continue;
-            // Every row `filterCompact` kept is non-NULL (see its doc
-            // comment), so there's no validity mask to write here.
-            if (v2.duckdb_v2_vector_set_size(vec0, row_count, err) != .ERROR_NONE) return;
+        // Every selected column must be decoded before any filtering now that a filter can
+        // reference any of them — collect each column's own vector handle and output pointer as
+        // we go, needed either way: for the unfiltered write-out below, or to both evaluate and
+        // then compact every column once filtering (if any) has decided the surviving rows.
+        // `local.arena` already backs this thread's own per-row-group scratch (reset in
+        // `claimNextRowGroup`), so these small per-batch arrays live there too.
+        const vecs = local.arena.allocator().alloc(v2.duckdb_v2_vector_handle, bind_data.cols.len) catch {
+            fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory", .{});
             return;
-        }
+        };
+        vecs[0] = vec0;
+        const outs = local.arena.allocator().alloc([*]i64, bind_data.cols.len) catch {
+            fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory", .{});
+            return;
+        };
+        outs[0] = out0;
 
-        // Every other selected column shares this row group's row count — decode each straight
-        // into its own vector's buffer, bounded to exactly `row_count` (not the batch's max
-        // capacity): column 0 already proved that many rows remain in this row group, so every
-        // other column's own reader, advanced in the same lockstep, must have at least that many
-        // left too. The count-mismatch check below exists only to catch a lockstep assumption
-        // this prototype hasn't actually verified could fail — see claimNextRowGroup's own doc
+        // Every other column shares this row group's row count — decode each straight into its
+        // own vector's buffer, bounded to exactly `row_count` (not the batch's max capacity):
+        // column 0 already proved that many rows remain in this row group, so every other
+        // column's own reader, advanced in the same lockstep, must have at least that many left
+        // too. The count-mismatch check below exists only to catch a lockstep assumption this
+        // prototype hasn't actually verified could fail — see claimNextRowGroup's own doc
         // comment — not a scenario expected to trigger.
         for (bind_data.cols[1..], local.readers[1..], 1..) |spec, *reader_slot, i| {
             var vec: v2.duckdb_v2_vector_handle = undefined;
@@ -756,23 +773,36 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
                 fail(err, .ERROR_QUERY_EXECUTOR, "read_zpq: row count mismatch in row group {d}: column 0 decoded {d}, column {d} decoded {d}", .{ local.rg_idx, row_count, i, count });
                 return;
             }
-            if (spec.max_def != 0) {
-                var validity_ptr: *u64 = undefined;
-                if (v2.duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_ptr, err) != .ERROR_NONE) return;
-                // SAFETY: the mask is a flat array of words covering every row of this vector.
-                const bits: [*]u64 = @ptrCast(validity_ptr);
-                writeValidityBits(bits, levels[0..row_count]);
-            }
+            vecs[i] = vec;
+            outs[i] = out;
+        }
+
+        if (bind_data.filter_count > 0 and !local.row_group_always_match) {
+            row_count = filterAndCompactAll(bind_data, local, outs, row_count, err) orelse return;
+            // Zero matches in THIS BATCH is not the same thing as the
+            // reader being exhausted — `local.readers[0]` is still mid-
+            // row-group and may well have a match a few batches further
+            // in (confirmed live: a batch straddling a selective filter's
+            // match can easily decode 2048 non-matching rows before
+            // reaching the one that passes). `continue` re-enters the
+            // `while (local.readers[0] != null)` loop and decodes the
+            // next batch off the SAME still-live reader; only `decode`/
+            // `decodeWithLevels` itself returning 0 (checked above,
+            // before filtering) means the row group is actually done.
+            if (row_count == 0) continue;
         }
 
         if (v2.duckdb_v2_vector_set_size(vec0, row_count, err) != .ERROR_NONE) return;
-        if (bind_data.cols[0].max_def != 0) {
+        // Every column still needs its validity bits written, filtered or not: a row surviving
+        // a filter on a *different* column can still be NULL here (see `filterAndCompactAll`'s
+        // own doc comment on why that guarantee doesn't generalize past one column).
+        for (bind_data.cols, 0..) |spec, i| {
+            if (spec.max_def == 0) continue;
             var validity_ptr: *u64 = undefined;
-            if (v2.duckdb_v2_vector_flat_get_validity_mutable(vec0, &validity_ptr, err) != .ERROR_NONE) return;
-            // SAFETY: the mask is a flat array of words covering every row
-            // of this vector; `validity_ptr` points at word 0.
+            if (v2.duckdb_v2_vector_flat_get_validity_mutable(vecs[i], &validity_ptr, err) != .ERROR_NONE) return;
+            // SAFETY: the mask is a flat array of words covering every row of this vector.
             const bits: [*]u64 = @ptrCast(validity_ptr);
-            writeValidityBits(bits, levels0[0..row_count]);
+            writeValidityBits(bits, defLevelsFor(local, i)[0..row_count]);
         }
         return;
     }
@@ -815,12 +845,13 @@ fn typeOf(e: v2.duckdb_v2_expression_handle, err: Err) ?v2.DUCKDB_V2_EXPRESSION_
     return t;
 }
 
-/// Recognizes `value <op> BIGINT constant`, the column always on the left (the optimizer rewrites
-/// `90 < value` to `value > 90` before this callback ever sees it, per the equivalent cookbook
-/// recipe, `table_pushdown.zig`, which this follows closely). Null means "not mine, apply it
-/// yourself" — a declined predicate never breaks correctness, only an optimization opportunity.
-/// `err` here is a scratch slot (see `pushdown` below): a failed introspection call is also just
-/// "not mine," never a query failure.
+/// Recognizes `<column> <op> BIGINT constant`, the column always on the left (the optimizer
+/// rewrites `90 < value` to `value > 90` before this callback ever sees it, per the equivalent
+/// cookbook recipe, `table_pushdown.zig`, which this follows closely) — `<column>` may be any of
+/// `bind_data.cols`, not just the first. Null means "not mine, apply it yourself" — a declined
+/// predicate never breaks correctness, only an optimization opportunity. `err` here is a scratch
+/// slot (see `pushdown` below): a failed introspection call is also just "not mine," never a
+/// query failure.
 fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, filter: v2.duckdb_v2_expression_handle, scratch: Err) ?FilterSpec {
     const op = opOf(typeOf(filter, scratch) orelse return null) orelse return null;
     var count: u64 = 0;
@@ -832,15 +863,12 @@ fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, filt
     if ((typeOf(left, scratch) orelse return null) != .EXPRESSION_TYPE_BOUND_COLUMN_REF) return null;
     if ((typeOf(right, scratch) orelse return null) != .EXPRESSION_TYPE_VALUE_CONSTANT) return null;
 
-    // The index in the expression is among the columns the query reads; this function declares
-    // exactly one ("value", index 0), so anything else means the predicate isn't on our column —
-    // can't happen in practice (there's nothing else to push a filter onto), but checked anyway
-    // rather than assumed.
+    // The index in the expression is among the columns the query reads; `declared` is that
+    // column's position in `bind_data.cols` (whichever one it turns out to be).
     var referenced: u64 = 0;
     if (v2.duckdb_v2_expression_column_ref_get_index(left, &referenced, scratch) != .ERROR_NONE) return null;
     var declared: u64 = 0;
     if (v2.duckdb_v2_table_function_filter_pushdown_get_column_index(info, referenced, &declared, scratch) != .ERROR_NONE) return null;
-    if (declared != 0) return null;
 
     var constant: v2.duckdb_v2_value_handle = undefined;
     if (v2.duckdb_v2_expression_constant_get_value(right, &constant, scratch) != .ERROR_NONE) return null;
@@ -849,7 +877,7 @@ fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, filt
     if (v2.duckdb_v2_value_is_null(constant, &is_null, scratch) != .ERROR_NONE or is_null) return null;
     var c: i64 = 0;
     if (v2.duckdb_v2_value_get_bigint(constant, &c, scratch) != .ERROR_NONE) return null;
-    return .{ .op = op, .value = c };
+    return .{ .declared_col = declared, .op = op, .value = c };
 }
 
 fn pushdown(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, context: v2.duckdb_v2_context_handle, err: Err) callconv(.c) void {
@@ -857,12 +885,6 @@ fn pushdown(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, conte
     var bind_ptr: ?*anyopaque = null;
     if (v2.duckdb_v2_table_function_filter_pushdown_get_bind_data(info, &bind_ptr, err) != .ERROR_NONE) return;
     const bind_data: *BindData = @ptrCast(@alignCast(bind_ptr orelse return));
-    // Generalizing `filterCompact` to keep every column's output array aligned under a pushed-
-    // down filter is real additional logic this prototype doesn't attempt (see this file's
-    // module doc comment and PLAN-zpq-multi.md's own Phase 1.6) — declining every filter here
-    // when more than one column is selected means DuckDB's own executor re-applies it instead,
-    // which is always correct, just not pushed down.
-    if (bind_data.cols.len != 1) return;
 
     var count: u64 = 0;
     if (v2.duckdb_v2_table_function_filter_pushdown_get_filter_count(info, &count, err) != .ERROR_NONE) return;
