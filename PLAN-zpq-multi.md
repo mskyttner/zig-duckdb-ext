@@ -131,6 +131,95 @@ reverting `max_rows_per_batch` to 2048 — already known to cost nothing (the 12
 itself a no-measurable-difference experiment) and now confirmed to be the only value safe in
 every pipeline shape this function can end up in.
 
+## Phase 1.6: filter pushdown generalization (scoped, not implemented)
+
+The one Phase 1 item left undone on purpose (see "Phase 1: implemented" above) — a plan for it,
+not an implementation. Checked against zpq's actual code rather than assumed, since the design
+hinges on whether the pieces below are already column-agnostic.
+
+### What's already fine, unmodified
+
+**Row-group pruning already supports filters on different columns in one AND.** Read
+`core/filter/prune.zig` directly: `pruneRowGroup`'s `.and_filter`/`.or_filter` case recurses into
+each child independently (`pruneRowGroup(rg, child, file_meta)`) and combines the two
+`Decision`s with `andCombine`/`orCombine` — pure three-valued-logic combination, no assumption
+anywhere that the children share a column. Each leaf (`.int64 = .{ .col_idx, .op, .value }`)
+resolves its own `col_idx`'s own statistics via `leafStats`/`valueStats`. So `ast.join`-ing
+leaves that reference different file columns into one AND, and handing that to `pruneRowGroup`,
+already works today — confirmed by reading the dispatch, not by running new code (worth a real
+test once this is implemented, but nothing here needs to change).
+
+**`filterCompact`'s `SelectionVector` + iterator mechanism doesn't change.** It already separates
+"decide which row indices survive" (the `SelectionVector`) from "compact one array using those
+indices" (the iterator walk). What's new is calling the compaction step once per column instead
+of once, and building the selection from potentially several columns' values instead of one.
+
+### What's new
+
+1. **`FilterSpec` gains `declared_col: usize`** — the position within `bind_data.cols` the filter
+   applies to (not the file's own `col_idx`; needed both to build `ast.Leaf.int64{ .col_idx =
+   bind_data.cols[declared_col].col_idx, ... }` in `claimNextRowGroup` and to index the right
+   decoded array in `exec`).
+2. **`recognize`'s hardcoded `if (declared != 0) return null;`** becomes "accept any `declared` in
+   `[0, cols.len)`, record it as `declared_col`." No other change to `recognize` — it already
+   resolves "which of our declared columns does this predicate reference" generically via
+   `filter_pushdown_get_column_index`.
+3. **`pushdown`'s new `if (bind_data.cols.len != 1) return;` guard goes away** — filters get
+   accepted again for any column count.
+4. **`claimNextRowGroup`'s row-group-pruning AST build** changes from "every leaf uses
+   `cols[0].col_idx`" to "leaf `i` uses `cols[bind_data.filters[i].declared_col].col_idx`" —
+   confirmed above that `ast.join`/`pruneRowGroup` handle the resulting mixed-column AND
+   correctly already.
+5. **`exec`'s decode order inverts for the filtered case.** Today, column 0 decodes first (its
+   row count drives control flow), and the filtered branch returns immediately after compacting
+   column 0 alone — there's nothing else to decode. Once a filter can reference any column, this
+   splits in two:
+   - Unfiltered row groups (`row_group_always_match == true`, or `filter_count == 0`): unchanged
+     — column 0 first, then the rest bounded to its row count, exactly as today.
+   - A row group needing the per-row recheck: every selected column must be decoded in full
+     *before* filtering, since the selection vector can depend on any of them. Column 0 still
+     decodes first to learn the batch's row count (same as the unfiltered path, including
+     end-of-row-group handling), then every other column decodes bounded to that count — this
+     reuses the loop already written for the unfiltered multi-column case, just run before
+     filtering instead of being the last step.
+6. **`filterCompact` becomes two functions, or one with a different shape**:
+   - **Build the selection** (new logic): for each decoded row, start "kept," then for every
+     `FilterSpec`, check that row's validity *in that spec's own column* and evaluate the
+     predicate against *that column's own decoded value* — a row with a filter on a column where
+     it's NULL fails only because of that filter, not because some *other*, unfiltered column
+     happens to be NULL. This is the actual correctness-sensitive new logic: today's single-
+     column `filterCompact` folds "is this row valid" and "does it pass the filter" together
+     because there's only one column to check; generalized, validity and predicate evaluation
+     both become per-filter, per-column lookups instead of one shared `def_levels`/`dest` pair.
+   - **Compact every column** (mechanical repetition of existing logic): walk the *same*
+     `SelectionVector`'s iterator once per column, compacting that column's own `dest`/
+     `def_levels` in place — same write-index-never-passes-read-index loop `filterCompact`
+     already has, just called once per column instead of once total.
+   - **Validity after compaction, per column**: today's filtered path skips `writeValidityBits`
+     entirely, because the one column it handles is guaranteed non-NULL among kept rows (NULL
+     rows are excluded by that same column's own filter). That guarantee doesn't generalize: a
+     surviving row can still be NULL in a column that has *no* filter on it. So after compaction,
+     every selected column needs the same `writeValidityBits` call the unfiltered path already
+     does — the filtered path stops being validity-mask-free once more than one column is in
+     play.
+
+### Validate with
+
+A 3+ column fixture (mixed REQUIRED/OPTIONAL, like the one `multi3.parquet` already is for Phase
+1's own misalignment test), at minimum:
+1. A filter on column 0 only, with assertions on a *different*, unfiltered column's surviving
+   values (today's Phase 1 misalignment test, now exercised through the filtered path instead of
+   around it).
+2. A filter on a column other than 0 (exercises `declared_col != 0` for the first time).
+3. Filters on two different columns AND'd together (`WHERE a > 100 AND c < -50`) — both the
+   row-group-pruning path (does the combined AST actually skip row groups neither filter alone
+   would) and the per-row path (does the kept set match applying both filters with DuckDB's own
+   post-scan filtering on an *unfiltered* query, as a baseline).
+4. A NULL check on the filtered-but-not-NULL-affecting case: a row whose filtered column passes
+   the predicate but whose *other*, unfiltered column is NULL — confirms the validity-mask fix
+   above and not just alignment.
+5. Filtered + `threads > 1` together, same as Phase 1's own parallel validation.
+
 ## Explicitly out of scope for both phases
 
 **Nested/repeated types (`LIST`/`STRUCT`/`MAP`, `max_rep > 0`)** — not a type-dispatch problem,
