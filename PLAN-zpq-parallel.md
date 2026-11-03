@@ -1,0 +1,102 @@
+# Plan: parallel row-group scanning for zig_v2_read_parquet
+
+Current state (`src/ext/init_v2_poc_zpq.zig`): single-threaded. `GlobalState` holds one shared
+`arena`, one `reader: ?ColumnChunkReader(i64)`, one `rg_idx` — `exec` is called repeatedly on
+whatever thread DuckDB happens to use, and `openNextRowGroup` always advances the same shared
+cursor. There is no `init_local` callback and no `partition_data`/batch-index reporting at all.
+
+This doc is a plan, not an implementation — scoping what parallelizing this actually requires,
+and explicitly ruling out the wrong way to do it, before touching code.
+
+## The wrong way: reusing zpq's own engine-level parallelism
+
+Checked `engine.zig`'s own doc comment and export surface directly, not assumed. Its own words:
+"input dispatch, **parallel fetch**, decode, scan, output" lives there, ending in
+`core.scan.runMultiAggregate`. That is zpq's *own* orchestration layer — a scan→consumer protocol
+(`core/consumer.zig`: "Per-RG scan→consumer protocol (decode+filter+encode)") feeding zpq's own
+`AggResult`/`QueryResult`/output types, with its own thread pool and memory-budget machinery.
+It is not a standalone "decode N row groups in parallel" primitive this PoC could borrow — using
+it would mean pulling in the same `io.*`/BoringSSL surface `build.zig.zon`'s own `.zpq` comment
+confirms this PoC currently never reaches. Not pursued.
+
+## The right way: DuckDB's own v2 table-function threading
+
+Same pattern this project already built and verified for `zig_cookbook_parallel_range`/
+`zig_cookbook_range` (`src/cookbook/table_callbacks.zig`, `src/cookbook/table_pushdown.zig`):
+`init_global_set_max_threads(N)`, a per-thread `LocalState` via `init_local`, and
+`partition_data`/`set_batch_index` to keep output in file order under `preserve_insertion_order`.
+It maps onto this code almost as-is, because the pieces that need to move are already shaped
+right for it:
+
+1. **`GlobalState` shrinks to a shared, read-only `bind_data` plus one atomic row-group claim
+   counter** (`std.atomic.Value(usize)`, replacing the plain `rg_idx: usize`). Nothing else needs
+   to be shared: `ColumnChunkReader(i64)` is already constructed fresh per row group with no
+   state carried from the previous one, so there is nothing to synchronize beyond "which row
+   group does this thread claim next" — `fetchAdd(1, .monotonic)` is enough, the same primitive
+   `zig_cookbook_parallel_range`'s `GlobalState.next_block` already uses.
+2. **`arena`/`reader`/`row_group_always_match`/`done` move to a new `LocalState`**, one per
+   thread, built in a new `init_local` callback. Each thread decodes only the row groups it
+   claims, into its own output chunk — no cross-thread access to any of these fields, so no
+   locking anywhere in `exec` itself.
+3. **`bind_data.file_bytes` already supports this for free.** It is one immutable slice; every
+   thread reads a disjoint byte range out of it (each row group's own `chunk_bytes` slice) with
+   no overlap and no mutation — the same "shared read-only data, disjoint ranges, no
+   synchronization needed" shape this project's matmul row-split work already established.
+4. **`openNextRowGroup` becomes `claimNextRowGroup(local: *LocalState, global: *GlobalState,
+   bind_data: *const BindData)`**: claim the next index via `fetchAdd`, bounds-check against
+   `bind_data.meta.row_groups.items.len`, then the rest of today's function body (prune check,
+   byte-range slicing, `ColumnChunkReader.init`) is unchanged, just writing into `local.*`
+   instead of `state.*`.
+5. **`partition_data`**: report `local.block` (the claimed row-group index) as the batch index —
+   row groups already have a well-defined, stable order in the file (`meta.row_groups.items`),
+   so the index *is* the natural batch index, no separate counter needed. Required if
+   `preserve_insertion_order` should keep rows in file order across threads; if the caller is
+   fine with `read_parquet`-style unordered output, this step is skippable (document the choice
+   either way, don't default to one silently).
+6. **`max_threads`**: a reasonable default is "number of row groups, capped at the CPU count" —
+   more threads than row groups is wasted dispatch (the same lesson the matmul row-split
+   benchmarking already learned: dispatch overhead dominates once a thread's share of the work
+   is too small). `bind` already knows `meta.row_groups.items.len` by the time `init_global`
+   runs, so this is a straightforward `@min(cpu_count, row_group_count)`, not a guess.
+
+### What does NOT need to change
+
+- `BindData`, `resolveSupportedColumn`, the filter-pushdown recognizer (`recognize`/`pushdown`)
+  — all already per-query, read-only after `bind`, safe to share across threads unmodified.
+  `FilterSpec`/`filters`/`filter_count` are read-only once `bind` returns (pushdown only runs
+  during planning, before any thread starts scanning).
+- `writeValidityBits`, `filterCompact`, `evalFilters` — pure functions over per-call buffers
+  already; nothing about making `exec` run on multiple threads changes what happens inside one
+  call to them.
+- The whole-file-in-memory approach (`bind`'s `readFileAlloc`) — orthogonal to this plan. Still
+  a real limitation (see `PLAN-zpq-multi.md`'s sibling concerns), just not one parallelism
+  changes either way: every thread already reads from the same in-memory `file_bytes`.
+
+## Validate with
+
+A multi-row-group fixture (at least 3 row groups, large enough that single-threaded vs.
+`max_threads > 1` actually produces a measurable wall-clock difference — the matmul
+cache-blocking work this session already found that "more threads" can lose to serial when a
+thread's share of the work is small, so this needs a real fixture, not just "it runs"). Check,
+in order:
+1. **Correctness first**: full-scan row count and values match the single-threaded path exactly,
+   at `max_threads` = 1, 2, and more threads than row groups (exercises the claim-counter's
+   bounds check cleanly running out).
+2. **Order**, if `partition_data` is wired: `SELECT * FROM zig_v2_read_parquet(...)` returns rows
+   in the same order as today's single-threaded version, with `preserve_insertion_order` at its
+   default.
+3. **Filtered + parallel together**: a pushed-down filter that prunes some row groups entirely
+   and leaves others needing the per-row recheck, run at `max_threads > 1` — the row-group-level
+   `row_group_always_match` decision and the `SelectionVector` compaction are both still
+   per-thread-local state under this plan, so this should Just Work, but is exactly the kind of
+   interaction worth a dedicated test rather than assuming from the individual pieces working.
+
+## Explicitly out of scope for this plan
+
+**Reading from stdin, or any non-seekable input.** Deferred separately — Parquet's footer-at-
+the-end layout needs random access, which stdin does not give without buffering the whole input
+first; not a parallelism question at all, kept out of this doc on purpose.
+
+**Multi-column/multi-type support** — `PLAN-zpq-multi.md`'s own scope, independent of this one.
+The two interact only superficially (both touch `GlobalState`/`LocalState` shape), and
+`PLAN-zpq-multi.md` already names which order to do them in if both are wanted.
