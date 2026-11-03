@@ -11,7 +11,12 @@
 ///! pulling in `zpq`, so nothing else is ever affected if it has trouble building or fetching.
 ///!
 ///! Deliberately narrow: one INT64 column, REQUIRED or singly-OPTIONAL (max_def <= 1), never
-///! repeated; whole file read into memory; no row_gate. OPTIONAL support isn't a nice-to-have —
+///! repeated; no row_gate. `bind` reads only the footer (a fixed-size tail read, not the whole
+///! file — see `readFooter`); `exec` positionally reads each row group's own column-chunk byte
+///! range on demand, off the one file handle `bind` opened and every thread shares (`pread`-style
+///! positioned reads carry their own offset per call, so this needs no locking — see
+///! PLAN-zpq-parallel.md's profiling section for why this replaced an earlier whole-file
+///! `readFileAlloc`). OPTIONAL support isn't a nice-to-have —
 ///! DuckDB's own `COPY ... TO PARQUET` emits columns as
 ///! OPTIONAL by default (confirmed live: a REQUIRED-only first cut rejected every file DuckDB
 ///! itself writes). Extending beyond max_def <= 1 (nested/repeated) is follow-up work.
@@ -28,8 +33,8 @@
 ///! `core.scan`'s aggregate engine —
 ///!   - Whole-row-group skip: `filter_prune.pruneRowGroup` judges a row group from its column
 ///!     chunk statistics alone (min/max/null_count), before any decode. `unknown`/`keep` still
-///!     decode normally; `skip` means the row group's bytes are never even sliced out of
-///!     `file_bytes`, let alone decoded; `always_match` (a full-match proof) skips the per-row
+///!     decode normally; `skip` means the row group's bytes are never even read off disk, let
+///!     alone decoded; `always_match` (a full-match proof) skips the per-row
 ///!     recheck below for that row group's rows, since they're already known to all pass.
 ///!   - Per-row filter + compaction: no page-level statistics are wired (that would need the
 ///!     footer's ColumnIndex/OffsetIndex, out of scope here), so a `keep`/`unknown` row group
@@ -74,7 +79,12 @@ fn fail(err: Err, code: v2.DUCKDB_V2_ERROR, comptime fmt: []const u8, args: anyt
     _ = helpers.setErrorText(err.*, msg);
 }
 
-const max_file_bytes = 1 << 30; // 1 GiB — PoC guardrail, not a real limit.
+/// Parquet's fixed trailer layout: 4-byte little-endian footer length, then the 4-byte "PAR1"
+/// magic, both at the very end of the file. `readFooter` below reads exactly these two fields
+/// without reading the whole file.
+const footer_tail_len: usize = 8;
+const parquet_magic: [4]u8 = .{ 'P', 'A', 'R', '1' };
+
 /// Not DuckDB's `STANDARD_VECTOR_SIZE` (2048) — the real v2 API's own doc comment on
 /// `duckdb_v2_vector_set_size` ("reserves enough space for size logical elements") says nothing
 /// about a 2048 cap, unlike v1's fixed-size vectors. 122880 is the row-group size DuckDB's own
@@ -103,7 +113,14 @@ const FilterSpec = struct { op: ast.Operator, value: i64 };
 const max_pushdown_filters = 4;
 
 const BindData = struct {
-    file_bytes: []u8,
+    /// Opened once here, shared read-only by every thread's `claimNextRowGroup` for its own
+    /// positioned reads — see this file's module doc comment for why that needs no locking.
+    file: std.Io.File,
+    file_len: u64,
+    /// Backs `meta`'s internal slices (parsed straight out of this buffer, never copied) — must
+    /// outlive it, same lifetime rule the old whole-file `file_bytes` had, just sized to the
+    /// footer alone now instead of the whole file.
+    footer_bytes: []u8,
     meta: schema.FileMetaData,
     col_idx: usize,
     max_def: i32,
@@ -114,7 +131,8 @@ const BindData = struct {
 fn destroyBindData(ptr: *anyopaque) callconv(.c) void {
     const data: *BindData = @ptrCast(@alignCast(ptr));
     data.meta.deinit(std.heap.c_allocator);
-    std.heap.c_allocator.free(data.file_bytes);
+    std.heap.c_allocator.free(data.footer_bytes);
+    data.file.close(std.Io.Threaded.global_single_threaded.io());
     std.heap.c_allocator.destroy(data);
 }
 
@@ -178,6 +196,41 @@ fn resolveSupportedColumn(meta: *const schema.FileMetaData, column_name: []const
     return .{ .col_idx = col_idx, .max_def = leaf.max_def };
 }
 
+const Footer = struct { meta: schema.FileMetaData, footer_bytes: []u8 };
+
+/// Reads and parses the footer alone: the trailing 8-byte length+magic field, then exactly
+/// `footer_len` bytes before it, then (best-effort, same as `metadata.open`'s own two checks)
+/// the 4-byte leading magic — three small positioned reads regardless of file size, instead of
+/// `bind`'s old `readFileAlloc` of the whole file. Mirrors `metadata.open`'s own validation
+/// (encrypted-footer check, both magics, footer-fits-the-file bound) but hands the footer bytes
+/// to `metadata.openFooter` directly — zpq's own entry point for "footer fetched separately from
+/// the full file body" (its doc comment names exactly this S3-range-read shape; a local file's
+/// footer tail is the same shape, just fetched with `pread` instead of a ranged GET).
+fn readFooter(io: std.Io, file: std.Io.File, file_len: u64, allocator: std.mem.Allocator) !Footer {
+    if (file_len < footer_tail_len + parquet_magic.len) return error.TooSmall;
+
+    var tail: [footer_tail_len]u8 = undefined;
+    if (try file.readPositionalAll(io, &tail, file_len - tail.len) != tail.len) return error.TooSmall;
+    if (metadata.hasEncryptedFooter(&tail)) return error.EncryptedFile;
+    if (!std.mem.eql(u8, tail[4..8], &parquet_magic)) return error.BadMagic;
+
+    const footer_len = std.mem.readInt(u32, tail[0..4], .little);
+    if (footer_len > file_len - tail.len - parquet_magic.len) return error.FooterTooLarge;
+
+    var leading: [parquet_magic.len]u8 = undefined;
+    if (try file.readPositionalAll(io, &leading, 0) != leading.len or !metadata.hasLeadingMagic(&leading)) {
+        return error.BadMagic;
+    }
+
+    const footer_start = file_len - tail.len - footer_len;
+    const footer_bytes = try allocator.alloc(u8, footer_len);
+    errdefer allocator.free(footer_bytes);
+    if (try file.readPositionalAll(io, footer_bytes, footer_start) != footer_bytes.len) return error.TooSmall;
+
+    const meta = try metadata.openFooter(allocator, footer_bytes);
+    return .{ .meta = meta, .footer_bytes = footer_bytes };
+}
+
 fn bind(
     info: v2.duckdb_v2_function_bind_info_handle,
     result: v2.duckdb_v2_table_function_bind_info_handle,
@@ -199,28 +252,47 @@ fn bind(
     // any filesystem call. `global_single_threaded` is std.Io's own
     // documented choice for exactly this case (a one-off blocking call,
     // no concurrency/cancelation needed) — see its doc comment in
-    // std/Io/Threaded.zig.
+    // std/Io/Threaded.zig. Positional reads through it are safe to share
+    // across every scanning thread later: confirmed live by reading
+    // `Threaded.zig`'s own `fileReadPositional`, which discards its
+    // `userdata` and goes straight to `pread`/`preadv` — no shared state,
+    // and POSIX guarantees `pread` doesn't race on the fd's cursor the way
+    // plain `read` would.
     const io = std.Io.Threaded.global_single_threaded.io();
-    const file_bytes = std.Io.Dir.cwd().readFileAlloc(io, path, std.heap.c_allocator, .limited(max_file_bytes)) catch |e| {
-        return fail(err, .ERROR_IO_GENERAL, "read_zpq: could not read '{s}': {s}", .{ path, @errorName(e) });
+    var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |e| {
+        return fail(err, .ERROR_IO_GENERAL, "read_zpq: could not open '{s}': {s}", .{ path, @errorName(e) });
+    };
+    const file_len = file.length(io) catch |e| {
+        file.close(io);
+        return fail(err, .ERROR_IO_GENERAL, "read_zpq: could not stat '{s}': {s}", .{ path, @errorName(e) });
     };
 
-    var meta = metadata.open(std.heap.c_allocator, file_bytes) catch |e| {
-        std.heap.c_allocator.free(file_bytes);
+    const footer = readFooter(io, file, file_len, std.heap.c_allocator) catch |e| {
+        file.close(io);
         return fail(err, .ERROR_INPUT_INVALID, "read_zpq: bad parquet footer in '{s}': {s}", .{ path, @errorName(e) });
     };
+    var meta = footer.meta;
     const resolved = resolveSupportedColumn(&meta, column_name) catch |e| {
         meta.deinit(std.heap.c_allocator);
-        std.heap.c_allocator.free(file_bytes);
+        std.heap.c_allocator.free(footer.footer_bytes);
+        file.close(io);
         return fail(err, .ERROR_INPUT_INVALID, "read_zpq: column '{s}' unusable: {s}", .{ column_name, @errorName(e) });
     };
 
     const data = std.heap.c_allocator.create(BindData) catch {
         meta.deinit(std.heap.c_allocator);
-        std.heap.c_allocator.free(file_bytes);
+        std.heap.c_allocator.free(footer.footer_bytes);
+        file.close(io);
         return fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory", .{});
     };
-    data.* = .{ .file_bytes = file_bytes, .meta = meta, .col_idx = resolved.col_idx, .max_def = resolved.max_def };
+    data.* = .{
+        .file = file,
+        .file_len = file_len,
+        .footer_bytes = footer.footer_bytes,
+        .meta = meta,
+        .col_idx = resolved.col_idx,
+        .max_def = resolved.max_def,
+    };
     var boxed: v2.duckdb_v2_opaque = .{ .ptr = data, .destroy = destroyBindData, .equals = null };
     _ = v2.duckdb_v2_function_bind_set_bind_data(info, &boxed, err);
 }
@@ -268,8 +340,15 @@ fn initLocal(info: v2.duckdb_v2_table_function_init_local_info_handle, context: 
 /// `local.reader` before calling — so nothing here still needs that memory. Without this,
 /// scratch from every row group this thread has read accumulates for the whole scan instead of
 /// just the one currently being decoded.
-fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const BindData) void {
+///
+/// Returns `false` when it already reported a real query failure through `err` (an OOM
+/// allocating this row group's read buffer, or a failed/short positioned read) — the caller must
+/// stop. Every other outcome, including a row group `pruneRowGroup`/malformed-metadata skips (not
+/// a resource failure, so not an error) and the ordinary "row groups exhausted" case
+/// (`local.done = true`), returns `true`.
+fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const BindData, err: Err) bool {
     _ = local.arena.reset(.free_all);
+    const io = std.Io.Threaded.global_single_threaded.io();
     while (true) {
         const idx = global.next_rg.fetchAdd(1, .monotonic);
         if (idx >= bind_data.meta.row_groups.items.len) break;
@@ -294,7 +373,7 @@ fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const
             else
                 ast.join(local.arena.allocator(), true, leaves[0..bind_data.filter_count]) catch leaves[0];
             const decision = prune.pruneRowGroup(rg, combined, &bind_data.meta);
-            if (decision == .skip) continue; // whole row group pruned — never even sliced out of file_bytes
+            if (decision == .skip) continue; // whole row group pruned — never even read off disk
             local.row_group_always_match = (decision == .always_match);
         }
 
@@ -304,17 +383,34 @@ fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const
         if (start < 0 or col_meta.total_compressed_size < 0) continue;
         const start_u: u64 = @intCast(start);
         const length: u64 = @intCast(col_meta.total_compressed_size);
-        if (length > bind_data.file_bytes.len or start_u > bind_data.file_bytes.len - length) continue;
-        const chunk_bytes = bind_data.file_bytes[start_u .. start_u + length];
+        if (length > bind_data.file_len or start_u > bind_data.file_len - length) continue;
+
+        // Unlike the old whole-file slice, this is real I/O that can fail — an allocation
+        // failure or a short/failed read is a genuine resource/correctness problem, never safe
+        // to silently skip the way a merely-malformed-metadata row group is above.
+        const chunk_bytes = local.arena.allocator().alloc(u8, length) catch {
+            fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory reading row group {d}", .{idx});
+            return false;
+        };
+        const n = bind_data.file.readPositionalAll(io, chunk_bytes, start_u) catch |e| {
+            fail(err, .ERROR_IO_GENERAL, "read_zpq: could not read row group {d}: {s}", .{ idx, @errorName(e) });
+            return false;
+        };
+        if (n != chunk_bytes.len) {
+            fail(err, .ERROR_IO_GENERAL, "read_zpq: short read on row group {d}: got {d} of {d} bytes", .{ idx, n, chunk_bytes.len });
+            return false;
+        }
+
         local.reader = column.ColumnChunkReader(i64).init(
             chunk_bytes,
             col_meta.codec,
             .{ .max_def = bind_data.max_def, .max_rep = 0 },
             local.arena.allocator(),
         );
-        return;
+        return true;
     }
     local.done = true;
+    return true;
 }
 
 /// Writes one validity bit per row of `def_levels` into `bits` (DuckDB's
@@ -425,7 +521,9 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
     if (v2.duckdb_v2_table_function_exec_get_local_state(info, &local_ptr, err) != .ERROR_NONE) return;
     const local: *LocalState = @ptrCast(@alignCast(local_ptr.?));
 
-    if (local.reader == null and !local.done) claimNextRowGroup(local, global, bind_data);
+    if (local.reader == null and !local.done) {
+        if (!claimNextRowGroup(local, global, bind_data, err)) return;
+    }
 
     while (local.reader != null) {
         // Decode straight into the output vector's own buffer — no stack
@@ -452,7 +550,7 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
         };
         if (row_count == 0) {
             local.reader = null;
-            claimNextRowGroup(local, global, bind_data);
+            if (!claimNextRowGroup(local, global, bind_data, err)) return;
             continue;
         }
 

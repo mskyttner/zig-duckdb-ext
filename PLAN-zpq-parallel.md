@@ -159,7 +159,36 @@ the Parquet footer, never the whole file, so *each* call is cheap regardless of 
 the engine makes it.) Closing this gap means moving away from "read the whole file into memory
 up front" toward reading only the footer at bind time, then only the row-group byte ranges each
 thread actually needs during `exec` (same shape `PLAN-zpq-multi.md` already flags as a separate,
-real limitation) — not something attempted here; this plan's job was diagnosis, not the fix.
+real limitation).
+
+**Implemented.** `bind` now reads only the trailing 8-byte length+magic field, the leading
+4-byte magic, and exactly the footer itself (three small `pread`-style positioned reads via
+`std.Io.File.readPositionalAll`, regardless of file size) instead of `readFileAlloc`-ing the
+whole file — `zpq`'s own `metadata.openFooter`/`hasEncryptedFooter`/`hasLeadingMagic` are built
+for exactly this "footer fetched separately from the full file body" shape (its own doc comment
+names the S3-range-read case; a local file's tail read is the same shape). `BindData` keeps one
+open `std.Io.File` instead of the whole-file buffer; `claimNextRowGroup` now does a positioned
+read of each row group's own column-chunk byte range on demand, off that one shared file handle
+— safe with no locking, confirmed by reading `Threaded.zig`'s `fileReadPositional`: it discards
+its `userdata` and calls `pread`/`preadv` directly, and POSIX `pread` takes its offset as an
+explicit argument rather than racing on the fd's shared cursor the way plain `read` would (also
+checked `zio`, in case its io_uring-based `Io` would do better here: its own `waitForIo` falls
+back to a synchronous `pread` whenever the caller isn't already running inside a zio-managed
+coroutine, which `exec` — called directly by DuckDB v2's own thread pool — never is, so it would
+only add `Completion`/`Waiter` overhead over `std.Io.Threaded` for no benefit; not used).
+
+Re-benchmarked the same way (SF=5 TPCH fixture, `-no-agent` to avoid the CLI agent-mode artifact
+noted above):
+
+| | `threads=1` | `threads=24` | speedup (1->24) |
+|---|---|---|---|
+| before this fix | ~0.120-0.131s | ~0.048-0.051s | 2.7x |
+| after this fix | ~0.095-0.101s | ~0.018-0.037s | **~5.3x** |
+
+Now close to native `read_parquet`'s 5.6x, as expected once the one fixed serial cost was
+removed. Re-verified correctness, filtered+parallel interaction, the `max_threads`-clamp edge
+case (2-row-group fixture), NULL handling, order preservation (byte-identical CSV diff against
+native at `threads=24`), and both new error paths (bad magic, missing file) — all still correct.
 
 ## Explicitly out of scope for this plan
 
