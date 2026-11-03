@@ -183,6 +183,67 @@ ever ships a statically-linked build. See
 not verified against a live runtime, kept out of this ADR's "Decision"
 scope since nothing here depends on it.
 
+### 9. Value introspection for nested types (MAP/STRUCT/LIST) is generic, and diverges from the vector version
+
+Discovered while prototyping a `schema MAP(VARCHAR, STRUCT(name VARCHAR, type VARCHAR))` named
+parameter for `read_zpq` (`init_v2_poc_zpq.zig`). `value_get_child_count`/`value_get_child` are
+the *value*-level counterpart to section 5's *vector*-level `vector_get_child`/
+`vector_get_child_count` — same shape, different meaning per kind, and explicitly **not** the
+same meaning as the vector version for MAP: a MAP *value*'s children alternate key, value
+(`child_count` = `2 * entry_count`; child `2*i` is entry `i`'s key, `2*i+1` its value) — the
+header's own doc comment calls out this divergence from `vector_get_child` by name ("Note the
+divergence from vector_get_child, which descends structurally..."). A STRUCT *value*'s children
+are its fields in declared order, but the *names* of those fields are not on the value at all —
+they come from the value's own logical type, via `value_get_logical_type` +
+`logical_type_get_param`/`logical_type_get_param_count` (STRUCT reports one param per field;
+`out_name` is the field name, `out_value` is that field's *type*, wrapped as a TYPE value — not
+the field's actual value in the instance being inspected). In practice: if the parameter's
+logical type is already known at the call site (as it is for a function's own declared parameter
+type), there's no need to walk `logical_type_get_param` — field order in the value's children is
+guaranteed to match the type's own declared field order, since DuckDB casts an argument to the
+parameter's declared type before the bind callback ever sees it (STRUCT casts reorder fields by
+name, not position), so indexing `value_get_child` directly by the declared type's own field
+order is both simpler and correct.
+
+### 10. A compound parameter type can be built from SQL text directly, no builder dance needed
+
+Section 2 describes the `(name, value)`-pairs builder for LIST/STRUCT/DECIMAL/ARRAY/MAP via
+`context_create_type_from_id` — real, and what `v2_helpers.zig`'s `createListType`/
+`createMapType`/`createStructType`/etc. already wrap. But for a type whose shape is fixed and
+known at compile time (e.g. a function parameter declared as
+`MAP(VARCHAR, STRUCT(name VARCHAR, type VARCHAR))`), `duckdb_v2_factory_create_type_from_text`
+(wrapped as `v2_helpers.createTypeFromText`) parses ordinary SQL type syntax directly — "DECIMAL(18,3)",
+"STRUCT(a INTEGER, b VARCHAR)", "MAP(VARCHAR, INTEGER)", "INTEGER[3]", "ENUM('a','b')" — and
+returns the bound logical type in one call, with no child-type boxing at all. Prefer it over the
+builder calls whenever the type is a fixed literal shape; reach for the builders only when a
+child type isn't known until runtime (e.g. "LIST of whatever type this scalar function was
+called with").
+
+### 11. No bind-data serialize/deserialize hook is exposed for table functions
+
+DuckDB's C++ `TableFunction` struct has `serialize`/`deserialize` callback fields — real,
+checked directly in the vendored v2 source (`src/include/duckdb/function/table_function.hpp`) —
+used by `LogicalGet::Deserialize` to skip re-running `bind` from scratch when a logical plan is
+reconstructed from a serialized form (`has_serialize()` gates that path). The v2 C API has no way
+to set either callback (grepped the full header for `serialize`/`deserialize` near
+`table_function`: nothing). This isn't a gap worth working around — DuckDB's own
+`MultiFileFunction` framework (what backs native `read_parquet`) doesn't use the hook either; it
+just keeps its own `bind` cheap (footer-only) so a rebind, however triggered, costs little. See
+ADR-0009 for where this came up and what it implies for a zpq-backed function's own `bind` cost.
+
+### 12. `vector_set_size` on a multi-column output chunk: call it on every vector up front, but only vector 0 at the end
+
+A table function's `exec_get_output_chunk` doc comment: "write the rows, then declare how many
+there are with `vector_set_size()` on the first vector, which the engine takes as the batch's row
+count and propagates to the other vectors." That's the *final* call, reporting the real row
+count once decoding is done. The *up-front* reservation (sizing each vector's buffer to the
+batch's maximum capacity before writing into it, so `vector_get_data_mutable`'s pointer is safe
+to write up to that many elements) is a separate, per-vector concern — call it on every column's
+vector individually before decoding into any of them, then call it exactly once more, on vector
+0, with the real row count, after every column has been decoded. Calling it on vectors 1..N-1
+with the real count too is redundant at best (the doc says it propagates) and unverified at
+worst — don't.
+
 ## Consequences
 
 - `src/lib/duckdb_v2.zig` mirrors `duckdb.zig`'s `getApi()`-singleton
@@ -204,3 +265,10 @@ scope since nothing here depends on it.
   the patterns above rather than introduce new ones — see
   `docs/v2-migration-plan.md`'s "What's NOT done" for the specific,
   scoped next steps.
+- Sections 9-12 (added after prototyping `read_zpq`'s multi-column `schema`
+  parameter and profiling its I/O — see ADR-0009) extend this record to
+  value-level nested-type introspection, text-based type construction, the
+  absent bind-data serialize hook, and multi-vector batch sizing. Any new
+  v2 table function taking a compound parameter type, or writing more than
+  one output column per `exec` call, should start from these rather than
+  re-deriving them.
