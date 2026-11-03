@@ -1,4 +1,4 @@
-# Plan: multi-column and multi-type support for zig_v2_read_parquet
+# Plan: multi-column and multi-type support for read_zpq
 
 Current state (`src/ext/init_v2_poc_zpq.zig`): one column, one physical type (`INT64`,
 `ColumnChunkReader(i64)` hardcoded), REQUIRED or singly-OPTIONAL, never repeated. Filter pushdown

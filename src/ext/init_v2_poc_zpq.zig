@@ -1,4 +1,4 @@
-///! Speculative, fully isolated v2-poc demo: `zig_v2_read_parquet(path, column) -> (value BIGINT)`,
+///! Speculative, fully isolated v2-poc demo: `read_zpq(path, column) -> (value BIGINT)`,
 ///! built directly on zpq's `core.parquet`/`core.filter` surface (footer parsing, per-column-chunk
 ///! decode) rather than its `core.scan` aggregate-pipeline worker pool or its `io.*` surface
 ///! (S3/TLS/epoll) — see docs/rationale for the investigation that scoped this to exactly that
@@ -184,23 +184,23 @@ fn bind(
     // std/Io/Threaded.zig.
     const io = std.Io.Threaded.global_single_threaded.io();
     const file_bytes = std.Io.Dir.cwd().readFileAlloc(io, path, std.heap.c_allocator, .limited(max_file_bytes)) catch |e| {
-        return fail(err, .ERROR_IO_GENERAL, "zig_v2_read_parquet: could not read '{s}': {s}", .{ path, @errorName(e) });
+        return fail(err, .ERROR_IO_GENERAL, "read_zpq: could not read '{s}': {s}", .{ path, @errorName(e) });
     };
 
     var meta = metadata.open(std.heap.c_allocator, file_bytes) catch |e| {
         std.heap.c_allocator.free(file_bytes);
-        return fail(err, .ERROR_INPUT_INVALID, "zig_v2_read_parquet: bad parquet footer in '{s}': {s}", .{ path, @errorName(e) });
+        return fail(err, .ERROR_INPUT_INVALID, "read_zpq: bad parquet footer in '{s}': {s}", .{ path, @errorName(e) });
     };
     const resolved = resolveSupportedColumn(&meta, column_name) catch |e| {
         meta.deinit(std.heap.c_allocator);
         std.heap.c_allocator.free(file_bytes);
-        return fail(err, .ERROR_INPUT_INVALID, "zig_v2_read_parquet: column '{s}' unusable: {s}", .{ column_name, @errorName(e) });
+        return fail(err, .ERROR_INPUT_INVALID, "read_zpq: column '{s}' unusable: {s}", .{ column_name, @errorName(e) });
     };
 
     const data = std.heap.c_allocator.create(BindData) catch {
         meta.deinit(std.heap.c_allocator);
         std.heap.c_allocator.free(file_bytes);
-        return fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "zig_v2_read_parquet: out of memory", .{});
+        return fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory", .{});
     };
     data.* = .{ .file_bytes = file_bytes, .meta = meta, .col_idx = resolved.col_idx, .max_def = resolved.max_def };
     var boxed: v2.duckdb_v2_opaque = .{ .ptr = data, .destroy = destroyBindData, .equals = null };
@@ -358,7 +358,7 @@ fn evalFilters(specs: []const FilterSpec, value: i64) bool {
 /// here, unlike `pruneRowGroup`'s.
 fn filterCompact(specs: []const FilterSpec, max_def: i32, dest: []i64, def_levels: []const u32, err: Err) ?usize {
     var sel = selection.SelectionVector.init(std.heap.c_allocator, dest.len) catch {
-        fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "zig_v2_read_parquet: out of memory building selection vector", .{});
+        fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory building selection vector", .{});
         return null;
     };
     defer sel.deinit();
@@ -581,7 +581,7 @@ fn registerReadParquet(input: *const v2.duckdb_v2_extension_input, err: Err) !vo
     }
     defer _ = v2.duckdb_v2_table_function_destroy(&function);
 
-    const fn_name = helpers.str("zig_v2_read_parquet");
+    const fn_name = helpers.str("read_zpq");
     if (v2.duckdb_v2_table_function_set_name(function, &fn_name, err) != .ERROR_NONE) {
         return error.FailedToSetName;
     }

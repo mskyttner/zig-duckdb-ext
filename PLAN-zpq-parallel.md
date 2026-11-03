@@ -1,4 +1,4 @@
-# Plan: parallel row-group scanning for zig_v2_read_parquet
+# Plan: parallel row-group scanning for read_zpq
 
 Current state (`src/ext/init_v2_poc_zpq.zig`): single-threaded. `GlobalState` holds one shared
 `arena`, one `reader: ?ColumnChunkReader(i64)`, one `rg_idx` — `exec` is called repeatedly on
@@ -82,7 +82,7 @@ in order:
 1. **Correctness first**: full-scan row count and values match the single-threaded path exactly,
    at `max_threads` = 1, 2, and more threads than row groups (exercises the claim-counter's
    bounds check cleanly running out).
-2. **Order**, if `partition_data` is wired: `SELECT * FROM zig_v2_read_parquet(...)` returns rows
+2. **Order**, if `partition_data` is wired: `SELECT * FROM read_zpq(...)` returns rows
    in the same order as today's single-threaded version, with `preserve_insertion_order` at its
    default.
 3. **Filtered + parallel together**: a pushed-down filter that prunes some row groups entirely
