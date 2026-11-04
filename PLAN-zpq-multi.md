@@ -68,22 +68,90 @@ Independent of phase 1 — can be done first, second, or interleaved.
    column, switched on in `exec`'s decode step. This is the same type-erasure need phase 1's
    `readers: []?ColumnChunkReader(T)` has, so if both phases land, they share one union type
    rather than solving this twice.
-4. **`BYTE_ARRAY`/`FIXED_LEN_BYTE_ARRAY` (VARCHAR, BLOB, DECIMAL-as-bytes): genuinely unverified,
-   not just unimplemented.** Not yet checked whether `ColumnChunkReader([]const u8)` works the
-   same way as the fixed-width case, or needs a different decode path — a fixed-width `dest: []T`
-   buffer doesn't fit variable-length values the same way. **First step here is investigation, not
-   coding**: read `column.zig`'s actual constraints on `T` (does it special-case byte arrays
-   internally, or does `ColumnChunkReader(T)` require fixed `@sizeOf(T)`?), the same way the
-   `core.scan` vs `core.parquet` question got resolved earlier by reading `decodeInner`/`worker.zig`
-   directly rather than assuming. Do not commit to a VARCHAR design before that read.
-5. **Logical type, not just physical type, decides the DuckDB column type.** A `BYTE_ARRAY`
-   column could be VARCHAR, BLOB, or DECIMAL-encoded-as-bytes — `SchemaElement.converted_type`/
-   `logical_type` (already parsed by `metadata.open`, unused by this PoC so far) has to be
-   consulted, not just `ColumnMetaData.type`. `DECIMAL` additionally needs `helpers.createDecimalType`
-   (width/scale) and zpq's `core/parquet/decimal.zig`, present in the dependency but untouched here.
+4. **`BYTE_ARRAY`/`FIXED_LEN_BYTE_ARRAY` (VARCHAR, BLOB, DECIMAL-as-bytes).**
+
+   **Investigated (2026-11-04), not assumed — `[]const u8` is already a first-class `T`, not a
+   different shape.** `column.zig`'s own module doc comment says it outright: "caller picks the
+   right `T` based on the column's logical type (i32/i64/f32/f64 for primitives, `[]const u8` for
+   BYTE_ARRAY)". The mechanical reason this works at all: `T = []const u8` is a fixed-size slice
+   *header* (ptr+len), so `dest: []T` is still a uniform-stride array of fixed-size elements —
+   exactly the same shape `decodeColumn`/`moveElement` already assume — only the bytes each
+   header *points to* are variable-length, which this PoC never needs to store inline anyway.
+   `ColumnChunkReader([]const u8).init(...)` is a real, exercised code path (zpq's own test
+   suite constructs one directly). Every encoding this PoC's fixed-width types already rely on
+   supports byte arrays too: `rle_dict.Decoder([]const u8)` (dictionary-encoded strings, the
+   common case for real VARCHAR columns) is enabled whenever `T != bool`; `DELTA_LENGTH_BYTE_ARRAY`/
+   `DELTA_BYTE_ARRAY` are gated on `T == []const u8` specifically, so they're exercised *only* by
+   this path, not inherited for free from the numeric types. No encoding gap found.
+
+   **Lifetime, checked against this PoC's own ownership model, not assumed safe**: `decodeInner`'s
+   own doc comment: "everything returned lives as long as `arena`: the buffers are allocated
+   there, and `[]const u8` values are slices into page bytes, which a byte-array reader never
+   routes through a scratch." Our `chunk_bytes` is already `local.arena`-backed (allocated fresh
+   per row group, reset only when `claimNextRowGroup` claims the next one — see ADR-0009), and we
+   already pass `scratch: null` (the plain `init()`, not `initWithOptions` with a scratch
+   pointer) — exactly the mode byte-array columns require. Decoded slices stay valid for the
+   whole `exec` call that decoded them, which is exactly when they'd be copied out into the
+   output vector — no new ownership hazard.
+
+   **`FIXED_LEN_BYTE_ARRAY` needs one extra field set after `init`**: `type_length: usize = 0` on
+   the reader itself ("Set by the caller after init (defaults to 0 so existing callers are
+   unaffected)"), from the schema element's own `type_length`. `0` (the default) means "plain,
+   length-prefixed BYTE_ARRAY"; non-zero means "fixed `type_length`-byte values, no prefix" —
+   needed for BLOB-as-FLBA, UUID, and DECIMAL-as-FLBA.
+
+   **Writing VARCHAR/BLOB output needs a different vector API than the fixed-width columns use**,
+   checked against the real (not ADR-0003-era alpha) v2 header: `vector_get_data_mutable` still
+   works for a VARCHAR/BLOB vector (it returns `duckdb_v2_bytes`/`duckdb_v2_varchar_t` cells,
+   the same inline-or-pointer layout `v2_helpers.makeBytesValue` already builds for
+   `comptime_scalar_v2.zig`'s own VARCHAR scalar-result path), plus `vector_get_arena` to get the
+   arena a longer string's out-of-line bytes need to live in. So the write side is: for each
+   decoded row, `helpers.makeBytesValue(vector_arena, text, err)` into `out[row]` — reusing an
+   existing, already-proven helper in a new context, not inventing a new write mechanism. This is
+   a per-row call (unlike the fixed-width columns' single bulk decode-into-buffer), a real,
+   expected cost difference for variable-length output — not a design problem, just worth naming
+   up front rather than discovering mid-implementation.
+
+   **Design, now committed**: `PhysicalType` gains `.varchar`/`.blob` (not yet `.decimal_bytes` —
+   see item 5's own DECIMAL note); `ZigType` maps both to `[]const u8`; `resolveSupportedColumn`
+   accepts `BYTE_ARRAY`/`FIXED_LEN_BYTE_ARRAY` and picks `.varchar` vs `.blob` from
+   `leaf.element.effectiveLogicalType()` (see item 5, below) rather than physical type alone;
+   `claimNextRowGroup` sets `reader.type_length` after `init` when the leaf's own schema
+   `type_length` is non-zero; `exec`'s per-column write gets a `[]const u8`-specific branch next
+   to `decodeColumn`'s existing numeric/boolean one, using `vector_get_arena` +
+   `helpers.makeBytesValue` instead of a flat buffer write. Filter pushdown on a VARCHAR/BLOB
+   column (a `.string` leaf variant already exists in `ast.Filter`, confirmed, matching the
+   pattern Phase 2.7 already established) is explicitly **not** part of this slice — a natural,
+   separate follow-on once the type itself works, not a blocker for it.
+
+5. **Logical type, not just physical type, decides the DuckDB column type.** Checked
+   `schema.zig`'s own `SchemaElement.effectiveLogicalType()` directly: it resolves either the
+   modern `logical_type` or the legacy `converted_type` fallback into one `LogicalType` union —
+   `.STRING` (from `logical_type`'s `STRING` or `converted_type`'s legacy `UTF8`) means VARCHAR;
+   anything else on a `BYTE_ARRAY`/`FIXED_LEN_BYTE_ARRAY` column (no annotation, or one this PoC
+   doesn't map) means BLOB; `.DECIMAL` (`DecimalType{ scale, precision }`) means DECIMAL-as-bytes,
+   needing `helpers.createDecimalType` (width/scale) and zpq's `core/parquet/decimal.zig`, present
+   in the dependency but untouched here — a separate sub-step from plain VARCHAR/BLOB, not
+   required to land them.
+
 6. **INT96** (legacy timestamp encoding): deprecated but still appears in older files. zpq has
    `core/parquet/int96.zig`, so the decode primitive exists; needs wiring plus a 12-byte →
    DuckDB-TIMESTAMP conversion. Low priority — only worth doing if a real file actually needs it.
+
+7. **VARIANT output, investigated on request (2026-11-04) — low priority, not blocking anything
+   above.** zpq's `LogicalType` union also recognizes Parquet's `JSON`/`BSON` logical-type
+   annotations on a `BYTE_ARRAY` column (distinct from `.STRING`) — a real candidate for mapping
+   to DuckDB's native VARIANT type instead of plain VARCHAR. Checked what that would actually
+   cost, not assumed cheap: `comptime_scalar_v2.zig`'s own doc comment says VARIANT "has no
+   committed view layout (no `vectorGetView` support)" — it's read and written exclusively
+   through per-cell `duckdb_v2_value_handle` boxing (`vector_get_value`/`vector_set_value`, the
+   "only way to reach a cell" for a type with no flat buffer representation), not the flat
+   `duckdb_v2_bytes` array VARCHAR/BLOB get. So VARIANT output would mean one `Value`
+   construction (likely a VARCHAR value cast to VARIANT, or a JSON-parsing constructor — not
+   checked which) plus one `vector_set_value` call *per row*, strictly slower than every other
+   column type this PoC writes, for a column annotation that's rare in real files compared to
+   plain VARCHAR. Scoped as its own, separate, low-priority item — same priority tier as INT96 —
+   not attempted alongside VARCHAR/BLOB.
 
 ### Phase 2 items 1-3: implemented (2026-11-03)
 
