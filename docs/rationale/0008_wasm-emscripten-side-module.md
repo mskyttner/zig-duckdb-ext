@@ -281,3 +281,51 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   crashing. Not yet wired into `verify_wasm_load_browser.cjs`/CI (that script's assertions are
   specific to the v1 `zig_ext` function set); a dedicated test fixture for this extension would
   need its own small script, same shape as the ad hoc one used here.
+- **Can `matmul.zig` run in *multithreaded* wasm — the `coi`/`eh_threads` platforms, not just
+  `eh`?** Asked directly, after the non-threaded port above landed. Three real blockers found
+  and fixed, in order, each confirmed live before moving to the next — not assumed from a
+  prior one's shape:
+  1. **Zig defaults to single-threaded, and nothing registered for `eh_threads`/`coi` before
+     this had ever spawned a real thread** (`zig_hello`, `tp_bar`, `zig_tokenize`, the
+     non-threaded matmul kernels are all single-threaded code), so this never surfaced. A
+     minimal probe (`std.Thread.spawn` + `.join()`, nothing else) failed to *compile* —
+     "Cannot spawn thread when building in single-threaded mode" — until built with
+     `.single_threaded = false` explicitly.
+  2. **`-Wl,--wrap=pthread_create`** (on `WasmVariant.eh_threads.emccLinkArgs()`, copied from
+     duckdb-wasm's own CMake recipe for its *main module*) **crashes `wasm-ld` outright
+     (SIGSEGV) linking a *SIDE_MODULE* with real thread-spawning code in it** — reproduced
+     directly: removing just that one flag links cleanly, `-pthread`/`-sUSE_PTHREADS=1`
+     otherwise unchanged. Likely specific to bootstrapping the engine's own worker pool, not
+     something a loaded extension needs.
+  3. **`std.Io.Threaded.io()` cannot be built at all for a multi-threaded `wasm32-emscripten`
+     target in this Zig version (0.17.0)** — found via the real compile error and its full
+     reference trace, not guessed: its vtable construction requires every interface method to
+     compile, including `netInterfaceName`, which has no wasm32 implementation and falls
+     through to `@panic("unimplemented")`; that panic's stack-trace machinery needs
+     `page_allocator`, whose `WasmAllocator` is itself `@compileError("unimplemented")` for a
+     non-single-threaded build. This blocks `matmul.matmulSimdParallel` specifically (it
+     requires a real `std.Io`) on *any* multithreaded wasm engine, `coi` included — the
+     blocker is in the Zig-level target, not in which engine would load the result. Checked
+     whether `zio` (this project's other `std.Io` implementation, io_uring-based) offered a
+     way around it: no — its own runtime is tied to Linux kernel event backends
+     (`ev.backend == .linux or .io_uring`, neither existing on wasm32), and its coroutines are
+     a different kind of inapplicable: stackful, via hand-written register
+     save/restore per CPU architecture (`x86_64`/`aarch64`/`arm`/`thumb`), with no `wasm32`
+     case in that switch at all — structural, not an oversight, since wasm32 has no raw
+     swappable stack pointer the way those architectures do.
+
+  **Fixed by adding a sibling kernel, not by avoiding threads**: `matmul.zig` gained
+  `matmulSimdParallelRawThreads` — the exact same tiling as `matmulSimdParallel`, dispatched
+  with raw `std.Thread.spawn`/`.join()` (a fixed-size `[32]?std.Thread` array, no allocation,
+  since this needs to run on targets with no allocator readily at hand — the same reason it
+  exists at all) instead of `std.Io.Group`. A new `init_v2_poc_matmul_wasm_threads.zig` +
+  `wasm-ext-v2-matmul-eh-threads` build step (own `emcc` link line, deliberately omitting
+  `-Wl,--wrap=pthread_create`, `.single_threaded = false` on the module) registers
+  `zig_v2_matmul_parallel_ct` against it. Verified end to end against a real multithreaded
+  `duckdb-wasm` engine (`wasm_threads` platform): a 16×4 × 4×8 all-ones product (every entry
+  exactly `k=4`, large enough to force `m_tiles=4` real tiles and `tasks=4` real OS threads,
+  unlike a 2×2 fixture which never leaves the single-thread-inline path at all) came back
+  fully correct, with `crossOriginIsolated: true` confirming real `SharedArrayBuffer`-backed
+  threading was actually active, not merely available. Not yet tested against haybarn-wasm's
+  `coi` specifically — the fix should apply equally there (same CPU features, same mechanism,
+  no engine-specific code), but only `eh_threads`/duckdb-wasm has actually been run.

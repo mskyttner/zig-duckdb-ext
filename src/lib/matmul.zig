@@ -417,6 +417,57 @@ pub fn matmulSimdParallel(comptime RM: usize, io: std.Io, max_tasks: usize, a: [
     scalarRowRemainder(a, b, c, m_tiles * RM, m, k, n);
 }
 
+/// Same tiling as `matmulSimdParallel`, dispatched with raw `std.Thread.spawn`/`.join()`
+/// instead of `std.Io.Group` — for targets where a full `std.Io` implementation can't be
+/// built at all. Confirmed live, 2026-11-05: `std.Io.Threaded.io()` fails to compile for any
+/// multi-threaded `wasm32-emscripten` target in Zig 0.17.0 (`netInterfaceName` has no wasm32
+/// implementation, and its `@panic` fallback needs an allocator — `page_allocator`'s
+/// `WasmAllocator` — that is itself `@compileError("unimplemented")` for a non-single-threaded
+/// build). Raw `std.Thread.spawn` has no such dependency and was confirmed working, by itself,
+/// in a real multithreaded wasm engine before this function was written — see
+/// docs/rationale/0008_wasm-emscripten-side-module.md's threading entry for the full trace.
+///
+/// Bounded to `max_raw_tasks` real threads regardless of `max_tasks` — a fixed-size array,
+/// not an allocation, since this needs to run on targets with no allocator readily at hand
+/// (the same reason this exists at all). A `max_tasks` beyond that bound still gets correct
+/// results, just with the excess tiles run inline on the calling thread instead of a real
+/// one, same as a failed `std.Thread.spawn` falls back to running its own tile inline.
+const max_raw_tasks = 32;
+
+pub fn matmulSimdParallelRawThreads(comptime RM: usize, max_tasks: usize, a: []const f64, b: []const f64, c: []f64, m: usize, k: usize, n: usize) void {
+    const m_tiles = m / RM;
+    const n_vecs = n / vec_width;
+    const tasks = @max(@as(usize, 1), @min(max_tasks, m_tiles));
+
+    if (tasks <= 1) {
+        simdTileRange(RM, a, b, c, k, n, n_vecs, 0, m_tiles);
+    } else {
+        const Task = struct {
+            fn run(aa: []const f64, bb: []const f64, cc: []f64, kk: usize, nn: usize, nv: usize, lo: usize, hi: usize) void {
+                simdTileRange(RM, aa, bb, cc, kk, nn, nv, lo, hi);
+            }
+        };
+        var threads: [max_raw_tasks]?std.Thread = @splat(null);
+        const base = m_tiles / tasks;
+        const extra = m_tiles % tasks;
+        var lo: usize = 0;
+        for (0..tasks) |t| {
+            const hi = lo + base + @as(usize, if (t < extra) 1 else 0);
+            const ran_on_a_real_thread = t < max_raw_tasks and spawn: {
+                threads[t] = std.Thread.spawn(.{}, Task.run, .{ a, b, c, k, n, n_vecs, lo, hi }) catch break :spawn false;
+                break :spawn true;
+            };
+            if (!ran_on_a_real_thread) Task.run(a, b, c, k, n, n_vecs, lo, hi);
+            lo = hi;
+        }
+        for (threads) |maybe_thread| {
+            if (maybe_thread) |thread| thread.join();
+        }
+    }
+
+    scalarRowRemainder(a, b, c, m_tiles * RM, m, k, n);
+}
+
 /// The RM this project's DuckDB-facing functions use — 4 rows of
 /// accumulators, matching the register-pressure spirit of tinyblas's
 /// own tile choices without tuning per target.
@@ -485,6 +536,28 @@ test "matmulSimdParallel agrees with matmulNaive, split across more tasks than t
     defer threaded.deinit();
     // More tasks than m_tiles (37 / 4 = 9): exercises the "fewer tasks than asked for" clamp too.
     matmulSimdParallel(default_rm, threaded.io(), 64, &a, &b, &c_parallel, m, k, n);
+
+    for (c_naive, c_parallel) |expected, actual| {
+        try std.testing.expectApproxEqAbs(expected, actual, 1e-9);
+    }
+}
+
+test "matmulSimdParallelRawThreads agrees with matmulNaive, split across more tasks than there are tiles" {
+    const m = 37;
+    const k = 9;
+    const n = 23;
+    var a: [m * k]f64 = undefined;
+    var b: [k * n]f64 = undefined;
+    for (&a, 0..) |*v, i| v.* = @floatFromInt(i % 11);
+    for (&b, 0..) |*v, i| v.* = @floatFromInt((i % 6) + 1);
+
+    var c_naive: [m * n]f64 = undefined;
+    var c_parallel: [m * n]f64 = undefined;
+    matmulNaive(&a, &b, &c_naive, m, k, n);
+    // More tasks than m_tiles (37 / 4 = 9), and well past max_raw_tasks (32) too — exercises
+    // both clamps: fewer real threads than asked for, and the inline-run fallback for tasks
+    // beyond the fixed thread-slot array.
+    matmulSimdParallelRawThreads(default_rm, 64, &a, &b, &c_parallel, m, k, n);
 
     for (c_naive, c_parallel) |expected, actual| {
         try std.testing.expectApproxEqAbs(expected, actual, 1e-9);

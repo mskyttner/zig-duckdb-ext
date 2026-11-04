@@ -1839,6 +1839,86 @@ pub fn build(b: *std.Build) void {
         wasm_v2_matmul_step.dependOn(&install_wasm_v2_matmul.step);
     }
 
+    // ── "wasm-ext-v2-matmul-eh-threads" step: the threaded sibling of the build above, carrying
+    // `matmul.zig`'s real `matmulSimdParallel` kernel (`init_v2_poc_matmul_wasm_threads.zig`'s
+    // own doc comment has the full trace). Two things confirmed live before this step was
+    // written, neither assumed: Zig's module needs `.single_threaded = false` explicitly (it
+    // defaults to single-threaded, and no function registered for `eh_threads` before this one
+    // ever spawned a real thread, so this never surfaced); and `-Wl,--wrap=pthread_create`
+    // (present on `WasmVariant.eh_threads.emccLinkArgs()`, copied from duckdb-wasm's own CMake
+    // recipe for its *main module*) crashes `wasm-ld` outright (SIGSEGV) linking a *SIDE_MODULE*
+    // with real thread-spawning code — this step's own `emcc` call omits just that one flag
+    // rather than reusing `emccLinkArgs()` wholesale; `addWasmEmscriptenBuild`'s own v1
+    // `eh_threads` build is untouched (it never spawns a thread either, so was never affected).
+    {
+        const wasm_v2_threads_target = WasmVariant.eh_threads.resolveTarget(b);
+        const wasm_v2_threads_duckdb_v2_types_mod = b.createModule(.{
+            .root_source_file = b.path("src/lib/duckdb_v2_types.zig"),
+            .target = wasm_v2_threads_target,
+            .optimize = .ReleaseFast,
+        });
+        const wasm_v2_threads_duckdb_v2_dynamic_mod = b.createModule(.{
+            .root_source_file = b.path("src/lib/duckdb_v2_dynamic.zig"),
+            .target = wasm_v2_threads_target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "duckdb_v2_types", .module = wasm_v2_threads_duckdb_v2_types_mod }},
+        });
+        const wasm_v2_threads_matmul_mod = b.createModule(.{
+            .root_source_file = b.path("src/lib/matmul.zig"),
+            .target = wasm_v2_threads_target,
+            .optimize = .ReleaseFast,
+        });
+        const wasm_v2_threads_graph = v2Graph(b, wasm_v2_threads_target, .ReleaseFast, wasm_v2_threads_duckdb_v2_dynamic_mod);
+
+        const wasm_v2_threads_matmul_lib = b.addLibrary(.{
+            .linkage = .static,
+            .name = "zig_ext_v2_poc_matmul_wasm_threads",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ext/init_v2_poc_matmul_wasm_threads.zig"),
+                .target = wasm_v2_threads_target,
+                .optimize = .ReleaseFast,
+                // Zig defaults to single-threaded; `std.Thread.spawn` is a compile error
+                // without this, confirmed live via a minimal probe before this step existed.
+                .single_threaded = false,
+            }),
+        });
+        wasm_v2_threads_matmul_lib.root_module.addImport("duckdb_v2_api", wasm_v2_threads_duckdb_v2_dynamic_mod);
+        wasm_v2_threads_matmul_lib.root_module.addImport("v2_helpers", wasm_v2_threads_graph.helpers);
+        wasm_v2_threads_matmul_lib.root_module.addImport("comptime_scalar_v2", wasm_v2_threads_graph.scalar);
+        wasm_v2_threads_matmul_lib.root_module.addImport("matmul", wasm_v2_threads_matmul_mod);
+
+        const wasm_v2_threads_matmul_emcc = b.addSystemCommand(&.{emcc_path});
+        wasm_v2_threads_matmul_emcc.has_side_effects = true;
+        wasm_v2_threads_matmul_emcc.addArtifactArg(wasm_v2_threads_matmul_lib);
+        // Deliberately not `WasmVariant.eh_threads.emccLinkArgs()` — that list's
+        // `-Wl,--wrap=pthread_create` crashes `wasm-ld` for a thread-spawning SIDE_MODULE
+        // (confirmed live, see this block's own comment above); every other flag matches.
+        wasm_v2_threads_matmul_emcc.addArgs(&.{ "-O3", "-g2", "-sSIDE_MODULE=2", "-fwasm-exceptions", "-pthread", "-sPTHREAD_POOL_SIZE=8" });
+        wasm_v2_threads_matmul_emcc.addArg("-sEXPORTED_FUNCTIONS=_zig_ext_v2_poc_matmul_wasm_threads_init_c_api_v2");
+        wasm_v2_threads_matmul_emcc.addArg("-o");
+        const wasm_v2_threads_matmul_module = wasm_v2_threads_matmul_emcc.addOutputFileArg("zig_ext_v2_poc_matmul_wasm_threads.wasm");
+
+        const wasm_v2_threads_matmul_metadata_tool = b.addExecutable(.{
+            .name = "append_metadata_v2_matmul_wasm_threads",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/append_metadata_main.zig"),
+                .target = b.graph.host,
+            }),
+        });
+        const wasm_v2_threads_matmul_append = b.addRunArtifact(wasm_v2_threads_matmul_metadata_tool);
+        wasm_v2_threads_matmul_append.addFileArg(wasm_v2_threads_matmul_module);
+        wasm_v2_threads_matmul_append.addArg("zig_ext_v2_poc_matmul_wasm_threads");
+        wasm_v2_threads_matmul_append.addArg(v2_duckdb_version);
+        wasm_v2_threads_matmul_append.addArg("v0.0.0-poc");
+        wasm_v2_threads_matmul_append.addArg(v2_abi_type);
+        wasm_v2_threads_matmul_append.addArg(WasmVariant.eh_threads.platform());
+        const wasm_v2_threads_matmul_output = wasm_v2_threads_matmul_append.addOutputFileArg("zig_ext_v2_poc_matmul_wasm_threads.duckdb_extension.wasm");
+
+        const install_wasm_v2_threads_matmul = b.addInstallFile(wasm_v2_threads_matmul_output, "lib/wasm_threads/zig_ext_v2_poc_matmul_wasm_threads.duckdb_extension.wasm");
+        const wasm_v2_threads_matmul_step = b.step("wasm-ext-v2-matmul-eh-threads", "Build the threaded v2-ABI wasm32-emscripten SIDE_MODULE: matmul.zig's real matmulSimdParallel kernel (needs a real emcc on PATH or -Demcc-path=; see docs/rationale/0008's threading entry)");
+        wasm_v2_threads_matmul_step.dependOn(&install_wasm_v2_threads_matmul.step);
+    }
+
     // ── "dist" step: arrange and gzip `cross`'s output into the DuckDB
     // custom-extension-repository layout `INSTALL ... FROM '<url>'`
     // expects — replaces the GitHub Actions workflow's old hand-rolled
