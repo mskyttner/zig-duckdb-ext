@@ -124,6 +124,22 @@ Independent of phase 1 — can be done first, second, or interleaved.
    pattern Phase 2.7 already established) is explicitly **not** part of this slice — a natural,
    separate follow-on once the type itself works, not a blocker for it.
 
+   **Implemented (2026-11-04), matching the committed design exactly**, with two fixes the real
+   compiler caught that the design didn't call out: `FilterValue` had to get its own tag enum
+   (`union(enum)`, not `union(PhysicalType)`) since tying it to `PhysicalType` directly would
+   require a field for `.varchar`/`.blob` too, which can never produce a filter value;
+   `moveElement`'s `.varchar`/`.blob` arm casts explicitly to `[*]duckdb_v2_bytes`, not
+   `ZigType`'s own `[]const u8` — the vector's real storage, not a Zig slice header that happens
+   to be the same size on this platform. Verified against a VARCHAR/BLOB/nullable-VARCHAR
+   fixture, with its logical-type annotations confirmed via `parquet_schema` first (`UTF8` on the
+   VARCHAR columns, no `converted_type` at all on the BLOB one, exactly matching native DuckDB's
+   own `COPY ... TO PARQUET` output): default and explicit (renamed) schemas against native
+   `read_parquet`; a 4-condition misalignment/NULL-pattern check (zero mismatches); a full
+   byte-level CSV diff against native, at both `threads=1` and `threads=24` with order preserved;
+   a declined `WHERE name = ...` filter not crashing (the `max_rows_per_batch` guard from Phase 1
+   still holds). Full prior regression suite (TPCH, `multi3`, `types5`, the nullable fixture, the
+   declined-filter crash guard) re-run and still passing.
+
 5. **Logical type, not just physical type, decides the DuckDB column type.** Checked
    `schema.zig`'s own `SchemaElement.effectiveLogicalType()` directly: it resolves either the
    modern `logical_type` or the legacy `converted_type` fallback into one `LogicalType` union —

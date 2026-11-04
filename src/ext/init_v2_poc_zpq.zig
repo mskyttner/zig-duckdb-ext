@@ -120,7 +120,11 @@ const max_rows_per_batch = 2048;
 /// different type is converted through the default cast set, so it does NOT fail for a
 /// FLOAT/DOUBLE/BOOLEAN constant — it silently casts it, which would have made the wrong
 /// comparison look "recognized" if that incidental success were trusted instead.
-const FilterValue = union(PhysicalType) { boolean: bool, int32: i32, int64: i64, float: f32, double: f64 };
+// Its own tag enum, not `union(PhysicalType)`: VARCHAR/BLOB are never recognized as a pushdown
+// filter (see `recognize`'s own `.varchar, .blob => return null` arm), so there's no value to
+// hold for them — tying this union to `PhysicalType` directly would require a field for every
+// variant of that enum, including the two this can never produce.
+const FilterValue = union(enum) { boolean: bool, int32: i32, int64: i64, float: f32, double: f64 };
 
 /// A recognized `<column> <op> constant` pushdown predicate, independent of DuckDB's own
 /// `v2.duckdb_v2_expression_handle` (which doesn't outlive the `pushdown` callback) and of zpq's
@@ -174,13 +178,17 @@ fn destroyGlobalState(ptr: *anyopaque) callconv(.c) void {
 
 /// Phase 2 of PLAN-zpq-multi.md: the fixed-width physical types `ColumnChunkReader(T)` already
 /// supports (confirmed by reading `column.zig`'s own `PlainDecoderFor` — `T` is one of `i32`,
-/// `i64`, `f32`, `f64`, `bool`, or `[]const u8`; byte arrays are `BYTE_ARRAY`/
-/// `FIXED_LEN_BYTE_ARRAY`, a different, still-unverified decode shape per the plan's own item 4,
-/// not attempted here). One physical type is resolved per column at bind time and carried in its
-/// own `ResolvedColumn`; `Reader` below is the type-erasure this needs the moment more than one
-/// physical type can appear — chosen once per column in `claimNextRowGroup`, switched on in
-/// `exec`'s decode step via `decodeColumn`.
-const PhysicalType = enum { boolean, int32, int64, float, double };
+/// `i64`, `f32`, `f64`, `bool`, or `[]const u8`), plus (Phase 2 item 4, investigated before
+/// coding, not assumed) `[]const u8` itself for `BYTE_ARRAY`/`FIXED_LEN_BYTE_ARRAY` — a fixed-
+/// size slice *header*, so `dest: []T` is still a uniform-stride array the same way the other
+/// five are, even though the bytes each header points to are variable-length. `.varchar`/
+/// `.blob` share that same Zig type; which one a column resolves to comes from its *logical*
+/// type (`physicalTypeOf`), not the physical one alone — see `resolveSupportedColumn`. One
+/// physical type is resolved per column at bind time and carried in its own `ResolvedColumn`;
+/// `Reader` below is the type-erasure this needs the moment more than one physical type can
+/// appear — chosen once per column in `claimNextRowGroup`, switched on in `exec`'s decode step
+/// via `decodeColumn`.
+const PhysicalType = enum { boolean, int32, int64, float, double, varchar, blob };
 
 fn ZigType(comptime p: PhysicalType) type {
     return switch (p) {
@@ -189,6 +197,7 @@ fn ZigType(comptime p: PhysicalType) type {
         .int64 => i64,
         .float => f32,
         .double => f64,
+        .varchar, .blob => []const u8,
     };
 }
 
@@ -202,6 +211,8 @@ fn duckdbTypeIdFor(p: PhysicalType) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
         .int64 => .LOGICAL_TYPE_ID_BIGINT,
         .float => .LOGICAL_TYPE_ID_FLOAT,
         .double => .LOGICAL_TYPE_ID_DOUBLE,
+        .varchar => .LOGICAL_TYPE_ID_VARCHAR,
+        .blob => .LOGICAL_TYPE_ID_BLOB,
     };
 }
 
@@ -217,46 +228,80 @@ fn sqlNameFor(p: PhysicalType) []const u8 {
         .int64 => "BIGINT",
         .float => "FLOAT",
         .double => "DOUBLE",
+        .varchar => "VARCHAR",
+        .blob => "BLOB",
     };
 }
 
 /// `null` for a missing type (groups/the root have none — never actually passed a leaf's own
-/// `element.type`, but the field itself is `?Type`) or a Parquet physical type this PoC doesn't
-/// support: `INT96` (legacy timestamp — Phase 2 item 6, low priority), `BYTE_ARRAY`/
-/// `FIXED_LEN_BYTE_ARRAY` (Phase 2 item 4, genuinely unverified, not just unimplemented — see
-/// this file's module doc comment).
-fn physicalTypeOf(t: ?schema.Type) ?PhysicalType {
-    return switch (t orelse return null) {
+/// `element`, but the field itself is `?Type`) or `INT96` (legacy timestamp — Phase 2 item 6,
+/// low priority). `BYTE_ARRAY`/`FIXED_LEN_BYTE_ARRAY` resolve to `.varchar` when the element's
+/// own logical type (`effectiveLogicalType`, resolving either the modern `logical_type` or the
+/// legacy `converted_type` fallback — checked directly in `schema.zig`, not assumed) says
+/// `.STRING`, `.blob` otherwise (no annotation, or one this PoC doesn't map, e.g. `.DECIMAL` —
+/// Phase 2 item 5, not attempted here).
+fn physicalTypeOf(element: *const schema.SchemaElement) ?PhysicalType {
+    return switch (element.type orelse return null) {
         .BOOLEAN => .boolean,
         .INT32 => .int32,
         .INT64 => .int64,
         .FLOAT => .float,
         .DOUBLE => .double,
-        .INT96, .BYTE_ARRAY, .FIXED_LEN_BYTE_ARRAY => null,
+        .BYTE_ARRAY, .FIXED_LEN_BYTE_ARRAY => if (element.effectiveLogicalType()) |lt|
+            (if (lt == .STRING) PhysicalType.varchar else PhysicalType.blob)
+        else
+            .blob,
+        .INT96 => null,
     };
 }
 
 /// Type-erased `ColumnChunkReader(T)`, one variant per `PhysicalType` — needed the moment more
 /// than one physical type can appear, even one column at a time across different queries (this
 /// is also Phase 1's own `readers: []?ColumnChunkReader(T)` type-erasure need, solved once here
-/// instead of twice, per PLAN-zpq-multi.md's own suggested order).
+/// instead of twice, per PLAN-zpq-multi.md's own suggested order). `.varchar` and `.blob` share
+/// the same underlying `ColumnChunkReader([]const u8)` — two tags, one payload type, same as
+/// any other union with more than one variant of the same shape.
 const Reader = union(PhysicalType) {
     boolean: column.ColumnChunkReader(bool),
     int32: column.ColumnChunkReader(i32),
     int64: column.ColumnChunkReader(i64),
     float: column.ColumnChunkReader(f32),
     double: column.ColumnChunkReader(f64),
+    varchar: column.ColumnChunkReader([]const u8),
+    blob: column.ColumnChunkReader([]const u8),
 };
 
-/// Decodes up to `dest.len` rows of `reader`'s own physical type into `out_data` (the vector's
-/// own buffer, already reserved by the caller) and, when `max_def != 0`, into `def_levels` —
-/// one `switch` arm per `PhysicalType`, since each needs its own `T` for
-/// `ColumnChunkReader(T).decode`/`decodeWithLevels`. `n` bounds how many rows to decode (the
-/// batch's max capacity for column 0, or a already-known `row_count` for every other column —
-/// see `exec`).
-fn decodeColumn(reader: *Reader, max_def: i32, out_data: ?*anyopaque, n: usize, def_levels: []u32) column.Error!usize {
+/// Decodes up to `n` rows of `reader`'s own physical type and writes them into `vec`'s own
+/// buffer, already reserved by the caller (`out_data`, fetched once by the caller so both this
+/// and the bytes path below share it) — one `switch` arm per fixed-width `PhysicalType`
+/// (`ColumnChunkReader(T).decode`/`decodeWithLevels` straight into `out_data` cast as `[*]T`,
+/// since DuckDB's own vector storage for these types already *is* a flat array of that same
+/// `T`), and a separate arm for `.varchar`/`.blob`.
+///
+/// VARCHAR/BLOB can't share that direct-buffer-write path: DuckDB's vector storage for them is
+/// `duckdb_v2_bytes` (an inline-or-pointer union, not a flat `[]const u8` array), checked against
+/// the real v2 header before committing to this, not assumed — so decoding goes into a
+/// `local.arena`-owned scratch buffer first (the decoded slices alias page bytes the same way
+/// any `ColumnChunkReader([]const u8)` read does — safe for exactly as long as it takes to box
+/// them below, well within this row group's arena generation), then each row is boxed into
+/// `vec`'s own cell via `vector_get_arena` + the existing `v2_helpers.makeBytesValue` (already
+/// proven for `comptime_scalar_v2.zig`'s own VARCHAR scalar-result writing) — a per-row call,
+/// not a bulk buffer write, the real cost difference PLAN-zpq-multi.md's own investigation
+/// flagged rather than discovering mid-implementation.
+fn decodeColumn(reader: *Reader, max_def: i32, local: *LocalState, vec: v2.duckdb_v2_vector_handle, out_data: ?*anyopaque, n: usize, def_levels: []u32, err: Err) !usize {
     switch (reader.*) {
-        inline else => |*r, tag| {
+        inline .varchar, .blob => |*r| {
+            const scratch = try local.arena.allocator().alloc([]const u8, n);
+            const count = if (max_def == 0) try r.decode(scratch) else try r.decodeWithLevels(scratch, def_levels[0..n]);
+            var arena: v2.duckdb_v2_arena_handle = undefined;
+            if (v2.duckdb_v2_vector_get_arena(vec, &arena, err) != .ERROR_NONE) return error.FailedToGetArena;
+            // SAFETY: `out_data` is this column's own VARCHAR/BLOB vector buffer — `duckdb_v2_bytes`
+            // cells, not a flat `[]const u8` array, per `vector_get_arena`'s own doc comment.
+            const out: [*]v2.duckdb_v2_bytes = @ptrCast(@alignCast(out_data));
+            for (0..count) |i| out[i] = try helpers.makeBytesValue(arena, scratch[i], err);
+            return count;
+        },
+        inline .boolean, .int32, .int64, .float, .double => |*r, tag| {
             const T = ZigType(tag);
             // SAFETY: `out_data` is this column's own vector buffer, declared with the logical
             // type `duckdbTypeIdFor` maps this same `PhysicalType` to in `bind`.
@@ -314,18 +359,27 @@ fn copyArgString(info: v2.duckdb_v2_function_bind_info_handle, index: u64, err: 
     return std.heap.c_allocator.dupe(u8, ptr[0..out.len]);
 }
 
-const ResolvedColumn = struct { col_idx: usize, max_def: i32, phys: PhysicalType };
+const ResolvedColumn = struct {
+    col_idx: usize,
+    max_def: i32,
+    phys: PhysicalType,
+    /// `FIXED_LEN_BYTE_ARRAY`'s fixed value width in bytes, else meaningless (0) — set on the
+    /// `Reader`'s own `type_length` field after `init` in `claimNextRowGroup`, per
+    /// `column.zig`'s own doc comment on it ("set by the caller after init").
+    type_length: usize = 0,
+};
 
 /// Resolves `column_name` to a leaf index and validates it's a shape this
-/// PoC supports: a fixed-width physical type (`physicalTypeOf`), not repeated (max_rep == 0),
-/// and at most singly-nullable (max_def <= 1 — REQUIRED or top-level OPTIONAL).
+/// PoC supports: a physical type `physicalTypeOf` recognizes, not repeated (max_rep == 0), and
+/// at most singly-nullable (max_def <= 1 — REQUIRED or top-level OPTIONAL).
 fn resolveSupportedColumn(meta: *const schema.FileMetaData, column_name: []const u8) !ResolvedColumn {
     const col_idx = try metadata.resolveColumn(meta, column_name);
     var scratch = schema.LeafIterator.init(meta.schema.items);
     const leaf = meta.leafAt(col_idx, &scratch) orelse return error.UnknownColumn;
     if (leaf.max_def > 1 or leaf.max_rep != 0) return error.UnsupportedColumnShape;
-    const phys = physicalTypeOf(leaf.element.type) orelse return error.UnsupportedColumnType;
-    return .{ .col_idx = col_idx, .max_def = leaf.max_def, .phys = phys };
+    const phys = physicalTypeOf(leaf.element) orelse return error.UnsupportedColumnType;
+    const type_length: usize = @intCast(@max(leaf.element.type_length orelse 0, 0));
+    return .{ .col_idx = col_idx, .max_def = leaf.max_def, .phys = phys, .type_length = type_length };
 }
 
 const Footer = struct { meta: schema.FileMetaData, footer_bytes: []u8 };
@@ -408,10 +462,11 @@ fn resolveColumns(meta: *const schema.FileMetaData, schema_value: v2.duckdb_v2_v
         var it = schema.LeafIterator.init(meta.schema.items);
         while (it.next()) |leaf| {
             if (leaf.max_rep != 0 or leaf.max_def > 1) continue;
-            const phys = physicalTypeOf(leaf.element.type) orelse continue;
+            const phys = physicalTypeOf(leaf.element) orelse continue;
+            const type_length: usize = @intCast(@max(leaf.element.type_length orelse 0, 0));
             const name = try allocator.dupe(u8, leaf.element.name);
             errdefer allocator.free(name);
-            try cols.append(allocator, .{ .col = .{ .col_idx = leaf.index, .max_def = leaf.max_def, .phys = phys }, .name = name });
+            try cols.append(allocator, .{ .col = .{ .col_idx = leaf.index, .max_def = leaf.max_def, .phys = phys, .type_length = type_length }, .name = name });
         }
         if (cols.items.len == 0) return error.NoSupportedColumns;
         return cols.toOwnedSlice(allocator);
@@ -682,6 +737,19 @@ fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const
                 .int64 => .{ .int64 = column.ColumnChunkReader(i64).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
                 .float => .{ .float = column.ColumnChunkReader(f32).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
                 .double => .{ .double = column.ColumnChunkReader(f64).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
+                // `type_length` is 0 for plain, length-prefixed BYTE_ARRAY (VARCHAR/BLOB from a
+                // variable-length column) and non-zero for FIXED_LEN_BYTE_ARRAY — set on the
+                // reader itself after `init`, per `column.zig`'s own doc comment on the field.
+                .varchar => blk: {
+                    var r = column.ColumnChunkReader([]const u8).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator());
+                    r.type_length = spec.type_length;
+                    break :blk .{ .varchar = r };
+                },
+                .blob => blk: {
+                    var r = column.ColumnChunkReader([]const u8).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator());
+                    r.type_length = spec.type_length;
+                    break :blk .{ .blob = r };
+                },
             };
         }
         return true;
@@ -727,10 +795,18 @@ fn writeValidityBits(bits: [*]u64, def_levels: []const u32) void {
 /// Moves element `r` to slot `w` of `ptr` — one `switch` arm per `PhysicalType`, needed because
 /// `outs` (see `exec`/`filterAndCompactAll`) is raw `*anyopaque`: columns can have different
 /// element sizes now (Phase 2), so a `[*]i64`-typed move would read/write the wrong stride for
-/// anything narrower (`bool`, `i32`, `f32`) or alias the wrong bytes entirely.
+/// anything narrower (`bool`, `i32`, `f32`) or alias the wrong bytes entirely. `.varchar`/
+/// `.blob` need their own arm rather than `ZigType`'s `[]const u8`: `ptr` there is the vector's
+/// own `duckdb_v2_bytes` cells (see `decodeColumn`), not a flat `[]const u8` array — moving it
+/// as `[]const u8` would happen to work today only because the two types are coincidentally the
+/// same size on this platform, not because they mean the same thing.
 fn moveElement(phys: PhysicalType, ptr: *anyopaque, w: usize, r: usize) void {
     switch (phys) {
-        inline else => |tag| {
+        .varchar, .blob => {
+            const p: [*]v2.duckdb_v2_bytes = @ptrCast(@alignCast(ptr));
+            p[w] = p[r];
+        },
+        inline .boolean, .int32, .int64, .float, .double => |tag| {
             const T = ZigType(tag);
             const p: [*]T = @ptrCast(@alignCast(ptr));
             p[w] = p[r];
@@ -754,8 +830,8 @@ fn evalFilter(spec: FilterSpec, ptr: *anyopaque, row: usize) bool {
                 else => unreachable, // recognize() never accepts an ordering op on a boolean column
             };
         },
-        inline .int32, .int64, .float, .double => |want, tag| {
-            const T = ZigType(tag);
+        inline .int32, .int64, .float, .double => |want| {
+            const T = @TypeOf(want);
             const p: [*]T = @ptrCast(@alignCast(ptr));
             const got = p[row];
             return switch (spec.op) {
@@ -866,9 +942,7 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
         if (v2.duckdb_v2_vector_get_data_mutable(vec0, &out0_data, err) != .ERROR_NONE) return;
         const levels0 = defLevelsFor(local, 0);
 
-        // SAFETY: `out0_data` is this column's own vector buffer, declared with the logical
-        // type `duckdbTypeIdFor` maps `bind_data.cols[0].phys` to in `bind`.
-        const n = decodeColumn(&local.readers[0].?, bind_data.cols[0].max_def, out0_data, max_rows_per_batch, levels0);
+        const n = decodeColumn(&local.readers[0].?, bind_data.cols[0].max_def, local, vec0, out0_data, max_rows_per_batch, levels0, err);
         var row_count = n catch {
             for (local.readers) |*r| r.* = null;
             local.done = true;
@@ -914,7 +988,7 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
             var out_data: ?*anyopaque = null;
             if (v2.duckdb_v2_vector_get_data_mutable(vec, &out_data, err) != .ERROR_NONE) return;
             const levels = defLevelsFor(local, i);
-            const m = decodeColumn(&reader_slot.*.?, spec.max_def, out_data, row_count, levels);
+            const m = decodeColumn(&reader_slot.*.?, spec.max_def, local, vec, out_data, row_count, levels, err);
             const count = m catch |e| {
                 fail(err, .ERROR_IO_GENERAL, "read_zpq: column {d} failed to decode row group {d}: {s}", .{ i, local.rg_idx, @errorName(e) });
                 return;
@@ -1061,6 +1135,10 @@ fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, bind
             if (v2.duckdb_v2_value_get_double(constant, &v, scratch) != .ERROR_NONE) return null;
             break :blk .{ .double = v };
         },
+        // Filter pushdown on VARCHAR/BLOB is explicitly out of scope for Phase 2 item 4 (see
+        // PLAN-zpq-multi.md) — declined here, same as any other "not mine" case; DuckDB's own
+        // executor applies it instead.
+        .varchar, .blob => return null,
     };
     return .{ .declared_col = declared, .op = op, .value = value };
 }
