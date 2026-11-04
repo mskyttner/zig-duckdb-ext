@@ -329,3 +329,45 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   threading was actually active, not merely available. Not yet tested against haybarn-wasm's
   `coi` specifically — the fix should apply equally there (same CPU features, same mechanism,
   no engine-specific code), but only `eh_threads`/duckdb-wasm has actually been run.
+
+  **A second, previously-latent `u64`-on-wasm32 bug found along the way, same class as the
+  first but a different code path**: a benchmark probe using a plain scalar `i64` argument
+  (`zig_v2_spawn_n_ct(n)`) hit `invoke`'s own `typed[row]` indexing — none of the LIST-argument
+  matmul functions ever exercise that particular decode path, so the earlier fix (loop-counter
+  declarations only) missed it. `row` is also threaded through as a `u64` *parameter* to ten
+  other functions (`writeResult`/`rowIsValid`/`call`/`invoke`/`decodeEnumArg`/
+  `structRowIsValid`/`buildStructArgs`/`listRowIsValid`/`writeStructResult`/`readUnionArg`/
+  `writeUnionResult`), and every one of their own indexing sites hits the identical narrowing
+  problem, independent of the loop variable's own (already-fixed) type. Retyped all eleven
+  parameters to `usize` — confirmed every call site already passes the loop variable directly,
+  never an actual `u64` value, so this is a pure simplification (removes an implicit widen at
+  the call boundary) rather than a behavior change. Re-ran the full native suite, including all
+  three real SQL logic suites (820 blocks total), before trusting it.
+
+  **Benchmarked, honestly — real speedup is minimal so far, and the reason isn't known yet**:
+  added `zig_v2_matmul_ct` (the single-threaded kernel) to the same `wasm_threads`-stamped
+  module too, needed because DuckDB's loader checks an extension's footer `platform` field
+  against the connecting engine's own platform and refuses a mismatch — not just descriptive
+  metadata, as it first appeared; a `wasm_eh`-stamped module can't be loaded by a
+  `wasm_threads` engine at all, so a fair comparison needs both kernels inside one module.
+
+  | matrix (m×k×n) | single-threaded | 4-thread parallel | speedup |
+  |---|---|---|---|
+  | 64×64×64 (4096 output elems, the LIST-return cap) | 75.2ms | 74.3ms | 1.01x |
+  | 64×2048×64 (32x the compute, same output size) | 2248.0ms | 2128.9ms | 1.06x |
+
+  Results agree exactly in both cases (correctness holds). Raw thread dispatch itself is cheap
+  — a dedicated probe (`zig_v2_spawn_n_ct`, spawn+join N empty threads, no compute at all)
+  measured ~0.25ms per thread on top of a ~2ms baseline call, nowhere near expensive enough to
+  explain either result — not the "fresh Web Worker every time" the `PTHREAD_POOL_SIZE is only
+  valid when generating JavaScript output` emcc warning first suggested (that flag is ignored
+  for a `SIDE_MODULE` build, but Emscripten's pthread implementation apparently still reuses
+  workers without it). The 64×64×64 case's lack of speedup has a plausible explanation (LIST-
+  result marshaling likely dominates a 75ms call, swamping whatever the parallel compute
+  saves) — but the 64×2048×64 case doesn't: at 2+ seconds of compute, dispatch overhead and
+  marshaling are both negligible fractions of the total, yet parallelism still barely helps,
+  despite 24 real CPU cores on the host and confirmed-cheap dispatch. **Not yet diagnosed**:
+  candidates not yet checked are whether headless Chromium's pthread-emulation workers
+  actually execute concurrently under test automation, memory-bandwidth contention across the
+  shared `SharedArrayBuffer`, or something in the SIMD kernel itself. Recorded here to
+  continue later, deliberately not guessed at further in the meantime.
