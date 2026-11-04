@@ -749,6 +749,17 @@ coincidentally still produce the right bytes for small values. `BYTE_ARRAY`-back
 INT96-backed DECIMAL, and filter pushdown on any DECIMAL column remain deferred, per items 5-6
 above — `physicalTypeOf` returns `null` for them rather than silently misreading them as BLOB.
 
+**Benchmarked** (10M rows, `threads=1`, `-no-agent`): a DECIMAL64 column (`d_mid`) costs roughly
+2.4x a plain BIGINT column of the same cardinality (0.426s vs an equivalent-sized plain INT64
+column scaled from a 30M-row baseline, ~0.18s) — the extra widen-to-`i128` decode pass plus the
+narrow-at-box-time pass this item's design needs. **Separately, and not something this item
+introduced**: that plain-INT64 baseline itself is currently ~4x behind native `read_parquet`
+(0.537s vs 0.138s on the 30M-row fixture) — a real gap from the current state of this PoC's
+single-threaded per-column decode after multi-column/filter/projection-pushdown were added, stale
+relative to the module doc comment's older "tuned to parity... both at 0.06s" claim (written
+before any of that existed). Worth a dedicated look if single-threaded throughput becomes a goal
+again, but out of scope for this item specifically.
+
 ## Explicitly out of scope for both phases
 
 **Nested/repeated types (`LIST`/`STRUCT`/`MAP`, `max_rep > 0`)** — not a type-dispatch problem,
