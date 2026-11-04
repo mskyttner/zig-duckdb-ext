@@ -120,11 +120,18 @@ const max_rows_per_batch = 2048;
 /// different type is converted through the default cast set, so it does NOT fail for a
 /// FLOAT/DOUBLE/BOOLEAN constant — it silently casts it, which would have made the wrong
 /// comparison look "recognized" if that incidental success were trusted instead.
-// Its own tag enum, not `union(PhysicalType)`: VARCHAR/BLOB are never recognized as a pushdown
-// filter (see `recognize`'s own `.varchar, .blob => return null` arm), so there's no value to
-// hold for them — tying this union to `PhysicalType` directly would require a field for every
-// variant of that enum, including the two this can never produce.
-const FilterValue = union(enum) { boolean: bool, int32: i32, int64: i64, float: f32, double: f64 };
+// Its own tag enum, not `union(PhysicalType)`: BLOB is never recognized as a pushdown filter
+// (see `recognize`'s own `.blob => return null` arm), so there's no value to hold for it —
+// tying this union to `PhysicalType` directly would require a field for every variant of that
+// enum, including the one this can never produce.
+//
+// `.varchar` is the one owned, heap-allocated variant (`std.heap.c_allocator`, freed in
+// `destroyBindData`) — every other variant is a plain scalar copied by value. A VARCHAR
+// constant's bytes, from `duckdb_v2_value_get_varchar`, are only a *borrowed* view valid until
+// `value_destroy`, which `pushdown` already calls on the constant before returning — so
+// `recognize` dupes them (same pattern `copyArgString` already uses) rather than keep a
+// dangling view.
+const FilterValue = union(enum) { boolean: bool, int32: i32, int64: i64, float: f32, double: f64, varchar: []const u8 };
 
 /// A recognized `<column> <op> constant` pushdown predicate, independent of DuckDB's own
 /// `v2.duckdb_v2_expression_handle` (which doesn't outlive the `pushdown` callback) and of zpq's
@@ -148,16 +155,22 @@ const BindData = struct {
     footer_bytes: []u8,
     meta: schema.FileMetaData,
     /// One entry per result column, in output order — resolved from the explicit `schema` MAP
-    /// argument, or every INT64-eligible leaf when it's empty. Owned (`std.heap.c_allocator`).
+    /// argument, or every leaf whose physical type this PoC supports when it's empty. Owned
+    /// (`std.heap.c_allocator`).
     cols: []ResolvedColumn,
-    /// Filter pushdown only ever applies to `cols[0]` — see `pushdown`'s own guard for why
-    /// that's always true whenever `filter_count > 0`.
+    /// May reference any of `cols`, not just the first (Phase 1.6) — see `destroyBindData` for
+    /// why any `.varchar` entry here needs its own cleanup, unlike every other filter value.
     filters: [max_pushdown_filters]FilterSpec = undefined,
     filter_count: usize = 0,
 };
 
 fn destroyBindData(ptr: *anyopaque) callconv(.c) void {
     const data: *BindData = @ptrCast(@alignCast(ptr));
+    // The first (and only) owned filter value this file has — every other `FilterValue` variant
+    // is a plain scalar with nothing to free.
+    for (data.filters[0..data.filter_count]) |spec| {
+        if (spec.value == .varchar) std.heap.c_allocator.free(spec.value.varchar);
+    }
     data.meta.deinit(std.heap.c_allocator);
     std.heap.c_allocator.free(data.footer_bytes);
     std.heap.c_allocator.free(data.cols);
@@ -687,6 +700,10 @@ fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const
                     .int64 => |v| .{ .int64 = .{ .col_idx = col_idx, .op = spec.op, .value = v } },
                     .float => |v| .{ .float = .{ .col_idx = col_idx, .op = spec.op, .value = v } },
                     .double => |v| .{ .double = .{ .col_idx = col_idx, .op = spec.op, .value = v } },
+                    // The leaf only borrows `v` for this one `pruneRowGroup` call, well within
+                    // the filter's own longer-lived ownership (`bind_data.filters`, freed in
+                    // `destroyBindData`).
+                    .varchar => |v| .{ .string = .{ .col_idx = col_idx, .op = spec.op, .value = v } },
                 };
             }
             // `ast.join` only allocates (the flattened `children` slice) when
@@ -841,6 +858,25 @@ fn evalFilter(spec: FilterSpec, ptr: *anyopaque, row: usize) bool {
                 .LtEq => got <= want,
                 .Gt => got > want,
                 .GtEq => got >= want,
+            };
+        },
+        // Unlike every other column, a VARCHAR/BLOB column's own decoded value isn't a flat
+        // `[*]T` array — `decodeColumn` already boxed it into the vector's own `duckdb_v2_bytes`
+        // cell by the time this runs, so `bytesSlice` reads it back out instead. Byte-wise
+        // lexicographic order, matching DuckDB's own collation-less `string_t::operator>`
+        // (checked directly in `duckdb/common/types/string_type.hpp`, not assumed — see
+        // PLAN-zpq-multi.md's Phase 2.8) — the same order `std.mem.order` computes.
+        .varchar => |want| {
+            const p: [*]v2.duckdb_v2_bytes = @ptrCast(@alignCast(ptr));
+            const got = helpers.bytesSlice(&p[row]);
+            const order = std.mem.order(u8, got, want);
+            return switch (spec.op) {
+                .Eq => order == .eq,
+                .NotEq => order != .eq,
+                .Lt => order == .lt,
+                .LtEq => order != .gt,
+                .Gt => order == .gt,
+                .GtEq => order != .lt,
             };
         },
     }
@@ -1135,10 +1171,18 @@ fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, bind
             if (v2.duckdb_v2_value_get_double(constant, &v, scratch) != .ERROR_NONE) return null;
             break :blk .{ .double = v };
         },
-        // Filter pushdown on VARCHAR/BLOB is explicitly out of scope for Phase 2 item 4 (see
-        // PLAN-zpq-multi.md) — declined here, same as any other "not mine" case; DuckDB's own
-        // executor applies it instead.
-        .varchar, .blob => return null,
+        .varchar => blk: {
+            var out: v2.duckdb_v2_str = undefined;
+            if (v2.duckdb_v2_value_get_varchar(constant, &out, scratch) != .ERROR_NONE) return null;
+            const ptr = out.ptr orelse break :blk .{ .varchar = &.{} };
+            // Owned: `constant` (and the borrowed view `out` points into) is destroyed by the
+            // `defer` above before this function returns — see `FilterValue`'s own doc comment.
+            const owned = std.heap.c_allocator.dupe(u8, ptr[0..out.len]) catch return null;
+            break :blk .{ .varchar = owned };
+        },
+        // Filter pushdown on BLOB is explicitly out of scope here — declined, same as any other
+        // "not mine" case; DuckDB's own executor applies it instead.
+        .blob => return null,
     };
     return .{ .declared_col = declared, .op = op, .value = value };
 }

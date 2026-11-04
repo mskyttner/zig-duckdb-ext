@@ -465,7 +465,59 @@ groups for a non-INT64 filter (the same `WHERE col < small_value` sanity check P
 and the full regression suite (TPCH, `multi3`, nullable, declined-filter crash guard,
 threads=1/24) re-run once more.
 
-## Phase 2.8: filter pushdown for VARCHAR (scoped, not implemented)
+## Phase 2.8: filter pushdown for VARCHAR (implemented, 2026-11-04)
+
+Built exactly as scoped below. Verified against `strings.parquet` (BIGINT/VARCHAR/BLOB/nullable-
+VARCHAR): `Eq`, `Lt`, `Gt` each matching native `read_parquet` exactly — the real test of the
+byte-order claim, not just that it compiles; row-group pruning actually skipping groups
+(`WHERE name < 'name_00001'` against the 5-row-group fixture returned instantly with exactly the
+one row that's a byte-wise prefix of the bound); a VARCHAR filter AND'd with a numeric filter on
+a different column; a VARCHAR filter against a column with real NULLs elsewhere in the row (no
+NULL ever passed); a declined BLOB filter still correct and not crashing; `threads=1`/`24` with
+order preserved. Full prior regression suite re-run and still passing.
+
+**Benchmarked against real TPCH data**: `dbgen(sf=5)` `lineitem`, projected to
+`l_orderkey::BIGINT, l_comment::VARCHAR` (29,999,795 rows, 60 row groups, `l_comment` real free-
+text averaging ~26 bytes, UTF8-annotated — confirmed via `parquet_schema` first). Correctness
+re-checked on this real data too (`WHERE l_comment > 'm'`, exact match). Filtered-scan timing
+(`-no-agent`, repeated runs for stability, same methodology as every other benchmark in this
+plan):
+
+| | `threads=1` | `threads=24` |
+|---|---|---|
+| native `read_parquet` | ~0.89s | ~0.13s |
+| `read_zpq` | ~1.29s | ~0.19s |
+
+**Honest result: native is faster here, ~1.45x at both thread counts** (so scaling itself is
+comparable — `read_zpq`'s own 1→24 speedup is roughly the same ~6.8-6.9x as native's — the gap
+is a fixed per-row cost, not a scaling problem). A plausible, specific reason, not just "strings
+are slow": `decodeColumn`'s VARCHAR path does a double copy per row — decode into a
+`local.arena` scratch slice, then `v2_helpers.makeBytesValue` copies *again* into the vector's
+own arena — and `evalFilter` reads back through `bytesSlice` + `std.mem.order` per row, both
+real costs the numeric types never pay (a numeric value decodes once, straight into the vector's
+own flat buffer, with a native `<`/`>` for filtering). Native's own string-vector handling is
+presumably more zero-copy (dictionary passthrough, fewer copies) — not confirmed by reading its
+source, since the ask here was to compare and benchmark, not re-investigate the native
+implementation; worth doing before optimizing this path further rather than guessing which copy
+to cut.
+
+**A separate, unrelated finding surfaced while isolating this result, worth flagging on its
+own**: an *unfiltered* full-scan benchmark of the same two columns first looked far worse for
+`read_zpq` (~1.09s vs native's ~0.14s, ~7.9x) — but that comparison wasn't apples-to-apples.
+`duckdb_v2_table_function_set_projection_pushdown` exists and defaults to **false** (confirmed:
+grepped this file for `projection` — zero matches, never called), so `read_zpq` always decodes
+every column in `bind_data.cols` regardless of what the outer query's `SELECT` list actually
+projects. A `SELECT count(*), sum(l_orderkey)` with no `l_comment` in the projection list means
+native's `read_parquet` skips decoding `l_comment` entirely (hence its ~0.14s, matching the
+single-BIGINT-column benchmarks elsewhere in this plan), while `read_zpq` decodes it uselessly
+every time. This is pre-existing, present since Phase 1's multi-column work, not something this
+VARCHAR filter work introduced or something VARCHAR-specific — but it would make any multi-
+column `read_zpq` query that doesn't project every selected column look artificially slow next
+to native, independent of per-type decode cost. Worth its own investigation and plan entry if
+pursued; not attempted here, since conflating it with today's filter-pushdown work would muddy
+which finding explains which number.
+
+## Phase 2.8 (original scoping, for reference)
 
 Currently declined outright: `recognize`'s switch over `phys` has `.varchar, .blob => return
 null` (added defensively in Phase 2.7, before VARCHAR/BLOB itself even existed, anticipating
