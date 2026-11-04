@@ -458,6 +458,27 @@ this ADR had confirmed working by hand but left unwired:
   records the mechanism now existing and working, not yet that it's
   been announced anywhere outside this ADR.
 
+### Follow-up: confirmed working inside a wasm engine too (done, 2026-11-04)
+
+Prompted by comparing this project's approach against
+`tobilg/duckdb-extension-self-hosting` (a reusable GitHub Action for the
+same self-signed-repository mechanism, S3-backed instead of GitHub
+Pages), whose README describes supporting DuckDB-Wasm clients for its
+own signed repositories. That was a claim about a different project's
+action, not something this project had verified for itself — resolved
+by a live probe against a real official `duckdb-wasm` engine, confirming
+`CREATE EXTENSION REPOSITORY ... USING PUBLIC KEY` + `LOAD ... FROM`
+works the same way in a wasm browser engine as it does against the
+native CLI (inline key, no `.well-known` fetch; same versioned path
+scheme), and is agnostic to which C API ABI the loaded extension itself
+targets. `tools/wasm_verify/verify_wasm_load_browser.cjs` now has a
+`--signed <pubkey.pem>` flag exercising exactly this path, verified
+positive (a real signed artifact loads and runs correctly) and negative
+(a mismatched key is rejected with the documented "signature is either
+missing or invalid" error). Full writeup, including the exact probe and
+what "verified" covers, is in ADR-0008's own "Open questions" section —
+filed there since it's wasm-specific, not duplicated here.
+
 ## Consequences
 
 - Distribution becomes achievable with a GitHub Actions workflow this

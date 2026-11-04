@@ -167,3 +167,44 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   were not updated the same way (the `eh_threads` browser verification above used an ad hoc,
   uncommitted copy with the new filenames substituted in, not the committed tool) — a real
   remaining gap if this needs to become a repeatable, CI-driven check rather than a one-off.
+- **Does ADR-0004's self-signed `CREATE EXTENSION REPOSITORY` mechanism work inside a wasm
+  engine at all?** Resolved, 2026-11-04, by a live probe before writing any script changes —
+  not assumed from `tobilg/duckdb-extension-self-hosting`'s README describing the same flow
+  for its own, unrelated action (see that project's "DuckDB-Wasm" section). A minimal page
+  ran `SET allow_extension_repositories='allowed'` then `CREATE EXTENSION REPOSITORY ... WITH
+  PREFIX 'https://example.invalid/nonexistent' USING PUBLIC KEY '<inline pem>'` then `LOAD
+  nonexistent_probe_ext FROM test_repo` against a real official `duckdb-wasm` engine (today's
+  latest CI build, DuckDB 2.0-cored): the first two succeeded outright, and the `LOAD` failed
+  with `IO Error: ... could not be fetched from
+  "https://example.invalid/nonexistent/v2.0.0/wasm_eh/nonexistent_probe_ext.duckdb_extension.wasm"`
+  — a real network-fetch failure against the (deliberately bogus) prefix, not a parser or
+  "unsupported" error, meaning the repository mechanism, inline key pinning (no `.well-known`
+  fetch attempted, matching the native-CLI finding ADR-0004 already made), and the versioned
+  path resolution (`<prefix>/<engine's own core version>/<platform>/<name>.duckdb_extension.wasm`,
+  matching this project's own `<version>/<platform>/<name>` convention, with `wasm_eh` as the
+  platform string — the same name `WasmVariant.eh` already produces) all work exactly as the
+  native CLI does. Confirmed this is core-engine-level and ABI-agnostic, not gated on the
+  loaded extension's own C API version: the real test used this project's existing *v1*-ABI
+  `wasm-ext-eh` build (`zig_hello` et al. — there is no v2-ABI wasm build of anything in this
+  project, `read_zpq` included, and porting one is a separate, larger effort out of scope
+  here), signed with the existing `sign_extension_main.zig` tool (no changes needed to it) and
+  a throwaway test key, with no issue at all.
+
+  **Implemented and verified end to end**: `verify_wasm_load_browser.cjs` gained a `--signed
+  <pubkey.pem>` flag; `tools/wasm_verify/browser/index.html` branches on a `pubkey` query
+  param to run the `CREATE EXTENSION REPOSITORY`/`LOAD ... FROM` flow instead of
+  `allowUnsignedExtensions` + bare `LOAD` (inline key, per the probe above — no second code
+  path needed for key delivery). No server change was needed at all: the static server
+  already matches a request by its `.duckdb_extension.wasm` *suffix*, regardless of the full
+  (versioned) path requested, so the repository mechanism's own path resolution needed no
+  accommodation. Ran against a real signed `wasm_eh` artifact (built via `wasm-ext-eh`, signed
+  via `sign_extension`, independently re-verified with `openssl pkeyutl -verify` before
+  trusting it) in a real headless browser: `zig_hello`/`zig_add_numbers`/`zig_tokenize`/
+  `ct_add_numbers`/`ct_tokenize`/`tp_bar` all correct. **Negative control, also run**: the same
+  signed artifact against a *different* key's public half fails exactly as it should —
+  `"...could not be loaded because its signature is either missing or invalid..."` — confirming
+  the engine genuinely checks the signature rather than merely accepting any repository.
+  Not yet wired into CI (the existing `wasm-verify` job only exercises the unsigned path) or
+  extended to a real signed `wasm_eh` artifact of this project's actual release key — this
+  entry covers the mechanism now being proven to work and implemented as a reusable flag, not
+  yet that it's part of the release pipeline. See ADR-0004's own matching follow-up entry.

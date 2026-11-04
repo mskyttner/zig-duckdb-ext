@@ -4,7 +4,15 @@
 // through it. The Node-bindings counterpart to this is verify_wasm_load.cjs; this one closes
 // the gap that one can't: a real browser's fetch/Worker/dlopen path, not Node's.
 //
-//   node verify_wasm_load_browser.cjs <engine-dist-dir> <extension-wasm-path> [--coi]
+//   node verify_wasm_load_browser.cjs <engine-dist-dir> <extension-wasm-path> [--coi] [--signed <pubkey.pem>]
+//
+// `--signed <pubkey.pem>` tests the self-signed `CREATE EXTENSION REPOSITORY ... USING
+// PUBLIC KEY` + `LOAD ... FROM` path (docs/rationale/0004) instead of the default
+// `allowUnsignedExtensions` + bare `LOAD` path — `<extension-wasm-path>` must then already
+// be signed with the PEM private key matching this public key (`zig build sign-extension-tool`
+// then `sign_extension <in> <private_key.pem> <out>`). Confirmed live, 2026-11-04, against a
+// real official duckdb-wasm engine: the repository mechanism is core-engine-level, agnostic to
+// which C API ABI the loaded extension itself uses.
 //
 // `engine-dist-dir` is a duckdb-wasm `packages/duckdb-wasm/dist` directory (what
 // fetch_engine.sh extracts) — needs its browser bundle files (`duckdb-mvp.wasm`,
@@ -37,11 +45,15 @@ function fail(msg) {
 async function main() {
     const args = process.argv.slice(2);
     const coi = args.includes('--coi');
-    const [distDirArg, extPathArg] = args.filter(a => a !== '--coi');
-    if (!distDirArg || !extPathArg) {
-        console.error('usage: verify_wasm_load_browser.cjs <engine-dist-dir> <extension-wasm-path> [--coi]');
+    const signedIdx = args.indexOf('--signed');
+    const pubkeyPath = signedIdx === -1 ? null : args[signedIdx + 1];
+    const positional = args.filter((a, i) => a !== '--coi' && (signedIdx === -1 || (i !== signedIdx && i !== signedIdx + 1)));
+    const [distDirArg, extPathArg] = positional;
+    if (!distDirArg || !extPathArg || (signedIdx !== -1 && !pubkeyPath)) {
+        console.error('usage: verify_wasm_load_browser.cjs <engine-dist-dir> <extension-wasm-path> [--coi] [--signed <pubkey.pem>]');
         process.exit(2);
     }
+    const pubkeyPem = pubkeyPath ? fs.readFileSync(path.resolve(pubkeyPath), 'utf8').trim() : null;
     const distDir = path.resolve(distDirArg);
     const extPath = path.resolve(extPathArg);
     const extBytes = fs.readFileSync(extPath);
@@ -108,7 +120,7 @@ async function main() {
         const consoleErrors = [];
         page.on('pageerror', err => consoleErrors.push(err.message));
 
-        const pageUrl = `http://127.0.0.1:${port}/index.html?name=${encodeURIComponent(extBase)}${coi ? '&coi=1' : ''}${usesBase ? '&base=1' : ''}`;
+        const pageUrl = `http://127.0.0.1:${port}/index.html?name=${encodeURIComponent(extBase)}${coi ? '&coi=1' : ''}${usesBase ? '&base=1' : ''}${pubkeyPem ? '&pubkey=' + encodeURIComponent(pubkeyPem) : ''}`;
         await page.goto(pageUrl, { waitUntil: 'load' });
         await page.waitForFunction(() => document.getElementById('result').textContent !== 'PENDING', { timeout: 30000 });
         const resultText = await page.textContent('#result');
@@ -131,7 +143,7 @@ async function main() {
         expect('ct_tokenize', result.ct_tokenize, ['alice', 'bob', 'charlie']);
         expect('tp_bar', result.tp_bar, 'XXXXX.....');
         if (coi) expect('crossOriginIsolated', result.crossOriginIsolated, true);
-        console.log(`verify_wasm_load_browser: PASSED — ${extBase} loads and runs in a real headless browser against ${distDir}${coi ? ' (coi)' : ''}`);
+        console.log(`verify_wasm_load_browser: PASSED — ${extBase} loads and runs in a real headless browser against ${distDir}${coi ? ' (coi)' : ''}${pubkeyPem ? ' (signed, via CREATE EXTENSION REPOSITORY)' : ''}`);
     } finally {
         await browser.close();
         server.close();
