@@ -465,6 +465,77 @@ groups for a non-INT64 filter (the same `WHERE col < small_value` sanity check P
 and the full regression suite (TPCH, `multi3`, nullable, declined-filter crash guard,
 threads=1/24) re-run once more.
 
+## Phase 2.8: filter pushdown for VARCHAR (scoped, not implemented)
+
+Currently declined outright: `recognize`'s switch over `phys` has `.varchar, .blob => return
+null` (added defensively in Phase 2.7, before VARCHAR/BLOB itself even existed, anticipating
+this). Not a crash risk — DuckDB's own executor applies a VARCHAR filter post-scan today, same
+as any other declined filter — just an unbuilt optimization. Scoped now the same way as 1.6/2.7:
+checked against the real code before committing to a design.
+
+### Comparison semantics, verified against DuckDB's real source, not assumed
+
+The one open question from the earlier "what about filter pushdown for VARCHAR?" discussion:
+whether DuckDB's own (collation-less) VARCHAR comparison is a plain byte-wise order, matching
+what `std.mem.order` would compute and what zpq's own `pruneBytes` stats-based pruning already
+assumes. Checked directly in `duckdb/common/types/string_type.hpp`: `string_t`'s `operator>` (the
+generic `GreaterThan::Operation<T>` template falls through to this — unlike `float`/`double`,
+there is no specialization for strings) does a 4-byte prefix check as a fast path, then `memcmp`
+over the shared length, breaking ties by length when the shared prefix matches. That's plain
+lexicographic byte comparison — `memcmp` on raw bytes, no locale/Unicode normalization — and it
+only changes if the VARCHAR type itself carries an explicit `COLLATE` annotation (a type
+modifier set at the SQL level, not a global default), which a column read straight out of
+Parquet never has. Confirms: (1) this matches `std.mem.order(u8, a, b)` exactly, so `evalFilter`
+can use it directly; (2) zpq's `pruneBytes` (stats-based min/max byte-range pruning, already
+dispatched from `ast.Filter.string`) is sound for this semantics too, with nothing to fix there.
+
+### What's new
+
+Row-group pruning needs nothing new — `ast.Filter` already has a `.string: Leaf([]const u8)`
+variant, dispatched by `pruneRowGroup` to `pruneBytes`, and the AND/OR combinator already
+verified (Phase 1.6) to handle mixed leaf types with no special-casing. Everything below is
+about the per-row path and a genuinely new lifetime concern none of the other types had:
+
+1. **`FilterValue` gains `.varchar: []const u8` — the first *owned, heap-allocated* filter
+   value this file has.** Every existing variant (`bool`/`i32`/`i64`/`f32`/`f64`) is a plain
+   scalar copied by value; a VARCHAR constant's bytes, from `duckdb_v2_value_get_varchar`, are
+   only a *borrowed* view valid until `value_destroy` — which `pushdown` already calls on the
+   constant before returning. So `recognize` must copy the bytes (`std.heap.c_allocator.dupe`,
+   matching `copyArgString`'s own existing dupe-then-own pattern) into memory `BindData` owns.
+2. **`destroyBindData` must free it** — walking `data.filters[0..data.filter_count]` for any
+   `.varchar` entry and freeing its bytes. The first per-filter cleanup this file has needed;
+   every filter before this was a plain scalar with nothing to free.
+3. **`recognize`'s `.varchar, .blob => return null` arm becomes `.varchar => ...,
+   `.blob => return null`,`** — `value_get_varchar` in place of a `value_get_*` scalar getter,
+   duping the result. `.blob` stays declined (BLOB comparison pushdown isn't asked for here, and
+   would need its own value-getter investigation — not assumed free just because VARCHAR works).
+4. **`evalFilter` gains a `.varchar` arm reading through `v2_helpers.bytesSlice`, not a flat
+   buffer.** VARCHAR/BLOB columns don't decode straight into a flat `[]const u8` vector buffer
+   the way the numeric types do — `decodeColumn`'s own VARCHAR/BLOB branch boxes each row into
+   the vector's `duckdb_v2_bytes` cell. By the time `filterAndCompactAll` runs, every column
+   (including the filtered one, whatever its position) has already been decoded into its vector
+   buffer — so the read is `bytesSlice(&cells[row])` (an existing helper, already used elsewhere
+   in this project) to get a `[]const u8` view back out, then `std.mem.order(u8, got, want)`
+   mapped onto `Eq`/`NotEq`/`Lt`/`LtEq`/`Gt`/`GtEq` the same way the numeric arm maps its own
+   native operators.
+5. **`claimNextRowGroup`'s AST leaf build gains a `.varchar` arm**: `.string = .{ .col_idx, .op,
+   .value = spec.value.varchar }` (the borrowed bytes are fine here — the leaf's lifetime is
+   just this one `pruneRowGroup` call, well within the filter's own longer-lived ownership).
+
+### Validate with
+
+A VARCHAR fixture with real ordering spread (not just equality-friendly values): a pushed-down
+`Eq`, `Lt`, and `Gt` filter each matching native `read_parquet` exactly (the real test of the
+byte-order claim above, not just that it compiles); row-group pruning actually skipping groups
+for a sorted-by-value VARCHAR column (same `WHERE col < small_value` sanity check Phase 1.6/2.7
+used); a VARCHAR filter combined with a numeric filter on a different column in one AND; and the
+full regression suite once more, including the declined-filter crash guard (still exercised by
+`.blob`, which stays declined) and a VARCHAR column with NULLs (a NULL never passes any
+comparison, same semantics as every other type, but worth checking explicitly since this is the
+first filterable type where "the row's own validity" and "the row's own value" are read through
+two different mechanisms — `def_levels` vs `bytesSlice` — instead of one `[]T` array covering
+both).
+
 ## Explicitly out of scope for both phases
 
 **Nested/repeated types (`LIST`/`STRUCT`/`MAP`, `max_rep > 0`)** — not a type-dispatch problem,
