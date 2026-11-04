@@ -284,42 +284,41 @@ const Reader = union(PhysicalType) {
     blob: column.ColumnChunkReader([]const u8),
 };
 
-/// Decodes up to `n` rows of `reader`'s own physical type and writes them into `vec`'s own
-/// buffer, already reserved by the caller (`out_data`, fetched once by the caller so both this
-/// and the bytes path below share it) — one `switch` arm per fixed-width `PhysicalType`
-/// (`ColumnChunkReader(T).decode`/`decodeWithLevels` straight into `out_data` cast as `[*]T`,
-/// since DuckDB's own vector storage for these types already *is* a flat array of that same
-/// `T`), and a separate arm for `.varchar`/`.blob`.
+const DecodeResult = struct { count: usize, ptr: *anyopaque };
+
+/// Decodes up to `n` rows of `reader`'s own physical type, writing into `out_data` when given
+/// (this column's own vector buffer, already reserved by the caller) or, when `out_data` is
+/// `null`, into a fresh `local.arena`-owned scratch buffer instead (a column a pushed-down
+/// filter needs but the final query doesn't project — see `initLocal`'s own `projected`/
+/// `output_count` split — has no vector at all to decode into). Returns the row count and the
+/// pointer actually written to, so the caller doesn't need to track which case applied.
 ///
-/// VARCHAR/BLOB can't share that direct-buffer-write path: DuckDB's vector storage for them is
-/// `duckdb_v2_bytes` (an inline-or-pointer union, not a flat `[]const u8` array), checked against
-/// the real v2 header before committing to this, not assumed — so decoding goes into a
-/// `local.arena`-owned scratch buffer first (the decoded slices alias page bytes the same way
-/// any `ColumnChunkReader([]const u8)` read does — safe for exactly as long as it takes to box
-/// them below, well within this row group's arena generation), then each row is boxed into
-/// `vec`'s own cell via `vector_get_arena` + the existing `v2_helpers.makeBytesValue` (already
-/// proven for `comptime_scalar_v2.zig`'s own VARCHAR scalar-result writing) — a per-row call,
-/// not a bulk buffer write, the real cost difference PLAN-zpq-multi.md's own investigation
-/// flagged rather than discovering mid-implementation.
-fn decodeColumn(reader: *Reader, max_def: i32, local: *LocalState, vec: v2.duckdb_v2_vector_handle, out_data: ?*anyopaque, n: usize, def_levels: []u32, err: Err) !usize {
+/// For the fixed-width types, that's the whole story: `ColumnChunkReader(T).decode`/
+/// `decodeWithLevels` straight into a `[*]T`, since DuckDB's own vector storage for these types
+/// already *is* a flat array of that same `T`. VARCHAR/BLOB are different: this only ever
+/// decodes into a `local.arena`-owned `[]const u8` scratch array, projected or not — DuckDB's
+/// vector storage for them is `duckdb_v2_bytes` (an inline-or-pointer union, checked against the
+/// real v2 header before committing to this, not assumed), not a flat `[]const u8` array a
+/// `ColumnChunkReader([]const u8)` could write into directly. Boxing the *final*, possibly
+/// filtered-and-compacted scratch into the vector's own `duckdb_v2_bytes` cells (via
+/// `vector_get_arena` + `v2_helpers.makeBytesValue`) is `exec`'s own job, done once row_count is
+/// final — not here, and not for a filter-only column at all, since boxing a row before knowing
+/// whether a filter will discard it is wasted work the old, pre-projection-pushdown design paid
+/// for every row regardless.
+fn decodeColumn(reader: *Reader, max_def: i32, local: *LocalState, out_data: ?*anyopaque, n: usize, def_levels: []u32) !DecodeResult {
     switch (reader.*) {
         inline .varchar, .blob => |*r| {
             const scratch = try local.arena.allocator().alloc([]const u8, n);
             const count = if (max_def == 0) try r.decode(scratch) else try r.decodeWithLevels(scratch, def_levels[0..n]);
-            var arena: v2.duckdb_v2_arena_handle = undefined;
-            if (v2.duckdb_v2_vector_get_arena(vec, &arena, err) != .ERROR_NONE) return error.FailedToGetArena;
-            // SAFETY: `out_data` is this column's own VARCHAR/BLOB vector buffer — `duckdb_v2_bytes`
-            // cells, not a flat `[]const u8` array, per `vector_get_arena`'s own doc comment.
-            const out: [*]v2.duckdb_v2_bytes = @ptrCast(@alignCast(out_data));
-            for (0..count) |i| out[i] = try helpers.makeBytesValue(arena, scratch[i], err);
-            return count;
+            return .{ .count = count, .ptr = @ptrCast(scratch.ptr) };
         },
         inline .boolean, .int32, .int64, .float, .double => |*r, tag| {
             const T = ZigType(tag);
-            // SAFETY: `out_data` is this column's own vector buffer, declared with the logical
-            // type `duckdbTypeIdFor` maps this same `PhysicalType` to in `bind`.
-            const out: [*]T = @ptrCast(@alignCast(out_data));
-            return if (max_def == 0) r.decode(out[0..n]) else r.decodeWithLevels(out[0..n], def_levels[0..n]);
+            // SAFETY: when given, `out_data` is this column's own vector buffer, declared with
+            // the logical type `duckdbTypeIdFor` maps this same `PhysicalType` to in `bind`.
+            const out: [*]T = if (out_data) |d| @ptrCast(@alignCast(d)) else (try local.arena.allocator().alloc(T, n)).ptr;
+            const count = if (max_def == 0) try r.decode(out[0..n]) else try r.decodeWithLevels(out[0..n], def_levels[0..n]);
+            return .{ .count = count, .ptr = out };
         },
     }
 }
@@ -327,12 +326,25 @@ fn decodeColumn(reader: *Reader, max_def: i32, local: *LocalState, vec: v2.duckd
 /// One thread's own scan state — nothing here is ever touched by another thread.
 const LocalState = struct {
     arena: std.heap.ArenaAllocator,
-    /// One reader per `BindData.cols` entry, same order, all backed by the same row group —
-    /// see `claimNextRowGroup`. Owned (`std.heap.c_allocator`), sized once in `initLocal`.
+    /// `projected[0..output_count]` are the `BindData.cols` indices exec's output chunk vectors
+    /// `0..output_count` hold, in that order — with projection pushdown enabled, a (possibly
+    /// reordered, possibly smaller) subset of all declared columns; the identity mapping when
+    /// the query projects everything. `projected[output_count..]`, if any, are columns a
+    /// pushed-down filter needs but the query's own `SELECT` list doesn't project — confirmed
+    /// live, not assumed, that DuckDB does *not* include those in the projected set on its own
+    /// (see PLAN-zpq-multi.md's own projection-pushdown writeup), so `initLocal` appends them
+    /// itself; they get a `Reader` and get decoded like any other column, but never an output
+    /// vector — `exec` only ever calls `duckdb_v2_data_chunk_get_vector` for indices `<
+    /// output_count`. Owned (`std.heap.c_allocator`), built once in `initLocal`.
+    projected: []usize,
+    output_count: usize,
+    /// One reader per `projected` entry, same order, all backed by the same row group — see
+    /// `claimNextRowGroup`. Owned (`std.heap.c_allocator`), sized once in `initLocal`.
     readers: []?Reader,
     /// `exec`'s own scratch for `decodeWithLevels`, one `max_rows_per_batch`-sized segment per
-    /// column — allocated once here instead of per batch so a row group with many batches
-    /// doesn't grow the arena repeatedly. Owned, sized `cols.len * max_rows_per_batch`.
+    /// `projected` entry — allocated once here instead of per batch so a row group with many
+    /// batches doesn't grow the arena repeatedly. Owned, sized `projected.len *
+    /// max_rows_per_batch`.
     def_levels: []u32,
     done: bool,
     /// Whether `pruneRowGroup` already proved every row of the row group currently open in
@@ -349,6 +361,7 @@ const LocalState = struct {
 fn destroyLocalState(ptr: *anyopaque) callconv(.c) void {
     const state: *LocalState = @ptrCast(@alignCast(ptr));
     state.arena.deinit();
+    std.heap.c_allocator.free(state.projected);
     std.heap.c_allocator.free(state.readers);
     std.heap.c_allocator.free(state.def_levels);
     std.heap.c_allocator.destroy(state);
@@ -629,20 +642,75 @@ fn initLocal(info: v2.duckdb_v2_table_function_init_local_info_handle, context: 
     if (v2.duckdb_v2_table_function_init_local_get_bind_data(info, &bind_ptr, err) != .ERROR_NONE) return;
     const bind_data: *const BindData = @ptrCast(@alignCast(bind_ptr orelse return));
 
-    const readers = std.heap.c_allocator.alloc(?Reader, bind_data.cols.len) catch return;
+    // With projection pushdown enabled (`registerReadParquet`), the columns DuckDB actually
+    // projects through us — the identity mapping without it. `count` falling to 0 (a pure
+    // `count(*)`, say) isn't handled specially: `claimNextRowGroup`/`exec` need at least one
+    // column to drive row-group iteration regardless of output, so this falls back to column 0.
+    var count: u64 = 0;
+    if (v2.duckdb_v2_table_function_init_local_get_column_count(info, &count, err) != .ERROR_NONE) return;
+
+    var list: std.ArrayList(usize) = .empty;
+    if (count == 0) {
+        list.append(std.heap.c_allocator, 0) catch return;
+    } else {
+        for (0..count) |i| {
+            var declared: u64 = undefined;
+            if (v2.duckdb_v2_table_function_init_local_get_column_index(info, i, &declared, err) != .ERROR_NONE) {
+                list.deinit(std.heap.c_allocator);
+                return;
+            }
+            list.append(std.heap.c_allocator, declared) catch {
+                list.deinit(std.heap.c_allocator);
+                return;
+            };
+        }
+    }
+    const output_count = list.items.len;
+
+    // Append any filtered column the projected set above doesn't already cover — see
+    // `LocalState.projected`'s own doc comment for why this is needed at all.
+    for (bind_data.filters[0..bind_data.filter_count]) |spec| {
+        var found = false;
+        for (list.items) |d| {
+            if (d == spec.declared_col) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            list.append(std.heap.c_allocator, spec.declared_col) catch {
+                list.deinit(std.heap.c_allocator);
+                return;
+            };
+        }
+    }
+
+    const projected = list.toOwnedSlice(std.heap.c_allocator) catch {
+        list.deinit(std.heap.c_allocator);
+        return;
+    };
+
+    const readers = std.heap.c_allocator.alloc(?Reader, projected.len) catch {
+        std.heap.c_allocator.free(projected);
+        return;
+    };
     @memset(readers, null);
-    const def_levels = std.heap.c_allocator.alloc(u32, bind_data.cols.len * max_rows_per_batch) catch {
+    const def_levels = std.heap.c_allocator.alloc(u32, projected.len * max_rows_per_batch) catch {
+        std.heap.c_allocator.free(projected);
         std.heap.c_allocator.free(readers);
         return;
     };
 
     const state = std.heap.c_allocator.create(LocalState) catch {
+        std.heap.c_allocator.free(projected);
         std.heap.c_allocator.free(readers);
         std.heap.c_allocator.free(def_levels);
         return;
     };
     state.* = .{
         .arena = std.heap.ArenaAllocator.init(std.heap.c_allocator),
+        .projected = projected,
+        .output_count = output_count,
         .readers = readers,
         .def_levels = def_levels,
         .done = false,
@@ -722,7 +790,8 @@ fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const
             local.row_group_always_match = (decision == .always_match);
         }
 
-        for (bind_data.cols, local.readers) |spec, *reader_slot| {
+        for (local.projected, local.readers) |declared_idx, *reader_slot| {
+            const spec = bind_data.cols[declared_idx];
             const chunk = &rg.columns.items[spec.col_idx];
             const col_meta = chunk.meta_data orelse continue :row_groups;
             const start = col_meta.dictionary_page_offset orelse col_meta.data_page_offset;
@@ -813,17 +882,13 @@ fn writeValidityBits(bits: [*]u64, def_levels: []const u32) void {
 /// `outs` (see `exec`/`filterAndCompactAll`) is raw `*anyopaque`: columns can have different
 /// element sizes now (Phase 2), so a `[*]i64`-typed move would read/write the wrong stride for
 /// anything narrower (`bool`, `i32`, `f32`) or alias the wrong bytes entirely. `.varchar`/
-/// `.blob` need their own arm rather than `ZigType`'s `[]const u8`: `ptr` there is the vector's
-/// own `duckdb_v2_bytes` cells (see `decodeColumn`), not a flat `[]const u8` array — moving it
-/// as `[]const u8` would happen to work today only because the two types are coincidentally the
-/// same size on this platform, not because they mean the same thing.
+/// `.blob` are exactly `ZigType`'s own `[]const u8` here, same as every other type — `ptr` is
+/// always `decodeColumn`'s own returned `.ptr` (a `local.arena`-owned `[]const u8` scratch array
+/// for these two, never the vector's `duckdb_v2_bytes` cells directly; boxing into those happens
+/// later, in `exec`, only for whichever rows survive filtering).
 fn moveElement(phys: PhysicalType, ptr: *anyopaque, w: usize, r: usize) void {
     switch (phys) {
-        .varchar, .blob => {
-            const p: [*]v2.duckdb_v2_bytes = @ptrCast(@alignCast(ptr));
-            p[w] = p[r];
-        },
-        inline .boolean, .int32, .int64, .float, .double => |tag| {
+        inline else => |tag| {
             const T = ZigType(tag);
             const p: [*]T = @ptrCast(@alignCast(ptr));
             p[w] = p[r];
@@ -860,15 +925,15 @@ fn evalFilter(spec: FilterSpec, ptr: *anyopaque, row: usize) bool {
                 .GtEq => got >= want,
             };
         },
-        // Unlike every other column, a VARCHAR/BLOB column's own decoded value isn't a flat
-        // `[*]T` array — `decodeColumn` already boxed it into the vector's own `duckdb_v2_bytes`
-        // cell by the time this runs, so `bytesSlice` reads it back out instead. Byte-wise
+        // `ptr` here is `decodeColumn`'s own `[]const u8` scratch array (never the vector's
+        // `duckdb_v2_bytes` cells — see its own doc comment), so this reads the same way the
+        // four numeric arms above do, just without a native Zig operator. Byte-wise
         // lexicographic order, matching DuckDB's own collation-less `string_t::operator>`
         // (checked directly in `duckdb/common/types/string_type.hpp`, not assumed — see
         // PLAN-zpq-multi.md's Phase 2.8) — the same order `std.mem.order` computes.
         .varchar => |want| {
-            const p: [*]v2.duckdb_v2_bytes = @ptrCast(@alignCast(ptr));
-            const got = helpers.bytesSlice(&p[row]);
+            const p: [*][]const u8 = @ptrCast(@alignCast(ptr));
+            const got = p[row];
             const order = std.mem.order(u8, got, want);
             return switch (spec.op) {
                 .Eq => order == .eq,
@@ -880,6 +945,16 @@ fn evalFilter(spec: FilterSpec, ptr: *anyopaque, row: usize) bool {
             };
         },
     }
+}
+
+/// The position in `local.projected`/`local.readers`/`outs` that declared column `declared_idx`
+/// lives at this exec call, or `null` if that column isn't projected at all — a linear scan over
+/// at most a handful of entries, not worth a map.
+fn projectedPosOf(local: *const LocalState, declared_idx: usize) ?usize {
+    for (local.projected, 0..) |d, i| {
+        if (d == declared_idx) return i;
+    }
+    return null;
 }
 
 /// Builds one `SelectionVector` by evaluating every pushed-down filter against its own column's
@@ -904,8 +979,17 @@ fn filterAndCompactAll(bind_data: *const BindData, local: *LocalState, outs: []c
 
     for (bind_data.filters[0..bind_data.filter_count]) |spec| {
         const col = bind_data.cols[spec.declared_col];
-        const ptr = outs[spec.declared_col];
-        const levels = defLevelsFor(local, spec.declared_col);
+        // The filtered column must be among `local.projected` for this to find it — true in
+        // every case tested so far (DuckDB appears to always include a pushed-down-and-accepted
+        // filter's own column in what it projects through us, even when the final `SELECT` list
+        // doesn't reference it), but reported as a real query failure rather than silently
+        // mis-filtering if that ever turns out false for some plan shape not yet seen.
+        const pos = projectedPosOf(local, spec.declared_col) orelse {
+            fail(err, .ERROR_QUERY_EXECUTOR, "read_zpq: filtered column {d} is not in the projected set", .{spec.declared_col});
+            return null;
+        };
+        const ptr = outs[pos];
+        const levels = defLevelsFor(local, pos);
         for (0..row_count) |i| {
             const is_valid = col.max_def == 0 or levels[i] == 1;
             if (!is_valid or !evalFilter(spec, ptr, i)) sel.set(i, false);
@@ -916,7 +1000,8 @@ fn filterAndCompactAll(bind_data: *const BindData, local: *LocalState, outs: []c
     var it = sel.iterator();
     while (it.next()) |r| {
         if (r != w) {
-            for (bind_data.cols, outs, 0..) |spec, out_ptr, c| {
+            for (local.projected, outs, 0..) |declared_idx, out_ptr, c| {
+                const spec = bind_data.cols[declared_idx];
                 moveElement(spec.phys, out_ptr, w, r);
                 if (spec.max_def != 0) {
                     const levels = defLevelsFor(local, c);
@@ -933,8 +1018,6 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
     _ = context;
     var chunk: v2.duckdb_v2_data_chunk_handle = undefined;
     if (v2.duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != .ERROR_NONE) return;
-    var vec0: v2.duckdb_v2_vector_handle = undefined;
-    if (v2.duckdb_v2_data_chunk_get_vector(chunk, 0, &vec0, err) != .ERROR_NONE) return;
 
     var bind_data_ptr: ?*anyopaque = null;
     if (v2.duckdb_v2_table_function_exec_get_bind_data(info, &bind_data_ptr, err) != .ERROR_NONE) return;
@@ -948,6 +1031,8 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
     // in f1bc510 (a different bug: an uninitialized error slot during
     // registration) also covers this path.
     const bind_data: *BindData = @ptrCast(@alignCast(bind_data_ptr orelse {
+        var vec0: v2.duckdb_v2_vector_handle = undefined;
+        if (v2.duckdb_v2_data_chunk_get_vector(chunk, 0, &vec0, err) != .ERROR_NONE) return;
         _ = v2.duckdb_v2_vector_set_size(vec0, 0, err);
         return;
     }));
@@ -959,6 +1044,16 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
     if (v2.duckdb_v2_table_function_exec_get_local_state(info, &local_ptr, err) != .ERROR_NONE) return;
     const local: *LocalState = @ptrCast(@alignCast(local_ptr.?));
 
+    // `initLocal` only ever falls back to `output_count == 0` when DuckDB's own projected set
+    // was empty AND no filter needed a column either — i.e. no real vector exists to drive
+    // this batch's row count or report it back through. Not something a live query has
+    // actually produced (even a bare `count(*)` still projects one column, confirmed live), but
+    // reported as a real failure rather than an out-of-bounds vector access if it ever did.
+    if (local.output_count == 0) {
+        fail(err, .ERROR_QUERY_EXECUTOR, "read_zpq: internal error: no projected column to drive the scan", .{});
+        return;
+    }
+
     if (local.readers[0] == null and !local.done) {
         if (!claimNextRowGroup(local, global, bind_data, err)) return;
     }
@@ -966,75 +1061,76 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
     while (local.readers[0] != null) {
         // Decode column 0 first — its row count (or exhaustion/error) drives this batch's
         // control flow for every other column too, since every column shares this row group's
-        // row count (see `claimNextRowGroup`'s own doc comment).
-        //
-        // Decode straight into the output vector's own buffer — no stack
-        // scratch + memcpy. Safe to size up to capacity before knowing the
-        // real count: `max_rows_per_batch` matches DuckDB's standard
-        // vector size, so the buffer backing `vec0` is already allocated
-        // for this many rows regardless of what size is set.
+        // row count (see `claimNextRowGroup`'s own doc comment). Always a real, projected
+        // column (`output_count > 0`, checked above), so there's always a vector 0 to reserve
+        // capacity in and decode straight into — no stack scratch + memcpy for the fixed-width
+        // types; `max_rows_per_batch` matches DuckDB's standard vector size, so the buffer
+        // backing it is already allocated for this many rows regardless of what size is set.
+        var vec0: v2.duckdb_v2_vector_handle = undefined;
+        if (v2.duckdb_v2_data_chunk_get_vector(chunk, 0, &vec0, err) != .ERROR_NONE) return;
         if (v2.duckdb_v2_vector_set_size(vec0, max_rows_per_batch, err) != .ERROR_NONE) return;
         var out0_data: ?*anyopaque = null;
         if (v2.duckdb_v2_vector_get_data_mutable(vec0, &out0_data, err) != .ERROR_NONE) return;
         const levels0 = defLevelsFor(local, 0);
 
-        const n = decodeColumn(&local.readers[0].?, bind_data.cols[0].max_def, local, vec0, out0_data, max_rows_per_batch, levels0, err);
-        var row_count = n catch {
+        const spec0 = bind_data.cols[local.projected[0]];
+        const result0 = decodeColumn(&local.readers[0].?, spec0.max_def, local, out0_data, max_rows_per_batch, levels0) catch {
             for (local.readers) |*r| r.* = null;
             local.done = true;
             break;
         };
+        var row_count = result0.count;
         if (row_count == 0) {
             for (local.readers) |*r| r.* = null;
             if (!claimNextRowGroup(local, global, bind_data, err)) return;
             continue;
         }
 
-        // Every selected column must be decoded before any filtering now that a filter can
-        // reference any of them — collect each column's own vector handle and output pointer as
-        // we go, needed either way: for the unfiltered write-out below, or to both evaluate and
-        // then compact every column once filtering (if any) has decided the surviving rows.
-        // Raw `*anyopaque`, not a typed pointer: columns can now have different physical types
-        // (Phase 2), so `decodeColumn`/`moveElement`/the filtered column's own cast in
-        // `filterAndCompactAll` each pick the right `T` themselves. `local.arena` already backs
-        // this thread's own per-row-group scratch (reset in `claimNextRowGroup`), so these small
-        // per-batch arrays live there too.
-        const vecs = local.arena.allocator().alloc(v2.duckdb_v2_vector_handle, bind_data.cols.len) catch {
+        // Every column in `local.projected` must be decoded before any filtering now that a
+        // filter can reference any of them — collect each one's own vector handle (`null` for a
+        // column past `output_count`: filtered but not projected, so it has none) and output
+        // pointer as we go, needed either way: for the unfiltered write-out below, or to both
+        // evaluate and then compact every column once filtering (if any) has decided the
+        // surviving rows. `local.arena` already backs this thread's own per-row-group scratch
+        // (reset in `claimNextRowGroup`), so these small per-batch arrays live there too.
+        const vecs = local.arena.allocator().alloc(?v2.duckdb_v2_vector_handle, local.projected.len) catch {
             fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory", .{});
             return;
         };
         vecs[0] = vec0;
-        const outs = local.arena.allocator().alloc(*anyopaque, bind_data.cols.len) catch {
+        for (vecs[1..]) |*v| v.* = null;
+        const outs = local.arena.allocator().alloc(*anyopaque, local.projected.len) catch {
             fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory", .{});
             return;
         };
-        outs[0] = out0_data.?;
+        outs[0] = result0.ptr;
 
-        // Every other column shares this row group's row count — decode each straight into its
-        // own vector's buffer, bounded to exactly `row_count` (not the batch's max capacity):
-        // column 0 already proved that many rows remain in this row group, so every other
-        // column's own reader, advanced in the same lockstep, must have at least that many left
-        // too. The count-mismatch check below exists only to catch a lockstep assumption this
-        // prototype hasn't actually verified could fail — see claimNextRowGroup's own doc
-        // comment — not a scenario expected to trigger.
-        for (bind_data.cols[1..], local.readers[1..], 1..) |spec, *reader_slot, i| {
-            var vec: v2.duckdb_v2_vector_handle = undefined;
-            if (v2.duckdb_v2_data_chunk_get_vector(chunk, i, &vec, err) != .ERROR_NONE) return;
-            if (v2.duckdb_v2_vector_set_size(vec, max_rows_per_batch, err) != .ERROR_NONE) return;
+        // Every other column shares this row group's row count — decode each bounded to exactly
+        // `row_count` (not the batch's max capacity): column 0 already proved that many rows
+        // remain in this row group, so every other column's own reader, advanced in the same
+        // lockstep, must have at least that many left too. The count-mismatch check below exists
+        // only to catch a lockstep assumption this prototype hasn't actually verified could
+        // fail — see claimNextRowGroup's own doc comment — not a scenario expected to trigger.
+        for (local.projected[1..], local.readers[1..], 1..) |declared_idx, *reader_slot, i| {
+            const spec = bind_data.cols[declared_idx];
             var out_data: ?*anyopaque = null;
-            if (v2.duckdb_v2_vector_get_data_mutable(vec, &out_data, err) != .ERROR_NONE) return;
+            if (i < local.output_count) {
+                var vec: v2.duckdb_v2_vector_handle = undefined;
+                if (v2.duckdb_v2_data_chunk_get_vector(chunk, i, &vec, err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_set_size(vec, max_rows_per_batch, err) != .ERROR_NONE) return;
+                if (v2.duckdb_v2_vector_get_data_mutable(vec, &out_data, err) != .ERROR_NONE) return;
+                vecs[i] = vec;
+            }
             const levels = defLevelsFor(local, i);
-            const m = decodeColumn(&reader_slot.*.?, spec.max_def, local, vec, out_data, row_count, levels, err);
-            const count = m catch |e| {
+            const result = decodeColumn(&reader_slot.*.?, spec.max_def, local, out_data, row_count, levels) catch |e| {
                 fail(err, .ERROR_IO_GENERAL, "read_zpq: column {d} failed to decode row group {d}: {s}", .{ i, local.rg_idx, @errorName(e) });
                 return;
             };
-            if (count != row_count) {
-                fail(err, .ERROR_QUERY_EXECUTOR, "read_zpq: row count mismatch in row group {d}: column 0 decoded {d}, column {d} decoded {d}", .{ local.rg_idx, row_count, i, count });
+            if (result.count != row_count) {
+                fail(err, .ERROR_QUERY_EXECUTOR, "read_zpq: row count mismatch in row group {d}: column 0 decoded {d}, column {d} decoded {d}", .{ local.rg_idx, row_count, i, result.count });
                 return;
             }
-            vecs[i] = vec;
-            outs[i] = out_data.?;
+            outs[i] = result.ptr;
         }
 
         if (bind_data.filter_count > 0 and !local.row_group_always_match) {
@@ -1053,13 +1149,37 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
         }
 
         if (v2.duckdb_v2_vector_set_size(vec0, row_count, err) != .ERROR_NONE) return;
-        // Every column still needs its validity bits written, filtered or not: a row surviving
-        // a filter on a *different* column can still be NULL here (see `filterAndCompactAll`'s
-        // own doc comment on why that guarantee doesn't generalize past one column).
-        for (bind_data.cols, 0..) |spec, i| {
+        // Only the projected columns (`0..output_count`) have a vector to finish writing: box
+        // VARCHAR/BLOB's own (possibly filtered-and-compacted) `[]const u8` scratch into the
+        // vector's real `duckdb_v2_bytes` cells now that `row_count` is final — not during
+        // `decodeColumn`, so a row a filter discards never pays for a `makeBytesValue` copy it
+        // didn't need — then write validity bits for every column still needs them, filtered or
+        // not: a row surviving a filter on a *different* column can still be NULL here (see
+        // `filterAndCompactAll`'s own doc comment on why that guarantee doesn't generalize past
+        // one column).
+        for (local.projected[0..local.output_count], 0..) |declared_idx, i| {
+            const spec = bind_data.cols[declared_idx];
+            const vec = vecs[i].?;
+            if (spec.phys == .varchar or spec.phys == .blob) {
+                var arena: v2.duckdb_v2_arena_handle = undefined;
+                if (v2.duckdb_v2_vector_get_arena(vec, &arena, err) != .ERROR_NONE) return;
+                var out_data: ?*anyopaque = null;
+                if (v2.duckdb_v2_vector_get_data_mutable(vec, &out_data, err) != .ERROR_NONE) return;
+                // SAFETY: this column's own VARCHAR/BLOB vector buffer — `duckdb_v2_bytes`
+                // cells, not a flat `[]const u8` array, per `vector_get_arena`'s own doc comment.
+                const out: [*]v2.duckdb_v2_bytes = @ptrCast(@alignCast(out_data));
+                // SAFETY: `outs[i]` is `decodeColumn`'s own `[]const u8` scratch for this column.
+                const strs: [*][]const u8 = @ptrCast(@alignCast(outs[i]));
+                for (0..row_count) |r| {
+                    out[r] = helpers.makeBytesValue(arena, strs[r], err) catch {
+                        fail(err, .ERROR_RESOURCE_OUT_OF_MEMORY, "read_zpq: out of memory writing column {d}", .{i});
+                        return;
+                    };
+                }
+            }
             if (spec.max_def == 0) continue;
             var validity_ptr: *u64 = undefined;
-            if (v2.duckdb_v2_vector_flat_get_validity_mutable(vecs[i], &validity_ptr, err) != .ERROR_NONE) return;
+            if (v2.duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_ptr, err) != .ERROR_NONE) return;
             // SAFETY: the mask is a flat array of words covering every row of this vector.
             const bits: [*]u64 = @ptrCast(validity_ptr);
             writeValidityBits(bits, defLevelsFor(local, i)[0..row_count]);
@@ -1067,6 +1187,8 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
         return;
     }
 
+    var vec0: v2.duckdb_v2_vector_handle = undefined;
+    if (v2.duckdb_v2_data_chunk_get_vector(chunk, 0, &vec0, err) != .ERROR_NONE) return;
     if (v2.duckdb_v2_vector_set_size(vec0, 0, err) != .ERROR_NONE) return;
 }
 
@@ -1287,6 +1409,15 @@ fn registerReadParquet(input: *const v2.duckdb_v2_extension_input, err: Err) !vo
     }
     if (v2.duckdb_v2_table_function_set_filter_pushdown_callback(function, &pushdown, err) != .ERROR_NONE) {
         return error.FailedToSetFilterPushdownCallback;
+    }
+    // "Beneficial" whenever the query doesn't select every declared column — decoding only
+    // `init_local`'s `projected` subset instead of always decoding `bind_data.cols` in full (see
+    // PLAN-zpq-multi.md's own projection-pushdown finding). Never a correctness cost: a filtered
+    // column not in the final `SELECT` list still shows up in `projected` (confirmed live,
+    // not assumed — see `filterAndCompactAll`'s own defensive check for the case where it
+    // wouldn't).
+    if (v2.duckdb_v2_table_function_set_projection_pushdown(function, true, err) != .ERROR_NONE) {
+        return error.FailedToSetProjectionPushdown;
     }
 
     if (v2.duckdb_v2_extension_register_table_function(input.extension, function, err) != .ERROR_NONE) {

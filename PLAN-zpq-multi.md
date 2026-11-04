@@ -588,6 +588,68 @@ first filterable type where "the row's own validity" and "the row's own value" a
 two different mechanisms — `def_levels` vs `bytesSlice` — instead of one `[]T` array covering
 both).
 
+## Phase 2.9: projection pushdown (implemented, 2026-11-04)
+
+Flagged as a separate, pre-existing finding in Phase 2.8's own benchmark writeup — `read_zpq`
+never called `duckdb_v2_table_function_set_projection_pushdown`, so it always decoded every
+selected column regardless of what the query's `SELECT` list actually needed. This closes it.
+
+**A real design surprise, caught by testing live rather than assumed away**: the first, simpler
+design — `local.projected` is just whatever `init_local_get_column_index` reports, 1:1 with the
+output chunk's own vectors — looked right and built cleanly, but broke the very first test that
+combined a filter with a non-projected column: `SELECT sum(id) FROM read_zpq(...) WHERE name <
+'name_2'` (`name` filtered, never in the `SELECT` list) failed with `filtered column 1 is not in
+the projected set` — a defensive check added specifically to catch this rather than silently
+mis-filter if it ever happened, and it did, immediately. DuckDB does **not** automatically widen
+the projected set to cover a filter it accepted pushdown for; from its side, that column is
+"handled inside the scan" and never needs to come back out at all unless something else also
+needs it.
+
+**Fixed with a real redesign, not a patch**: `LocalState.projected` is now the *union* of what
+DuckDB actually projects (`projected[0..output_count]`, in that order — exactly the output
+chunk's own vector positions) and whatever extra declared columns a pushed-down filter needs but
+the `SELECT` list doesn't (`projected[output_count..]`, appended by `initLocal`, decoded like any
+other column but never handed a vector — `exec` only calls `duckdb_v2_data_chunk_get_vector` for
+indices `< output_count`). `filterAndCompactAll` finds a filtered column's own slot via a new
+`projectedPosOf` lookup (a linear scan over at most a handful of entries) instead of assuming
+`declared_col` and `outs` share an index space.
+
+**This also forced VARCHAR/BLOB boxing out of `decodeColumn` entirely, and it's a genuine
+efficiency win, not just a refactor the redesign happened to need**: boxing used to happen
+immediately after decode, for every row, into the vector's own `duckdb_v2_bytes` cells — but a
+filter-only column has no vector to box into at all. Fixed by having `decodeColumn` always
+decode VARCHAR/BLOB into a plain `local.arena`-owned `[]const u8` scratch array (uniform whether
+projected or not — `evalFilter`/`moveElement` read/move that same shape either way, no more
+`bytesSlice`-reading-a-vector-cell special case), and moving the actual `vector_get_arena` +
+`makeBytesValue` boxing into `exec` itself, done once, after filtering has decided the final
+`row_count` — so a row a filter discards never pays for a copy it didn't need, which the
+*previous* (pre-projection-pushdown) design always did regardless of filtering.
+
+Verified: the exact scenario that broke the first design (`WHERE name < 'name_2'`, `name` not
+selected) now matches native exactly; the same for a filtered-but-unprojected *numeric* column;
+`count(*)` (zero real projected columns, `initLocal`'s synthetic-driver fallback); a full
+byte-level diff against native, unfiltered, every column; the cross-type misalignment check;
+row-group pruning; `threads=1`/`24` with order preserved on the filtered-unprojected case. Full
+prior regression suite (TPCH, `multi3`, nullable, declined-filter crash guard) re-run and still
+passing.
+
+**Benchmarked against the same real TPCH VARCHAR data as Phase 2.8**, same methodology:
+
+| | `threads=1` before → after | `threads=24` before → after |
+|---|---|---|
+| unfiltered (only `l_orderkey` selected) | ~1.09s → **~0.10s** | — → ~0.02s |
+| native `read_parquet`, same query | ~0.14s (unchanged) | ~0.02s (unchanged) |
+| filtered on unprojected `l_comment` | ~1.29s → **~1.04s** | ~0.19s → ~0.16s |
+| native `read_parquet`, same filtered query | ~0.89s (unchanged) | ~0.13s (unchanged) |
+
+The unfiltered case goes from `read_zpq` being ~7-11x *slower* than native (decoding a column
+nobody asked for) to being as fast or slightly faster — projection pushdown alone accounts for
+this, confirming that finding's own diagnosis. The filtered case improves too (~19% faster at
+`threads=1`, ~17% at `threads=24`) purely from no longer boxing rows a filter discards; native
+is still ahead there (~1.16x, down from ~1.45x) — the remaining gap is Phase 2.8's own finding
+(native's zero-copy string handling vs. this file's one real per-surviving-row copy), unrelated
+to projection and not addressed by this change.
+
 ## Explicitly out of scope for both phases
 
 **Nested/repeated types (`LIST`/`STRUCT`/`MAP`, `max_rep > 0`)** — not a type-dispatch problem,
