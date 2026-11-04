@@ -198,6 +198,67 @@ not, with no `zig build` required at all on the consuming end? The tool having z
 Zig-DuckDB-specific code today is a real argument for the second option that none of the other
 four pieces in this ADR share; see "Open questions" below.
 
+### 7. The extension doctor
+
+Prompted by a direct question — "are there other Zig DuckDB extension tools that would be
+useful, the way R has `R CMD check`?" — and grounded before scoping anything: this ADR's own
+"Context" section already lists four mistakes an author today only discovers by hitting them
+("the footer must be `C_STRUCT_UNSTABLE` with the exact DuckDB version, or an extension built
+for one alpha loads in another and crashes it"; "the entry point's symbol is derived from the
+file name, so a renamed copy fails with 'did not contain function …'"; "`helpers.init` must be
+the first call"; "the functions need `FunctionNamed`/`FunctionDocumented`, or
+`duckdb_functions()` shows `a0`, `a1`"). The first two are structural — inspectable from the
+built binary alone, no DuckDB involved — which is exactly `R CMD check`'s own shape: audit the
+artifact before anyone tries to use it, not after.
+
+**Feasibility proven before scoping further, not assumed**: `std.elf` can read a real, unmodified
+`.duckdb_extension` file's dynamic symbol table — ELF `.so` plus the 512-byte DuckDB footer
+appended after it, confirmed the trailing footer bytes don't disturb offset-based section
+parsing at all — find the real entry-point symbol, and correctly flag a renamed/wrong one as
+missing. Tested both directions against a real built `zig_ext_v2_poc.duckdb_extension`
+(135 dynamic symbols, 35 defined/exported): the correct symbol name is found, a wrong one
+(simulating exactly the "renamed copy" failure mode above) is correctly reported absent.
+`std.macho`/`std.coff`/`std.wasm` exist in the stdlib for the other three platforms' own
+export-table formats, but only the ELF path has actually been tried.
+
+**A real design-relevant finding along the way, not assumed**: the footer does *not* record
+the extension's own name — `append_metadata_main.zig` reads `ext_name` as an argument and
+explicitly discards it (`_ = ext_name;`), never writing it anywhere. So the doctor can't
+recover an "expected" symbol name by reading the footer; it has to derive one from the file's
+own name on disk (`<name>.duckdb_extension` → expect `<name>_init_c_api` or
+`<name>_init_c_api_v2`, the convention `build.zig`'s own `addWasmEmscriptenBuild` and
+`addV2CrossBuild` already use). That turns out to be exactly the right check anyway — the
+documented failure mode is specifically a *renamed copy*, so "does the symbol match this
+file's own current name" is the correct question, not a workaround for a footer gap.
+
+**Scope for a first version**:
+1. Footer field validation — name-agnostic sanity (recognized `abi_type`, non-empty
+   `duckdb_version`/`extension_version`, platform string against the same list
+   `duckdbPlatformString`/`WasmVariant.platform()` already enumerate). Reuses
+   `sign_extension_main.zig`'s existing `parseFooter`/`FooterFields` rather than
+   reimplementing it — this would be a second real consumer of that exact code, so (unlike
+   most abstractions, which this project waits to introduce until there's a genuine second
+   use) factoring it into a small shared module (e.g. `src/lib/duckdb_extension_footer.zig`)
+   is justified now, not premature.
+2. Entry-point symbol presence, derived from the file's own name and the footer's `abi_type`
+   (`C_STRUCT` → expect `<name>_init_c_api`; `C_STRUCT_UNSTABLE` → expect
+   `<name>_init_c_api_v2`) — ELF proven; Mach-O/PE/wasm same-shape work, not yet attempted,
+   named here as a real follow-up rather than assumed to "just work" the same way.
+
+**Explicitly deferred, not silently out of scope**: anything needing a real `LOAD` —
+the `duckdb_functions()` shows `a0`/`a1` check (missing `FunctionNamed`) is only observable at
+runtime, so it would need `sqllogictest_main`/`verify_wasm_load*`'s CLI-driving machinery, a
+different mechanism from a pure binary inspector, not a small addition to one. Also deferred:
+cross-platform consistency checks across a whole `dist/` tree (do all platforms report the
+same `extension_version`/function set? did one get forgotten on a rebuild?) — a real idea, but
+a different, bigger tool than "inspect one file."
+
+**Open question, not resolved here, same shape as signing's**: its own tool, or a mode on
+`sign_extension inspect`? Leaning toward its own tool despite the shared footer-parsing code —
+`sign_extension`'s name and identity are specifically about signing, and a doctor's mandate
+(symbol tables, eventually whole-tree consistency) is broader than "inspect the thing I might
+sign." See "Open questions" below.
+
 ## What moves
 
 `build.zig` becomes a thin file: `pub const addExtension = @import("build/extension.zig").addExtension;` and so on, then `build`.
@@ -237,6 +298,11 @@ generator), written with the same functions, so the repository tests the package
   Zig-version pin and DuckDB-API-version story would be a narrower home than it needs. A standalone repository publishing
   pre-built static binaries per platform would also be usable by non-Zig, non-Zig-DuckDB extension authors — closer to what
   `tobilg/duckdb-extension-self-hosting` already offers, just without the GitHub-Action/S3 coupling. Not resolved here.
+- **The extension doctor: its own tool, or a `sign_extension inspect` mode?** (§7) Leaning toward its own tool — shares
+  `sign_extension`'s footer-parsing code (worth factoring out given a second real consumer), but its mandate (symbol-table
+  presence, eventually whole-`dist/`-tree consistency) is broader than what a tool named for signing should grow to cover.
+  Not resolved here. Also open: Mach-O/PE/wasm export-table parsing (`std.macho`/`std.coff`/`std.wasm`) is unattempted — only
+  the ELF path (Linux) has a working proof.
 
 ## Plan
 
@@ -254,3 +320,7 @@ generator), written with the same functions, so the repository tests the package
    "fold in or spin out" open question before or alongside that work. Whoever picks up `addDist` (step 4) should also close
    the "versioned" distribution-path gap (§6) at the same time, since both come from the same unread `extension_version`
    footer field.
+7. **The extension doctor** (§7, independent of 1-6). Factor `sign_extension_main.zig`'s footer-parsing into a small shared
+   module first (its second real consumer, unlike every other abstraction in this plan, which waits for one); build the
+   symbol-table check against ELF first (already proven), then Mach-O/PE/wasm once there is a concrete need for one of
+   those platforms specifically.
