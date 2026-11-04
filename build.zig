@@ -2006,13 +2006,40 @@ pub fn build(b: *std.Build) void {
     });
     const run_sqllogictest_main_tests = b.addRunArtifact(sqllogictest_main_tests);
 
+    // Same reasoning again: pure, dependency-free static checks (footer fields, symbol-table
+    // presence) — a regression here is a doctor that misses a real structural problem or
+    // cries wolf on a fine extension, not a build failure.
+    const extension_doctor_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/extension_doctor_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_extension_doctor_tests = b.addRunArtifact(extension_doctor_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_sign_extension_tests.step);
     test_step.dependOn(&run_sqllogictest_main_tests.step);
+    test_step.dependOn(&run_extension_doctor_tests.step);
     test_step.dependOn(&run_v2_static_parity.step);
     test_step.dependOn(&run_v2_dynamic_parity.step);
     test_step.dependOn(&run_v2_helpers_check.step);
+
+    // Installs the extension-doctor tool — see src/extension_doctor_main.zig's own doc
+    // comment for usage and scope (docs/rationale/0005_a-package-for-extension-authors.md §7).
+    const extension_doctor_exe = b.addExecutable(.{
+        .name = "extension_doctor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/extension_doctor_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const install_extension_doctor = b.addInstallArtifact(extension_doctor_exe, .{});
+    const extension_doctor_step = b.step("extension-doctor-tool", "Build the extension-doctor static-check tool (zig-out/bin/extension_doctor)");
+    extension_doctor_step.dependOn(&install_extension_doctor.step);
 
     // Installs the signing tool itself — see src/sign_extension_main.zig's
     // own doc comment for usage.
