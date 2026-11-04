@@ -82,6 +82,16 @@
 ///!
 ///! Usage: sqllogictest_main <duckdb_cli_path> <extension_path> <test_file_path>
 ///!
+///! `extension_path` may be the empty string (`""`) for a `.test` file with no `require`
+///! directive at all — this runner's own claim to be "a minimal, native sqllogictest runner"
+///! (not "...for this project's extension specifically") otherwise doesn't hold: forcing a
+///! real path even when nothing in the file ever loads one is a real usability gap for any
+///! future user running a plain-SQL `.test` file, not just this project's own four suites
+///! (which all have a `require` line today, so this was never exercised). A `require`
+///! directive with an empty `extension_path` is a hard error (`error.RequireWithNoExtension`,
+///! caught before the script is even built) rather than emitting a `LOAD '';` DuckDB would
+///! itself reject with a less specific message.
+///!
 ///! How it works: the whole `.test` file is compiled into one SQL script
 ///! (each block's SQL, followed by a `SELECT '@@SQLLOGICTEST_MARK_<i>@@';`
 ///! sentinel), run as a single non-interactive `duckdb` invocation with
@@ -122,6 +132,14 @@ pub fn main(init: std.process.Init) !void {
 
     const source = try std.Io.Dir.cwd().readFileAlloc(io, test_file_path, arena, .unlimited);
     const blocks = try parseBlocks(arena, source);
+
+    checkExtensionRequired(blocks, extension_path) catch |err| {
+        std.debug.print(
+            "sqllogictest: '{s}' has a `require` directive but no extension_path was given (pass \"\" only for a file with none)\n",
+            .{test_file_path},
+        );
+        return err;
+    };
 
     // Build one combined script: each block's SQL, then its own marker.
     var script: std.ArrayList(u8) = .empty;
@@ -237,6 +255,17 @@ pub fn main(init: std.process.Init) !void {
 fn usageError() !void {
     std.debug.print("usage: sqllogictest_main <duckdb_cli_path> <extension_path> <test_file_path>\n", .{});
     return error.InvalidArgs;
+}
+
+/// A `require` directive always becomes `LOAD '<extension_path>';` in the generated script
+/// (see `main`'s own switch) — an empty `extension_path` there would be a `LOAD '';` DuckDB
+/// itself rejects with a less specific error than this check gives. Caught here, before the
+/// script is even built, not left for DuckDB to report.
+fn checkExtensionRequired(blocks: []const Block, extension_path: []const u8) !void {
+    if (extension_path.len != 0) return;
+    for (blocks) |block| {
+        if (block == .require) return error.RequireWithNoExtension;
+    }
 }
 
 /// Parses one `-jsonlines` output row — a flat JSON object with scalar
@@ -459,4 +488,46 @@ fn collectUntilSeparator(arena: std.mem.Allocator, lines: []const []const u8, i:
     }
     if (i.* < lines.len) i.* += 1; // skip "----"
     return collected.items;
+}
+
+test "checkExtensionRequired allows an empty extension_path when no block requires one" {
+    const blocks = [_]Block{
+        .{ .statement_ok = "SELECT 1" },
+        .{ .query = .{ .sql = "SELECT 1 + 1", .expected = &.{"2"} } },
+    };
+    try checkExtensionRequired(&blocks, "");
+}
+
+test "checkExtensionRequired rejects an empty extension_path when a block requires one" {
+    const blocks = [_]Block{
+        .{ .require = "zig_ext" },
+        .{ .statement_ok = "SELECT 1" },
+    };
+    try std.testing.expectError(error.RequireWithNoExtension, checkExtensionRequired(&blocks, ""));
+}
+
+test "checkExtensionRequired allows any non-empty extension_path regardless of require" {
+    const blocks = [_]Block{.{ .require = "zig_ext" }};
+    try checkExtensionRequired(&blocks, "/path/to/zig_ext.duckdb_extension");
+}
+
+test "parseBlocks handles a file with no require directive" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const source =
+        "statement ok\n" ++
+        "SELECT 1\n" ++
+        "\n" ++
+        "query I\n" ++
+        "SELECT 1 + 1\n" ++
+        "----\n" ++
+        "2\n";
+    const blocks = try parseBlocks(arena, source);
+    try std.testing.expectEqual(2, blocks.len);
+    try std.testing.expect(blocks[0] == .statement_ok);
+    try std.testing.expect(blocks[1] == .query);
+    try std.testing.expectEqual(1, blocks[1].query.expected.len);
+    try std.testing.expectEqualStrings("2", blocks[1].query.expected[0]);
 }

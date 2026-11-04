@@ -1981,10 +1981,9 @@ pub fn build(b: *std.Build) void {
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
-    // Pure, dependency-free hash-computation logic (no DuckDB import at
-    // all) — worth its own test step despite no other `*_main.zig` tool
-    // having one: a wrong composite hash here means a silently-wrong
-    // extension signature, not a build failure.
+    // Pure, dependency-free hash-computation/footer-parsing logic (no DuckDB import at all) —
+    // worth its own test step: a wrong composite hash here means a silently-wrong extension
+    // signature, not a build failure.
     const sign_extension_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/sign_extension_main.zig"),
@@ -1994,9 +1993,23 @@ pub fn build(b: *std.Build) void {
     });
     const run_sign_extension_tests = b.addRunArtifact(sign_extension_tests);
 
+    // Same reasoning: pure parsing/validation logic, no DuckDB import, no CLI subprocess — a
+    // regression here (e.g. `checkExtensionRequired` silently accepting an empty
+    // `extension_path` alongside a `require` directive) would surface as a confusing DuckDB
+    // error at test-suite run time instead of a clear one here.
+    const sqllogictest_main_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sqllogictest_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_sqllogictest_main_tests = b.addRunArtifact(sqllogictest_main_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_sign_extension_tests.step);
+    test_step.dependOn(&run_sqllogictest_main_tests.step);
     test_step.dependOn(&run_v2_static_parity.step);
     test_step.dependOn(&run_v2_dynamic_parity.step);
     test_step.dependOn(&run_v2_helpers_check.step);
