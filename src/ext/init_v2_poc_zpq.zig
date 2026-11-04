@@ -81,6 +81,7 @@ const column = zpq.core.parquet.column;
 const ast = zpq.core.filter.ast;
 const prune = zpq.core.filter.prune;
 const selection = zpq.core.filter.selection;
+const decimal = zpq.core.parquet.decimal;
 
 const Err = *v2.duckdb_v2_error_info_handle;
 
@@ -201,8 +202,15 @@ fn destroyGlobalState(ptr: *anyopaque) callconv(.c) void {
 /// `Reader` below is the type-erasure this needs the moment more than one physical type can
 /// appear — chosen once per column in `claimNextRowGroup`, switched on in `exec`'s decode step
 /// via `decodeColumn`.
-const PhysicalType = enum { boolean, int32, int64, float, double, varchar, blob };
+const PhysicalType = enum { boolean, int32, int64, float, double, varchar, blob, decimal32, decimal64, decimal128 };
 
+/// `.decimal32`/`.decimal64`/`.decimal128` all decode to `i128` here regardless of declared
+/// precision — not DuckDB's own narrower `i16`/`i32`/`i64` storage for a small-precision DECIMAL.
+/// This keeps `moveElement`'s generic per-`PhysicalType` compaction correct (one fixed stride per
+/// tag, same as every other type) without complicating it with a *runtime* width; narrowing to
+/// whatever `decimalStorageWidth(precision)` says DuckDB actually stores happens once, in `exec`,
+/// only for rows that survive filtering — the same "decode to a uniform scratch type, box into
+/// the real vector shape last" split VARCHAR/BLOB already use for `duckdb_v2_bytes`.
 fn ZigType(comptime p: PhysicalType) type {
     return switch (p) {
         .boolean => bool,
@@ -211,12 +219,16 @@ fn ZigType(comptime p: PhysicalType) type {
         .float => f32,
         .double => f64,
         .varchar, .blob => []const u8,
+        .decimal32, .decimal64, .decimal128 => i128,
     };
 }
 
 /// The DuckDB logical type a resolved column's physical type becomes in the result — same
 /// Zig-type-to-`LOGICAL_TYPE_ID` correspondence `comptime_scalar_v2.zig`'s own `duckdbV2TypeId`
 /// uses, just the Parquet-physical-type side of it instead of a Zig function's return type.
+/// DECIMAL's actual logical type (with its `(precision, scale)` parameters) is created via
+/// `helpers.createDecimalType` in `bind` instead of `helpers.createTypeFromId` — this is still
+/// used for the schema-argument type-name check's id, where only the bare type id matters.
 fn duckdbTypeIdFor(p: PhysicalType) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
     return switch (p) {
         .boolean => .LOGICAL_TYPE_ID_BOOLEAN,
@@ -226,6 +238,7 @@ fn duckdbTypeIdFor(p: PhysicalType) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
         .double => .LOGICAL_TYPE_ID_DOUBLE,
         .varchar => .LOGICAL_TYPE_ID_VARCHAR,
         .blob => .LOGICAL_TYPE_ID_BLOB,
+        .decimal32, .decimal64, .decimal128 => .LOGICAL_TYPE_ID_DECIMAL,
     };
 }
 
@@ -233,7 +246,8 @@ fn duckdbTypeIdFor(p: PhysicalType) v2.DUCKDB_V2_LOGICAL_TYPE_ID {
 /// (case-insensitively) for this physical type — not DuckDB's own type-name resolution (this
 /// PoC never calls `create_type_from_name` on it), just a fixed string this file checks a
 /// column's *actual* physical type against, the same way "must be `'BIGINT'`" worked before
-/// more than one type existed.
+/// more than one type existed. All three DECIMAL backings share the one spelling — the file's own
+/// schema, not the caller, decides the actual `(precision, scale)` (see `resolveSupportedColumn`).
 fn sqlNameFor(p: PhysicalType) []const u8 {
     return switch (p) {
         .boolean => "BOOLEAN",
@@ -243,17 +257,59 @@ fn sqlNameFor(p: PhysicalType) []const u8 {
         .double => "DOUBLE",
         .varchar => "VARCHAR",
         .blob => "BLOB",
+        .decimal32, .decimal64, .decimal128 => "DECIMAL",
     };
 }
 
+/// The native storage width DuckDB itself picks for a `DECIMAL(precision, _)` column — the exact
+/// thresholds from `duckdb/common/types/decimal.hpp`'s `MAX_WIDTH_INT16`/`_INT32`/`_INT64`/
+/// `_INT128` (4/9/18/38), not assumed or rederived. Drives the narrowing write in `exec`'s own
+/// boxing loop: the wire-decoded `i128` is always exact, but the real vector buffer DuckDB
+/// allocated for this column may be a narrower native width.
+const DecimalWidth = enum { i16, i32, i64, i128 };
+fn decimalStorageWidth(precision: u8) DecimalWidth {
+    if (precision <= 4) return .i16;
+    if (precision <= 9) return .i32;
+    if (precision <= 18) return .i64;
+    return .i128;
+}
+
+/// `@bitCast` between `i128` and this `extern struct` directly isn't accepted by the compiler
+/// (same bit size, but not a bitcast-eligible pair) — done as an explicit split/recombine instead.
+/// Still the same little-endian "low 64 bits in `lower`" layout confirmed live in
+/// `duckdb_v2_hugeint_t bitcasts to/from i128 losslessly` below, just assembled by hand.
+fn i128ToHugeint(v: i128) v2.duckdb_v2_hugeint_t {
+    const u: u128 = @bitCast(v);
+    return .{ .lower = @truncate(u), .upper = @bitCast(@as(u64, @truncate(u >> 64))) };
+}
+
+fn hugeintToI128(h: v2.duckdb_v2_hugeint_t) i128 {
+    const upper_u: u64 = @bitCast(h.upper);
+    const u: u128 = (@as(u128, upper_u) << 64) | @as(u128, h.lower);
+    return @bitCast(u);
+}
+
 /// `null` for a missing type (groups/the root have none — never actually passed a leaf's own
-/// `element`, but the field itself is `?Type`) or `INT96` (legacy timestamp — Phase 2 item 6,
-/// low priority). `BYTE_ARRAY`/`FIXED_LEN_BYTE_ARRAY` resolve to `.varchar` when the element's
-/// own logical type (`effectiveLogicalType`, resolving either the modern `logical_type` or the
-/// legacy `converted_type` fallback — checked directly in `schema.zig`, not assumed) says
-/// `.STRING`, `.blob` otherwise (no annotation, or one this PoC doesn't map, e.g. `.DECIMAL` —
-/// Phase 2 item 5, not attempted here).
+/// `element`, but the field itself is `?Type`) or `INT96`/`BYTE_ARRAY`-backed DECIMAL (legacy
+/// timestamp and the rare DECIMAL backing — Phase 2 items 6 and 2.10's own item 4, both still
+/// deferred). DECIMAL is checked first via `decimal.kindFromSchema` (recognizes both the modern
+/// `logical_type=DECIMAL{scale,precision}` form and the legacy `converted_type=DECIMAL` one,
+/// confirmed by reading `decimal.zig` directly) — only `INT32`/`INT64`/`FIXED_LEN_BYTE_ARRAY`
+/// backings are supported (Phase 2.10 items 1-2); `BYTE_ARRAY`-backed DECIMAL and INT96-backed
+/// DECIMAL fall through to `null` here rather than being silently read as plain BLOB/unsupported.
+/// Otherwise, `BYTE_ARRAY`/`FIXED_LEN_BYTE_ARRAY` resolve to `.varchar` when the element's own
+/// logical type (`effectiveLogicalType`, resolving either the modern `logical_type` or the legacy
+/// `converted_type` fallback — checked directly in `schema.zig`, not assumed) says `.STRING`,
+/// `.blob` otherwise.
 fn physicalTypeOf(element: *const schema.SchemaElement) ?PhysicalType {
+    if (decimal.kindFromSchema(element)) |kind| {
+        return switch (kind.physical) {
+            .INT32 => .decimal32,
+            .INT64 => .decimal64,
+            .FIXED_LEN_BYTE_ARRAY => .decimal128,
+            else => null,
+        };
+    }
     return switch (element.type orelse return null) {
         .BOOLEAN => .boolean,
         .INT32 => .int32,
@@ -282,6 +338,13 @@ const Reader = union(PhysicalType) {
     double: column.ColumnChunkReader(f64),
     varchar: column.ColumnChunkReader([]const u8),
     blob: column.ColumnChunkReader([]const u8),
+    // Wire format only — `.decimal32`/`.decimal64` are plain fixed-width int columns (same reader
+    // type as `.int32`/`.int64`), `.decimal128` a fixed-length byte column (same reader type as
+    // `.varchar`/`.blob`'s FIXED_LEN_BYTE_ARRAY case). The unscaled-integer *interpretation* (and
+    // widening to `i128`) happens in `decodeColumn`, not here.
+    decimal32: column.ColumnChunkReader(i32),
+    decimal64: column.ColumnChunkReader(i64),
+    decimal128: column.ColumnChunkReader([]const u8),
 };
 
 const DecodeResult = struct { count: usize, ptr: *anyopaque };
@@ -319,6 +382,38 @@ fn decodeColumn(reader: *Reader, max_def: i32, local: *LocalState, out_data: ?*a
             const out: [*]T = if (out_data) |d| @ptrCast(@alignCast(d)) else (try local.arena.allocator().alloc(T, n)).ptr;
             const count = if (max_def == 0) try r.decode(out[0..n]) else try r.decodeWithLevels(out[0..n], def_levels[0..n]);
             return .{ .count = count, .ptr = out };
+        },
+        // DECIMAL: always decoded into a fresh `local.arena`-owned `i128` scratch, never straight
+        // into `out_data` — the real vector buffer DuckDB allocated for this column may be a
+        // narrower native width (`i16`/`i32`/`i64`) than the wire-decoded value needs in general,
+        // so writing it directly here (the way the plain numeric types above do) would use the
+        // wrong stride for a small-precision DECIMAL. `exec`'s own boxing loop narrows this
+        // scratch into the vector's real width once `row_count` is final, same split VARCHAR/BLOB
+        // already use for `duckdb_v2_bytes`.
+        .decimal32 => |*r| {
+            const wire = try local.arena.allocator().alloc(i32, n);
+            const count = if (max_def == 0) try r.decode(wire[0..n]) else try r.decodeWithLevels(wire[0..n], def_levels[0..n]);
+            const scratch = try local.arena.allocator().alloc(i128, n);
+            for (0..count) |i| scratch[i] = wire[i];
+            return .{ .count = count, .ptr = @ptrCast(scratch.ptr) };
+        },
+        .decimal64 => |*r| {
+            const wire = try local.arena.allocator().alloc(i64, n);
+            const count = if (max_def == 0) try r.decode(wire[0..n]) else try r.decodeWithLevels(wire[0..n], def_levels[0..n]);
+            const scratch = try local.arena.allocator().alloc(i128, n);
+            for (0..count) |i| scratch[i] = wire[i];
+            return .{ .count = count, .ptr = @ptrCast(scratch.ptr) };
+        },
+        // FIXED_LEN_BYTE_ARRAY: big-endian two's-complement bytes, same wire shape `.varchar`/
+        // `.blob`'s FIXED_LEN_BYTE_ARRAY case already decodes — `flbaToI128` (zpq's own reusable
+        // primitive, confirmed to exist independent of its lossy `f64` conversion path) does the
+        // byte-reverse + sign-extend.
+        .decimal128 => |*r| {
+            const wire = try local.arena.allocator().alloc([]const u8, n);
+            const count = if (max_def == 0) try r.decode(wire[0..n]) else try r.decodeWithLevels(wire[0..n], def_levels[0..n]);
+            const scratch = try local.arena.allocator().alloc(i128, n);
+            for (0..count) |i| scratch[i] = decimal.flbaToI128(wire[i]);
+            return .{ .count = count, .ptr = @ptrCast(scratch.ptr) };
         },
     }
 }
@@ -393,7 +488,21 @@ const ResolvedColumn = struct {
     /// `Reader`'s own `type_length` field after `init` in `claimNextRowGroup`, per
     /// `column.zig`'s own doc comment on it ("set by the caller after init").
     type_length: usize = 0,
+    /// Meaningless (0) unless `phys` is one of `.decimal32`/`.decimal64`/`.decimal128` — the
+    /// file's own declared `(precision, scale)`, from `decimal.kindFromSchema`. Drives both the
+    /// logical type `bind` declares (`helpers.createDecimalType`) and the native storage width
+    /// `exec`'s boxing loop narrows into (`decimalStorageWidth(decimal_precision)`).
+    decimal_precision: u8 = 0,
+    decimal_scale: u8 = 0,
 };
+
+/// `(precision, scale)` for a column already known to be one of the three supported DECIMAL
+/// backings, else zeros — a thin wrapper over `decimal.kindFromSchema` so call sites don't each
+/// re-derive "is this actually a DECIMAL" themselves.
+fn decimalMetaOf(element: *const schema.SchemaElement) struct { precision: u8, scale: u8 } {
+    const kind = decimal.kindFromSchema(element) orelse return .{ .precision = 0, .scale = 0 };
+    return .{ .precision = @intCast(kind.precision), .scale = @intCast(kind.scale) };
+}
 
 /// Resolves `column_name` to a leaf index and validates it's a shape this
 /// PoC supports: a physical type `physicalTypeOf` recognizes, not repeated (max_rep == 0), and
@@ -405,7 +514,8 @@ fn resolveSupportedColumn(meta: *const schema.FileMetaData, column_name: []const
     if (leaf.max_def > 1 or leaf.max_rep != 0) return error.UnsupportedColumnShape;
     const phys = physicalTypeOf(leaf.element) orelse return error.UnsupportedColumnType;
     const type_length: usize = @intCast(@max(leaf.element.type_length orelse 0, 0));
-    return .{ .col_idx = col_idx, .max_def = leaf.max_def, .phys = phys, .type_length = type_length };
+    const dec = decimalMetaOf(leaf.element);
+    return .{ .col_idx = col_idx, .max_def = leaf.max_def, .phys = phys, .type_length = type_length, .decimal_precision = dec.precision, .decimal_scale = dec.scale };
 }
 
 const Footer = struct { meta: schema.FileMetaData, footer_bytes: []u8 };
@@ -490,9 +600,10 @@ fn resolveColumns(meta: *const schema.FileMetaData, schema_value: v2.duckdb_v2_v
             if (leaf.max_rep != 0 or leaf.max_def > 1) continue;
             const phys = physicalTypeOf(leaf.element) orelse continue;
             const type_length: usize = @intCast(@max(leaf.element.type_length orelse 0, 0));
+            const dec = decimalMetaOf(leaf.element);
             const name = try allocator.dupe(u8, leaf.element.name);
             errdefer allocator.free(name);
-            try cols.append(allocator, .{ .col = .{ .col_idx = leaf.index, .max_def = leaf.max_def, .phys = phys, .type_length = type_length }, .name = name });
+            try cols.append(allocator, .{ .col = .{ .col_idx = leaf.index, .max_def = leaf.max_def, .phys = phys, .type_length = type_length, .decimal_precision = dec.precision, .decimal_scale = dec.scale }, .name = name });
         }
         if (cols.items.len == 0) return error.NoSupportedColumns;
         return cols.toOwnedSlice(allocator);
@@ -574,7 +685,13 @@ fn bind(
     // than hoisted, since `duckdbTypeIdFor` can differ from one column to the next.
     for (named_cols) |nc| {
         var col_type: v2.duckdb_v2_logical_type_handle = undefined;
-        if (helpers.createTypeFromId(context, duckdbTypeIdFor(nc.col.phys), &col_type, err) != .ERROR_NONE) {
+        // DECIMAL needs its actual `(precision, scale)`, not just the bare type id —
+        // `createDecimalType` builds `LOGICAL_TYPE_ID_DECIMAL` with those parameters attached.
+        const create_err = switch (nc.col.phys) {
+            .decimal32, .decimal64, .decimal128 => helpers.createDecimalType(context, nc.col.decimal_precision, nc.col.decimal_scale, &col_type, err),
+            else => helpers.createTypeFromId(context, duckdbTypeIdFor(nc.col.phys), &col_type, err),
+        };
+        if (create_err != .ERROR_NONE) {
             meta.deinit(std.heap.c_allocator);
             std.heap.c_allocator.free(footer.footer_bytes);
             file.close(io);
@@ -835,6 +952,13 @@ fn claimNextRowGroup(local: *LocalState, global: *GlobalState, bind_data: *const
                     var r = column.ColumnChunkReader([]const u8).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator());
                     r.type_length = spec.type_length;
                     break :blk .{ .blob = r };
+                },
+                .decimal32 => .{ .decimal32 = column.ColumnChunkReader(i32).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
+                .decimal64 => .{ .decimal64 = column.ColumnChunkReader(i64).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator()) },
+                .decimal128 => blk: {
+                    var r = column.ColumnChunkReader([]const u8).init(chunk_bytes, col_meta.codec, levels, local.arena.allocator());
+                    r.type_length = spec.type_length;
+                    break :blk .{ .decimal128 = r };
                 },
             };
         }
@@ -1177,6 +1301,40 @@ fn exec(info: v2.duckdb_v2_table_function_exec_info_handle, context: v2.duckdb_v
                     };
                 }
             }
+            if (spec.phys == .decimal32 or spec.phys == .decimal64 or spec.phys == .decimal128) {
+                var out_data: ?*anyopaque = null;
+                if (v2.duckdb_v2_vector_get_data_mutable(vec, &out_data, err) != .ERROR_NONE) return;
+                // SAFETY: `outs[i]` is `decodeColumn`'s own `i128` scratch for this column —
+                // always exact (never DuckDB's possibly-narrower native storage), narrowed into
+                // the vector's real width below per `decimalStorageWidth`.
+                const src: [*]i128 = @ptrCast(@alignCast(outs[i]));
+                // SAFETY: the vector's own buffer, in whichever native width `decimalStorageWidth`
+                // says this column's declared precision maps to — the same thresholds DuckDB's
+                // own `decimal.hpp` uses, so this always matches what `bind` actually declared via
+                // `helpers.createDecimalType`.
+                switch (decimalStorageWidth(spec.decimal_precision)) {
+                    .i16 => {
+                        const out: [*]i16 = @ptrCast(@alignCast(out_data));
+                        for (0..row_count) |r| out[r] = @intCast(src[r]);
+                    },
+                    .i32 => {
+                        const out: [*]i32 = @ptrCast(@alignCast(out_data));
+                        for (0..row_count) |r| out[r] = @intCast(src[r]);
+                    },
+                    .i64 => {
+                        const out: [*]i64 = @ptrCast(@alignCast(out_data));
+                        for (0..row_count) |r| out[r] = @intCast(src[r]);
+                    },
+                    // `duckdb_v2_hugeint_t` is `{ lower: u64, upper: i64 }` — bit-identical to
+                    // Zig's native `i128` on a little-endian platform (low 64 bits first, two's
+                    // complement); see `decimalHugeintBitcastMatchesI128` below for the live check
+                    // backing this `@bitCast` instead of trusting the field order alone.
+                    .i128 => {
+                        const out: [*]v2.duckdb_v2_hugeint_t = @ptrCast(@alignCast(out_data));
+                        for (0..row_count) |r| out[r] = i128ToHugeint(src[r]);
+                    },
+                }
+            }
             if (spec.max_def == 0) continue;
             var validity_ptr: *u64 = undefined;
             if (v2.duckdb_v2_vector_flat_get_validity_mutable(vec, &validity_ptr, err) != .ERROR_NONE) return;
@@ -1305,6 +1463,9 @@ fn recognize(info: v2.duckdb_v2_table_function_filter_pushdown_info_handle, bind
         // Filter pushdown on BLOB is explicitly out of scope here — declined, same as any other
         // "not mine" case; DuckDB's own executor applies it instead.
         .blob => return null,
+        // Same for DECIMAL (Phase 2.10 item 5, deliberately deferred): no `FilterValue` arm
+        // exists for an `i128`-based comparison yet.
+        .decimal32, .decimal64, .decimal128 => return null,
     };
     return .{ .declared_col = declared, .op = op, .value = value };
 }
@@ -1434,4 +1595,32 @@ pub fn register(input: *const v2.duckdb_v2_extension_input) !void {
 export fn zig_ext_v2_poc_zpq_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
     if (!helpers.init(input, "v2.0.0")) return;
     register(input) catch {};
+}
+
+// Confirms live, not assumed from the struct's field order alone, that `duckdb_v2_hugeint_t`
+// (`{ lower: u64, upper: i64 }`) and Zig's native `i128` share the same little-endian bit layout
+// — the fact `exec`'s DECIMAL boxing loop relies on, via `i128ToHugeint`/`hugeintToI128`, to
+// write into the vector's own HUGEINT-width buffer. Covers negative, min, and max values, not
+// just zero.
+test "i128ToHugeint/hugeintToI128 round-trip and match the expected little-endian split" {
+    const cases = [_]i128{ 0, 1, -1, std.math.minInt(i128), std.math.maxInt(i128), 123456789012345678901234 };
+    for (cases) |want| {
+        const h = i128ToHugeint(want);
+        const expected_lower: u64 = @truncate(@as(u128, @bitCast(want)));
+        const expected_upper: i64 = @truncate(want >> 64);
+        try std.testing.expectEqual(expected_lower, h.lower);
+        try std.testing.expectEqual(expected_upper, h.upper);
+        try std.testing.expectEqual(want, hugeintToI128(h));
+    }
+}
+
+test "decimalStorageWidth matches DuckDB's own MAX_WIDTH_INT16/_INT32/_INT64/_INT128 thresholds" {
+    try std.testing.expectEqual(DecimalWidth.i16, decimalStorageWidth(1));
+    try std.testing.expectEqual(DecimalWidth.i16, decimalStorageWidth(4));
+    try std.testing.expectEqual(DecimalWidth.i32, decimalStorageWidth(5));
+    try std.testing.expectEqual(DecimalWidth.i32, decimalStorageWidth(9));
+    try std.testing.expectEqual(DecimalWidth.i64, decimalStorageWidth(10));
+    try std.testing.expectEqual(DecimalWidth.i64, decimalStorageWidth(18));
+    try std.testing.expectEqual(DecimalWidth.i128, decimalStorageWidth(19));
+    try std.testing.expectEqual(DecimalWidth.i128, decimalStorageWidth(38));
 }

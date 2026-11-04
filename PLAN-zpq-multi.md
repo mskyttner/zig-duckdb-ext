@@ -650,7 +650,7 @@ is still ahead there (~1.16x, down from ~1.45x) — the remaining gap is Phase 2
 (native's zero-copy string handling vs. this file's one real per-surviving-row copy), unrelated
 to projection and not addressed by this change.
 
-## Phase 2.10: DECIMAL (scoped, not implemented)
+## Phase 2.10: DECIMAL (implemented, 2026-11-04)
 
 Checked against zpq's actual `decimal.zig` and DuckDB's own real `decimal.hpp` before committing
 to a design — same discipline as every other phase here, and this one turned up a real
@@ -678,57 +678,76 @@ Parquet's `DECIMAL` logical type sits on four physical encodings (per zpq's own 
 (rare). The first two are nearly free, because the physical bits are *already* DuckDB's own
 DECIMAL representation:
 
-1. **`INT32`/`INT64`-backed DECIMAL needs no new decode path at all.** Per `decimal.zig`'s own
-   doc comment, "INT32/INT64 backings still use parquet's standard little-endian fixed-width int
-   wire format and only the *logical* interpretation differs (apply scale)" — the on-disk bytes
-   are the exact same scaled integer DuckDB's own `DECIMAL(p,s)` would store for a precision that
-   fits `i32`/`i64`. This PoC's existing `.int32`/`.int64` `ColumnChunkReader` paths already
-   decode these bytes correctly; the only change is what `bind` *declares* the output column as
-   (`helpers.createDecimalType(ctx, width, scale, ...)`, already present in `v2_helpers.zig`,
-   unused until now) instead of `INTEGER`/`BIGINT`. `PhysicalType` needs a way to carry
-   `(precision, scale)` alongside `.int32`/`.int64` — a new field on `ResolvedColumn`, not a new
-   `Reader` variant.
+1. **`INT32`/`INT64`-backed DECIMAL reuses the existing wire-format readers, but not their
+   direct-to-vector write (see item 4 below for why).** Per `decimal.zig`'s own doc comment,
+   "INT32/INT64 backings still use parquet's standard little-endian fixed-width int wire format
+   and only the *logical* interpretation differs (apply scale)" — the on-disk bytes are the exact
+   same scaled integer DuckDB's own `DECIMAL(p,s)` would store for a precision that fits
+   `i32`/`i64`. `bind` declares the output column via `helpers.createDecimalType(ctx, width,
+   scale, ...)` (already present in `v2_helpers.zig`, unused until now) instead of
+   `INTEGER`/`BIGINT`. `(precision, scale)` lives on `ResolvedColumn`, as planned — but
+   `PhysicalType` ended up needing two new `Reader` variants after all (`.decimal32`/`.decimal64`,
+   payload-identical to `.int32`/`.int64`), not just a field, once item 4's narrowing problem
+   surfaced.
 2. **`FIXED_LEN_BYTE_ARRAY`-backed DECIMAL (precision 10-38, needing `i128`) needs one real new
    function, not a new decode path.** FLBA bytes are big-endian two's-complement — the same raw
    bytes this PoC's existing `.blob`/`ColumnChunkReader([]const u8)` path already decodes
-   correctly (zero-copy, per Phase 2's own investigation). What's missing is purely the
-   *interpretation*: a `[]const u8` (big-endian, `type_length` ≤ 16 bytes per
-   `decimal.zig`'s own `MAX_FLBA_BYTE_WIDTH`) → `i128` conversion this PoC would have to write
-   itself (byte-reverse into little-endian, sign-extend for widths < 16) — zpq's own
-   `decimal.zig` doesn't expose this as a reusable primitive independent of its `f64` conversion,
-   confirmed by reading it, not assumed absent. Needs its own correctness fixture (known
-   big-endian bytes ↔ known `i128` value) rather than trusting the conversion from a real-file
-   round-trip alone, the same way the INT64-OPTIONAL-by-default discovery and the VARCHAR
-   byte-order claim both got a dedicated check instead of an inference.
-3. **Writing `i128` output needs checking, not assuming, against the real v2 header.**
-   `duckdb_v2_hugeint_t` is `{ lower: u64, upper: i64 }` — on a little-endian platform this is
-   almost certainly the same bit layout as Zig's native `i128` (low 64 bits first), which would
-   mean DECIMAL(>18) output can reuse the exact same direct-into-the-vector's-own-buffer write
-   `decodeColumn` already does for the other fixed-width types (`[*]i128`, no `duckdb_v2_bytes`
-   boxing the way VARCHAR/BLOB need) — but this project has no existing `i128`↔`duckdb_v2_hugeint_t`
-   conversion anywhere yet (grepped for it: nothing), so it would be this PoC's first, and the
-   bit-layout match should be confirmed live (a known value written both ways, compared) before
-   relying on it, not assumed from the struct's field order alone.
-4. **`BYTE_ARRAY`-backed DECIMAL stays explicitly deferred within this item** — zpq's own doc
+   correctly (zero-copy, per Phase 2's own investigation). **Correction (caught re-reading
+   `decimal.zig` at implementation time, before writing any code against the claim below): zpq
+   *does* expose this standalone, independent of its lossy `f64` path** — `pub fn
+   flbaToI128(bytes: []const u8) i128` (big-endian, two's-complement, sign-extending,
+   `bytes.len <= MAX_FLBA_BYTE_WIDTH == 16`) is reused directly rather than reimplemented. (zpq
+   also has a higher-level `decodeColumnAsI128`/`decodeColumnAsI128WithOptions`, a one-shot
+   whole-row-group decode via `filter_eval.ColumnT(i128)` — not used here: it doesn't fit this
+   file's incremental per-batch `ColumnChunkReader(T).decode`/`decodeWithLevels` architecture, and
+   `core/filter/eval.zig`'s own imports, while confirmed free of `io.*`/`core.scan`, are still a
+   bigger dependency surface than the single low-level primitive actually needed.)
+3. **Writing `i128` output: the hugeint/i128 bit-layout match is confirmed live, not just
+   plausible.** `duckdb_v2_hugeint_t` (`{ lower: u64, upper: i64 }`) and Zig's native `i128` do
+   share the same little-endian layout — verified by a dedicated unit test (`i128ToHugeint`/
+   `hugeintToI128` round-trip, covering 0/1/-1/min/max/an arbitrary large value), not assumed
+   from the struct's field order alone. One correction from the plan above: `@bitCast` directly
+   between `i128` and the `extern struct` is rejected by the compiler (same bit size, not a
+   bitcast-eligible pair) — `exec`'s boxing loop assembles/splits the struct by hand
+   (`i128ToHugeint`/`hugeintToI128`) instead of a single `@bitCast`.
+4. **A correctness gap the plan above didn't account for, found while implementing: Parquet's
+   `INT32`/`INT64` physical backing does not always match DuckDB's own storage width for the
+   declared precision.** A writer may back a small-precision DECIMAL (e.g. `DECIMAL(4,2)`, which
+   DuckDB itself stores as `i16`) with Parquet's `INT32` physical type — reusing `.int32`'s
+   existing "decode straight into the vector's own buffer" path for DECIMAL, as item 1 above
+   proposed, would write 4-byte strides into what might be a 2-byte-wide vector buffer. Fixed by
+   giving DECIMAL its own three `PhysicalType` tags (`.decimal32`/`.decimal64`/`.decimal128`) that
+   always decode to a uniform `i128` scratch (reusing the existing `ColumnChunkReader(i32)`/`(i64)`/
+   `([]const u8)` wire-format readers, just not their direct-to-vector write), then narrow into
+   whichever native width `decimalStorageWidth(precision)` says DuckDB actually allocated — the
+   same "decode to a uniform type, box into the real vector shape last" split VARCHAR/BLOB already
+   use for `duckdb_v2_bytes`, applied here for a runtime-variable integer width instead of a
+   variable-length byte array.
+5. **`BYTE_ARRAY`-backed DECIMAL stays explicitly deferred within this item** — zpq's own doc
    comment calls it "rare," and it is a variable-length version of the same big-endian-bytes
    problem item 2 already solves; not worth the extra case until a real file needs it.
-5. **Filter pushdown on a DECIMAL column is explicitly not part of this item** — same pattern
+6. **Filter pushdown on a DECIMAL column is explicitly not part of this item** — same pattern
    VARCHAR followed (Phase 2 item 4 landed before Phase 2.8 added its own pushdown): land the
    type correctly first, consider pushdown as a later, separate phase once there's a value type
    (`i128`-based comparison, not reusing any existing `FilterValue` arm) worth designing for.
 
-### Validate with
+### Validated with (2026-11-04)
 
-A DECIMAL fixture covering all three backings this item actually attempts (`DECIMAL(4,2)` →
-INT32, `DECIMAL(12,2)` → INT64, `DECIMAL(30,4)` → FIXED_LEN_BYTE_ARRAY, matching real `COPY ...
-TO PARQUET` output for each width, not assumed to round-trip), with values chosen specifically to
-expose float-precision loss if the f64 trap above were accidentally reintroduced (e.g. a sum
-that would visibly diverge from the exact result in the 7th-8th decimal digit, per `decimal.zig`'s
-own characterization of the error): default and explicit schema (`type: 'DECIMAL(p,s)'` or
-similar — the exact schema-string shape isn't settled here) against native `read_parquet`'s own
-DECIMAL output, exact equality, not an epsilon comparison; a dedicated FLBA-bytes-to-`i128` unit
-test with known inputs/outputs, independent of any Parquet file at all; and the full regression
-suite once more.
+A real fixture via `COPY ... TO PARQUET` (10,000 rows, `range(1, 10001)`): `DECIMAL(4,2)` →
+INT32, `DECIMAL(12,3)` → INT64, `DECIMAL(30,6)` → FIXED_LEN_BYTE_ARRAY (confirmed via
+`parquet_schema()`, not assumed from the declared SQL type), plus a nullable INT32-backed column
+(`i % 7 = 0` → NULL) to exercise validity alongside narrowing. `read_zpq`'s default (no explicit
+`schema` argument) output diffed against native `read_parquet`'s own DECIMAL output both
+directions (`EXCEPT` each way) — zero mismatches across all 10,000 rows and all four DECIMAL
+columns, exact equality (not epsilon), confirming no float-precision loss snuck back in via the
+`f64` trap this item opened by naming. The hugeint/i128 bit-layout claim and the
+`decimalStorageWidth` threshold table each got their own dedicated unit test (see
+`src/ext/init_v2_poc_zpq.zig`'s own `test` blocks, run via `zig build test-v2-poc-zpq` — this
+file has no test step wired into `zig build test`, isolated by design like the rest of this PoC)
+rather than trusting the real-file round-trip alone to have caught a layout mismatch that could
+coincidentally still produce the right bytes for small values. `BYTE_ARRAY`-backed DECIMAL,
+INT96-backed DECIMAL, and filter pushdown on any DECIMAL column remain deferred, per items 5-6
+above — `physicalTypeOf` returns `null` for them rather than silently misreading them as BLOB.
 
 ## Explicitly out of scope for both phases
 

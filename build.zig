@@ -1647,6 +1647,21 @@ pub fn build(b: *std.Build) void {
 
         const v2_poc_zpq_step = b.step("v2-poc-zpq", "Build the zpq-backed read_parquet v2 proof-of-concept .duckdb_extension file");
         v2_poc_zpq_step.dependOn(&install_v2_poc_zpq.step);
+
+        const v2_poc_zpq_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ext/init_v2_poc_zpq.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        v2_poc_zpq_tests.root_module.addImport("duckdb_v2_api", duckdb_v2_dynamic_mod);
+        v2_poc_zpq_tests.root_module.addImport("v2_helpers", v2_helpers_mod);
+        v2_poc_zpq_tests.root_module.addImport("zpq", zpq_dep.module("zpq"));
+        v2_poc_zpq_tests.root_module.link_libc = true;
+        const run_v2_poc_zpq_tests = b.addRunArtifact(v2_poc_zpq_tests);
+        const v2_poc_zpq_test_step = b.step("test-v2-poc-zpq", "Run init_v2_poc_zpq.zig's own unit tests (DECIMAL hugeint/i128 layout, width thresholds)");
+        v2_poc_zpq_test_step.dependOn(&run_v2_poc_zpq_tests.step);
     }
 
     // ── v2 proof-of-concept: zio as a second `std.Io` backend (zio dependency, isolated) ───────
