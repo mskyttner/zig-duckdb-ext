@@ -726,12 +726,12 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             }
         }
 
-        inline fn writeResult(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64, err: *v2.duckdb_v2_error_info_handle) ?WriteType {
+        inline fn writeResult(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: usize, err: *v2.duckdb_v2_error_info_handle) ?WriteType {
             const v = call(views, row, err) orelse return null;
             return if (comptime return_is_decimal) v.raw else v;
         }
 
-        inline fn rowIsValid(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) bool {
+        inline fn rowIsValid(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: usize) bool {
             inline for (0..param_types.len) |i| {
                 if (views.*[i].validity) |validity| {
                     // `row` is `u64` (DuckDB's own row-index width); indexing `validity`
@@ -756,7 +756,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
 
         /// `invoke`, with an error of `implFn` reported as the error of the query: null means the
         /// caller must stop (DuckDB fails the query, whatever else is written).
-        inline fn call(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64, err: *v2.duckdb_v2_error_info_handle) ?ReturnType {
+        inline fn call(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: usize, err: *v2.duckdb_v2_error_info_handle) ?ReturnType {
             const produced = invoke(views, row);
             if (comptime !returns_error) return produced;
             return produced catch |e| {
@@ -776,7 +776,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             _ = helpers.setErrorText(err.*, msg);
         }
 
-        inline fn invoke(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) RawReturnType {
+        inline fn invoke(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: usize) RawReturnType {
             var args: ArgsTuple = undefined;
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
@@ -814,7 +814,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// `ENUM(...)` dictionary in — rather than assuming
         /// `@enumFromInt(ordinal)`, so a manually-numbered Zig enum still
         /// decodes correctly.
-        inline fn decodeEnumArg(comptime T: type, view: v2.duckdb_v2_vector_view, row: u64) T {
+        inline fn decodeEnumArg(comptime T: type, view: v2.duckdb_v2_vector_view, row: usize) T {
             const info = @typeInfo(T).@"enum";
             const n = info.field_values.len;
             const StorageT = if (n <= 255) u8 else if (n <= 65535) u16 else u32;
@@ -962,7 +962,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         inline fn writeStructResult(
             context: v2.duckdb_v2_context_handle,
             ptrs: *const ReturnChildPtrsTuple,
-            row: u64,
+            row: usize,
             value: ReturnType,
             err: *v2.duckdb_v2_error_info_handle,
         ) bool {
@@ -1057,7 +1057,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             }
         }
 
-        inline fn structRowIsValid(views: *const ViewsTuple, row: u64) bool {
+        inline fn structRowIsValid(views: *const ViewsTuple, row: usize) bool {
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
                 if (comptime isStructType(T)) {
@@ -1080,7 +1080,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             return true;
         }
 
-        inline fn buildStructArgs(views: *const ViewsTuple, row: u64) ArgsTuple {
+        inline fn buildStructArgs(views: *const ViewsTuple, row: usize) ArgsTuple {
             var args: ArgsTuple = undefined;
             inline for (0..param_types.len) |i| {
                 const T = param_types[i].?;
@@ -1129,7 +1129,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             return rc == .ERROR_NONE;
         }
 
-        inline fn listRowIsValid(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) bool {
+        inline fn listRowIsValid(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: usize) bool {
             inline for (0..param_types.len) |i| {
                 if (views.*[i].validity) |validity| {
                     const entry_idx: usize = @intCast(row / 64);
@@ -1517,7 +1517,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// `u8` ordinal, then read the corresponding member child at the
         /// same row. Returns `null` (having already set `err`) only on a
         /// genuine API failure, not on any data condition.
-        fn readUnionArg(comptime T: type, union_vec: v2.duckdb_v2_vector_handle, row: u64, err: *v2.duckdb_v2_error_info_handle) ?T {
+        fn readUnionArg(comptime T: type, union_vec: v2.duckdb_v2_vector_handle, row: usize, err: *v2.duckdb_v2_error_info_handle) ?T {
             const info = @typeInfo(T).@"union";
             const n = info.field_types.len;
 
@@ -1556,7 +1556,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         /// other member's child vector at this row is left untouched
         /// (unspecified, not required to be NULL or zeroed — UNION's
         /// tag is what determines which value is meaningful).
-        fn writeUnionResult(context: v2.duckdb_v2_context_handle, result_vec: v2.duckdb_v2_vector_handle, row: u64, value: ReturnType, err: *v2.duckdb_v2_error_info_handle) bool {
+        fn writeUnionResult(context: v2.duckdb_v2_context_handle, result_vec: v2.duckdb_v2_vector_handle, row: usize, value: ReturnType, err: *v2.duckdb_v2_error_info_handle) bool {
             const info = @typeInfo(ReturnType).@"union";
             const n = info.field_types.len;
 
