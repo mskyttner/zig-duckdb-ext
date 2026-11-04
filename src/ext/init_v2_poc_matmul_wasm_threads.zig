@@ -62,7 +62,26 @@ const MatmulParallelCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_paralle
     }
 }.eval, &.{ "a", "b", "m", "k", "n" });
 
+/// The single-threaded SIMD kernel, registered here too (not just in
+/// `init_v2_poc_matmul_wasm.zig`) specifically so it's a fair single-vs-parallel baseline:
+/// DuckDB's own loader checks an extension's footer `platform` field against the connecting
+/// engine's own platform and refuses a mismatch (confirmed live — not just descriptive
+/// metadata, as it first appeared) — a `wasm_eh`-stamped module can't be loaded by a
+/// `wasm_threads` engine at all, so comparing the two kernels needs both inside one module
+/// built for the one platform actually being connected to.
+const MatmulCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_ct", struct {
+    fn eval(a: []const f64, b: []const f64, m: i64, k: i64, n: i64) []const f64 {
+        const mu: usize = @intCast(@max(m, 0));
+        const ku: usize = @intCast(@max(k, 0));
+        const nu: usize = @intCast(@max(n, 0));
+        const out = matmulOutputSlice(mu, nu) orelse return &.{};
+        matmul.matmulSimd(matmul.default_rm, a, b, out, mu, ku, nu);
+        return out;
+    }
+}.eval, &.{ "a", "b", "m", "k", "n" });
+
 export fn zig_ext_v2_poc_matmul_wasm_threads_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
     if (!helpers.init(input, "v2.0.0")) return;
     MatmulParallelCt.register(input) catch {};
+    MatmulCt.register(input) catch {};
 }
