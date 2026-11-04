@@ -752,13 +752,29 @@ above — `physicalTypeOf` returns `null` for them rather than silently misreadi
 **Benchmarked** (10M rows, `threads=1`, `-no-agent`): a DECIMAL64 column (`d_mid`) costs roughly
 2.4x a plain BIGINT column of the same cardinality (0.426s vs an equivalent-sized plain INT64
 column scaled from a 30M-row baseline, ~0.18s) — the extra widen-to-`i128` decode pass plus the
-narrow-at-box-time pass this item's design needs. **Separately, and not something this item
-introduced**: that plain-INT64 baseline itself is currently ~4x behind native `read_parquet`
-(0.537s vs 0.138s on the 30M-row fixture) — a real gap from the current state of this PoC's
-single-threaded per-column decode after multi-column/filter/projection-pushdown were added, stale
-relative to the module doc comment's older "tuned to parity... both at 0.06s" claim (written
-before any of that existed). Worth a dedicated look if single-threaded throughput becomes a goal
-again, but out of scope for this item specifically.
+narrow-at-box-time pass this item's design needs.
+
+**Follow-up (2026-11-04): the plain-INT64 baseline's own ~4x gap, root-caused — not this item's
+code, not a regression from this session's work.** Temporary timing instrumentation (`claimNextRowGroup`
+I/O+reader-setup time vs `decodeColumn`'s own decode time vs `exec`'s final box/validity loop,
+each accumulated separately and printed once per scan, then reverted — not kept) on the 30M-row
+SNAPPY-compressed fixture showed `claim_ms=4.44 decode_ms=515.06 box_ms=1.12` out of a 550ms
+total: this project's own glue code (I/O, reader setup, boxing, validity bits) is under 1% of the
+wall time; the rest is inside zpq's own `ColumnChunkReader(T).decode()` call. Re-running against
+an otherwise-identical **uncompressed** copy of the same file dropped `decode_ms` from 515 to
+7.75 and total wall time from 0.550s to 0.064s — matching native's 0.045s on the same
+uncompressed file to within noise. **Conclusion: the ~4x gap is SNAPPY decompression throughput
+inside zpq's own decode path, not anything this project's code does** — confirmed by elimination
+(removing the compression made the gap vanish), not just inferred from the split. Checked
+`column.zig`'s own page state machine (`nextPage`/`advancePage`) to rule out a cruder possibility
+first — a page getting re-decompressed on every batch call instead of once per page — before
+accepting "zpq's SNAPPY decoder is just slower here" as the answer: pages are properly cached and
+only re-installed once drained, so the cost is genuinely proportional to bytes decompressed, not
+multiplied by batch count. Not pursued further (would mean profiling or replacing zpq's own
+SNAPPY path, out of scope for a PoC built specifically to avoid depending on zpq's own engine
+internals) — but the module doc comment's older "tuned to parity... both at 0.06s" claim should
+be read as describing an earlier, differently-compressed (or uncompressed) fixture, not a
+regression to chase on the current one.
 
 ## Explicitly out of scope for both phases
 
