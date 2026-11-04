@@ -208,3 +208,33 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   extended to a real signed `wasm_eh` artifact of this project's actual release key — this
   entry covers the mechanism now being proven to work and implemented as a reusable flag, not
   yet that it's part of the release pipeline. See ADR-0004's own matching follow-up entry.
+- **Can a v2-ABI (`_init_c_api_v2`, `C_STRUCT_UNSTABLE` footer) extension be loaded by a wasm
+  engine at all** — this project has only ever built *v1*-ABI wasm extensions
+  (`wasm-ext`/`wasm-ext-eh`/etc., all `addWasmEmscriptenBuild`'s `_{name}_init_c_api` symbol +
+  `C_STRUCT` footer), and `matmul.zig`'s `MatmulCt`/`MatmulNaiveCt` (registered in
+  `src/ext/init_v2_poc.zig`, a *v2* C API extension — pure SIMD compute, no file I/O, no
+  external C library dependency, unlike `read_zpq`) came up as a candidate for actually
+  exercising a v2 wasm port. Resolved, 2026-11-04, by a minimal probe *before* porting any real
+  code: a standalone `wasm32-emscripten` `SIDE_MODULE` exporting nothing but
+  `probe_v2_init_c_api_v2` (taking a bare `*anyopaque`, no real v2 C API struct needed for
+  this), built with the `eh` variant's exact CPU features (`-mcpu=generic+exception_handling`)
+  and link flags (`-fwasm-exceptions`), stamped with `abi_type=C_STRUCT_UNSTABLE` via the
+  existing `append_metadata` tool, and made to `@trap()` immediately on entry so a wasm trap
+  naming the function would prove it was actually called, independent of whether the real v2
+  C API would otherwise work. Loaded via the ordinary unsigned `custom_extension_repository` +
+  `LOAD` path against the same real official `duckdb-wasm` engine used above: `LOAD` failed
+  with exactly the deliberate trap —
+  ```
+  RuntimeError: unreachable
+      at probe_v2.wasm.probe_v2.probe_v2_init_c_api_v2 (wasm://...:wasm-function[1]:0x61)
+  ```
+  called several frames deep inside the engine's own native loader code. **Conclusion: the
+  `C_STRUCT_UNSTABLE`/`_init_c_api_v2` dispatch is recognized and invoked by the wasm-compiled
+  DuckDB core exactly as it is natively** — `addWasmEmscriptenBuild`'s C-ABI lookup comment
+  ("matching `extension_load.cpp`'s C-ABI load path exactly") is core C++ loader code shared
+  by every build target, wasm included, not something `duckdb-wasm`'s own JS/TS layer
+  reimplements separately, confirmed rather than inferred from that comment alone. A real v2
+  wasm port (new `addWasmEmscriptenBuild`-equivalent using the v2 bindings/headers and
+  `_init_c_api_v2` + `C_STRUCT_UNSTABLE`, then `matmul.zig`'s non-threaded kernels specifically,
+  to avoid pulling pthreads into a first attempt) is now a real, lower-risk next step rather
+  than an open feasibility question — not attempted here, this entry is the probe result only.
