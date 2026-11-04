@@ -1764,6 +1764,81 @@ pub fn build(b: *std.Build) void {
     const wasm_ext_eh_threads_step = b.step("wasm-ext-eh-threads", "Build the wasm32-emscripten SIDE_MODULE, duckdb-wasm's new threaded platform (needs a real emcc on PATH or -Demcc-path=; see docs/v2-migration-plan.md's WASM section)");
     wasm_ext_eh_threads_step.dependOn(&install_wasm_ext_eh_threads.step);
 
+    // ── "wasm-ext-v2-matmul-eh" step: the first *v2*-ABI wasm32-emscripten SIDE_MODULE,
+    // carrying matmul.zig's two non-threaded kernels (src/ext/init_v2_poc_matmul_wasm.zig's
+    // own doc comment has the full reasoning for why this file, why `duckdb_v2_dynamic` over
+    // `duckdb_v2_static`, and why only the `eh` platform). Every v2 module here is built
+    // fresh for `wasm_v2_target`, mirroring `addWasmEmscriptenBuild`'s own per-variant
+    // `duckdb_c` translate-c module — Zig modules are tied to the target they were created
+    // with, so the host-targeted `matmul_mod`/`v2_helpers_mod`/etc. above can't be reused
+    // as-is. `v2Graph` (already factored out for exactly "build the v2 module graph against
+    // some `api` module and some target") builds everything but `duckdb_v2_api`/`matmul`
+    // consistently; no `.link_libc` anywhere in this lib, since `comptime_scalar_v2`/
+    // `matmul` need none (unlike `comptime_table_v2`/`comptime_aggregate_v2`, which do for
+    // `std.heap.c_allocator`) — matching how the v1 wasm builds above also need no libc.
+    {
+        const wasm_v2_target = WasmVariant.eh.resolveTarget(b);
+        const wasm_v2_duckdb_v2_types_mod = b.createModule(.{
+            .root_source_file = b.path("src/lib/duckdb_v2_types.zig"),
+            .target = wasm_v2_target,
+            .optimize = .ReleaseFast,
+        });
+        const wasm_v2_duckdb_v2_dynamic_mod = b.createModule(.{
+            .root_source_file = b.path("src/lib/duckdb_v2_dynamic.zig"),
+            .target = wasm_v2_target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "duckdb_v2_types", .module = wasm_v2_duckdb_v2_types_mod }},
+        });
+        const wasm_v2_matmul_mod = b.createModule(.{
+            .root_source_file = b.path("src/lib/matmul.zig"),
+            .target = wasm_v2_target,
+            .optimize = .ReleaseFast,
+        });
+        const wasm_v2_graph = v2Graph(b, wasm_v2_target, .ReleaseFast, wasm_v2_duckdb_v2_dynamic_mod);
+
+        const wasm_v2_matmul_lib = b.addLibrary(.{
+            .linkage = .static,
+            .name = "zig_ext_v2_poc_matmul_wasm_eh",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ext/init_v2_poc_matmul_wasm.zig"),
+                .target = wasm_v2_target,
+                .optimize = .ReleaseFast,
+            }),
+        });
+        wasm_v2_matmul_lib.root_module.addImport("duckdb_v2_api", wasm_v2_duckdb_v2_dynamic_mod);
+        wasm_v2_matmul_lib.root_module.addImport("v2_helpers", wasm_v2_graph.helpers);
+        wasm_v2_matmul_lib.root_module.addImport("comptime_scalar_v2", wasm_v2_graph.scalar);
+        wasm_v2_matmul_lib.root_module.addImport("matmul", wasm_v2_matmul_mod);
+
+        const wasm_v2_matmul_emcc = b.addSystemCommand(&.{emcc_path});
+        wasm_v2_matmul_emcc.has_side_effects = true; // same -Demcc-path= staleness reason as addWasmEmscriptenBuild
+        wasm_v2_matmul_emcc.addArtifactArg(wasm_v2_matmul_lib);
+        wasm_v2_matmul_emcc.addArgs(&.{ "-O3", "-g2", "-sSIDE_MODULE=2", "-fwasm-exceptions" });
+        wasm_v2_matmul_emcc.addArg("-sEXPORTED_FUNCTIONS=_zig_ext_v2_poc_matmul_wasm_init_c_api_v2");
+        wasm_v2_matmul_emcc.addArg("-o");
+        const wasm_v2_matmul_module = wasm_v2_matmul_emcc.addOutputFileArg("zig_ext_v2_poc_matmul_wasm.wasm");
+
+        const wasm_v2_matmul_metadata_tool = b.addExecutable(.{
+            .name = "append_metadata_v2_matmul_wasm_eh",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/append_metadata_main.zig"),
+                .target = b.graph.host,
+            }),
+        });
+        const wasm_v2_matmul_append = b.addRunArtifact(wasm_v2_matmul_metadata_tool);
+        wasm_v2_matmul_append.addFileArg(wasm_v2_matmul_module);
+        wasm_v2_matmul_append.addArg("zig_ext_v2_poc_matmul_wasm");
+        wasm_v2_matmul_append.addArg(v2_duckdb_version);
+        wasm_v2_matmul_append.addArg("v0.0.0-poc");
+        wasm_v2_matmul_append.addArg(v2_abi_type);
+        wasm_v2_matmul_append.addArg(WasmVariant.eh.platform());
+        const wasm_v2_matmul_output = wasm_v2_matmul_append.addOutputFileArg("zig_ext_v2_poc_matmul_wasm.duckdb_extension.wasm");
+
+        const install_wasm_v2_matmul = b.addInstallFile(wasm_v2_matmul_output, "lib/wasm_eh/zig_ext_v2_poc_matmul_wasm.duckdb_extension.wasm");
+        const wasm_v2_matmul_step = b.step("wasm-ext-v2-matmul-eh", "Build the first v2-ABI wasm32-emscripten SIDE_MODULE: matmul.zig's non-threaded kernels only (needs a real emcc on PATH or -Demcc-path=; see docs/rationale/0008's 'Can a v2-ABI extension be loaded' entry)");
+        wasm_v2_matmul_step.dependOn(&install_wasm_v2_matmul.step);
+    }
+
     // ── "dist" step: arrange and gzip `cross`'s output into the DuckDB
     // custom-extension-repository layout `INSTALL ... FROM '<url>'`
     // expects — replaces the GitHub Actions workflow's old hand-rolled

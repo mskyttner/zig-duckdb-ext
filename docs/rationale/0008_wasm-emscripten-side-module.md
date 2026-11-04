@@ -238,3 +238,46 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   `_init_c_api_v2` + `C_STRUCT_UNSTABLE`, then `matmul.zig`'s non-threaded kernels specifically,
   to avoid pulling pthreads into a first attempt) is now a real, lower-risk next step rather
   than an open feasibility question — not attempted here, this entry is the probe result only.
+
+  **Done, same day**: `src/ext/init_v2_poc_matmul_wasm.zig` + a new `wasm-ext-v2-matmul-eh`
+  build step register exactly `zig_v2_matmul_naive_ct`/`zig_v2_matmul_ct` (not `MatmulBenchCt`,
+  which needs threads) against `duckdb_v2_dynamic` (confirmed, by reading both files' own doc
+  comments, to be the right choice over `duckdb_v2_static` — the latter is for `addEmbedExe`'s
+  opposite scenario, a *host* program linking DuckDB's own static libraries into itself, not a
+  loadable extension), using `v2Graph` to build a correctly-wired module graph for the wasm
+  target (Zig modules are tied to the target they're created with, so the host-targeted
+  `matmul_mod`/`comptime_scalar_v2_mod` etc. elsewhere in `build.zig` can't be reused as-is —
+  fresh ones are built for `WasmVariant.eh.resolveTarget(b)` instead). No `.link_libc` needed:
+  `comptime_scalar_v2`/`matmul` need none (unlike `comptime_table_v2`/`comptime_aggregate_v2`,
+  which do for `std.heap.c_allocator`), so this avoids the "no libc for wasm32-emscripten-musl"
+  problem the v1 wasm builds already had to route around, for free.
+
+  **A real, previously-latent portability bug surfaced immediately, not something anticipated
+  in the probe above**: `comptime_scalar_v2.zig`'s row/LIST-indexing code used `u64` for row
+  indices and `duckdb_v2_list_entry`'s own `offset`/`length` fields directly as slice indices —
+  harmless on every target this project has ever built for, since `usize` has always been 64
+  bits there, but `usize` is 32 bits on `wasm32`, and Zig correctly refuses the implicit,
+  potentially-lossy `u64`→`usize` narrowing at every such site. Fixed at the root (the `row`
+  loop-counter declarations, `var row: u64 = 0` → `var row: usize = 0`, which widens back to
+  `u64` for free at every call site still typed that way) plus two struct-field sites that
+  can't change type (`duckdb_v2_list_entry.offset`/`.length` are the real C API's own `idx_t`
+  fields) — explicit `@intCast` there instead, with a comment on why it's always safe (no real
+  LIST/MAP in this project ever approaching `u32`'s range). This is in `comptime_scalar_v2.zig`
+  itself, not `init_v2_poc_matmul_wasm.zig` — every v2 extension using LIST-returning or
+  LIST/MAP-argument scalar functions through this framework benefits, not just this one.
+  Re-ran the full native regression suite before trusting this: `zig build test` (silent
+  pass), `zig build v2-poc` (native v2-poc extension still builds), and
+  `zig build sqllogictest-v2-poc` — all 268 blocks passed, including the LIST-returning/
+  LIST-argument cases these fixes directly touch.
+
+  **Verified end to end against a real official `duckdb-wasm` engine, both paths**: unsigned
+  (`custom_extension_repository` + bare `LOAD`) and signed (`CREATE EXTENSION REPOSITORY ...
+  USING PUBLIC KEY` + `LOAD ... FROM`, via `sign_extension` + a throwaway test key, same as
+  this ADR's earlier signed-verify entry). `SELECT zig_v2_matmul_naive_ct(...),
+  zig_v2_matmul_ct(...)` on a hand-computed 2×2 case (`[[1,2],[3,4]] × [[5,6],[7,8]] =
+  [[19,22],[43,50]]`, checked independently of the kernel under test) returned
+  `{"naive":[19,22,43,50],"simd":[19,22,43,50]}` in both modes — the first real v2-ABI wasm
+  extension doing real SIMD-computed work inside a browser engine, not just loading without
+  crashing. Not yet wired into `verify_wasm_load_browser.cjs`/CI (that script's assertions are
+  specific to the v1 `zig_ext` function set); a dedicated test fixture for this extension would
+  need its own small script, same shape as the ad hoc one used here.

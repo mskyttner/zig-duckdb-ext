@@ -651,7 +651,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             // instead, via duckdb_v2_dynamic.zig's `duckdb_v2_value_create_varchar_with_context`/
             // valueCreateBlobWithContext + vectorSetValue.
             if (comptime return_is_varchar or return_is_blob) {
-                var row: u64 = 0;
+                var row: usize = 0;
                 while (row < row_count) : (row += 1) {
                     if (has_nulls and !rowIsValid(&views, row)) {
                         if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
@@ -681,7 +681,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 if (v2.duckdb_v2_vector_get_logical_type(result_vec, &result_type, err) != .ERROR_NONE) return;
                 defer _ = v2.duckdb_v2_logical_type_destroy(&result_type);
 
-                var row: u64 = 0;
+                var row: usize = 0;
                 while (row < row_count) : (row += 1) {
                     if (has_nulls and !rowIsValid(&views, row)) {
                         if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
@@ -710,7 +710,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
             const result: [*]WriteType = @ptrCast(@alignCast(out_data));
 
             if (has_nulls) {
-                var row: u64 = 0;
+                var row: usize = 0;
                 while (row < row_count) : (row += 1) {
                     if (rowIsValid(&views, row)) {
                         result[row] = writeResult(&views, row, err) orelse return;
@@ -719,7 +719,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                     }
                 }
             } else {
-                var row: u64 = 0;
+                var row: usize = 0;
                 while (row < row_count) : (row += 1) {
                     result[row] = writeResult(&views, row, err) orelse return;
                 }
@@ -734,7 +734,12 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         inline fn rowIsValid(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) bool {
             inline for (0..param_types.len) |i| {
                 if (views.*[i].validity) |validity| {
-                    const entry_idx = row / 64;
+                    // `row` is `u64` (DuckDB's own row-index width); indexing `validity`
+                    // needs `usize`, which is only 32 bits on a wasm32 target — truncating
+                    // explicitly here (and at every other `row / 64` indexing site in this
+                    // file) rather than relying on an implicit, wasm32-lossy conversion. A
+                    // real row count never approaches `u32`'s range.
+                    const entry_idx: usize = @intCast(row / 64);
                     const bit_idx: u6 = @intCast(row % 64);
                     if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) return false;
                 }
@@ -848,7 +853,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: u64 = 0;
+            var row: usize = 0;
             while (row < row_count) : (row += 1) {
                 var args: ArgsTuple = undefined;
                 var fetched: [param_types.len]?v2.duckdb_v2_value_handle = undefined;
@@ -870,7 +875,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         args[i] = value;
                     } else {
                         if (views[i].validity) |validity| {
-                            const entry_idx = row / 64;
+                            const entry_idx: usize = @intCast(row / 64);
                             const bit_idx: u6 = @intCast(row % 64);
                             if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) row_valid = false;
                         }
@@ -1031,7 +1036,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: u64 = 0;
+            var row: usize = 0;
             while (row < row_count) : (row += 1) {
                 if (!structRowIsValid(&views, row)) {
                     if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
@@ -1059,14 +1064,14 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                     const fields = @typeInfo(T).@"struct";
                     inline for (0..fields.field_types.len) |f| {
                         if (views.*[i][f].validity) |validity| {
-                            const entry_idx = row / 64;
+                            const entry_idx: usize = @intCast(row / 64);
                             const bit_idx: u6 = @intCast(row % 64);
                             if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) return false;
                         }
                     }
                 } else {
                     if (views.*[i].validity) |validity| {
-                        const entry_idx = row / 64;
+                        const entry_idx: usize = @intCast(row / 64);
                         const bit_idx: u6 = @intCast(row % 64);
                         if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) return false;
                     }
@@ -1127,7 +1132,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
         inline fn listRowIsValid(views: *const [param_types.len]v2.duckdb_v2_vector_view, row: u64) bool {
             inline for (0..param_types.len) |i| {
                 if (views.*[i].validity) |validity| {
-                    const entry_idx = row / 64;
+                    const entry_idx: usize = @intCast(row / 64);
                     const bit_idx: u6 = @intCast(row % 64);
                     if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) return false;
                 }
@@ -1196,7 +1201,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: u64 = 0;
+            var row: usize = 0;
             while (row < row_count) : (row += 1) {
                 if (!listRowIsValid(&parent_views, row)) {
                     if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
@@ -1215,7 +1220,11 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         // SAFETY: the flattened child vector's view data is
                         // the flat element buffer shared across all rows.
                         const elems: [*]const Elem = @ptrCast(@alignCast(child_views[i].data));
-                        args[i] = elems[entry.offset..][0..entry.length];
+                        // `entry.offset`/`.length` are `duckdb_v2_list_entry`'s own `idx_t` (u64)
+                        // fields, straight from the C API — narrowed explicitly for indexing on
+                        // a 32-bit target; see `rowIsValid`'s own comment on why this is always
+                        // safe (no real LIST approaches `u32`'s range).
+                        args[i] = elems[@as(usize, @intCast(entry.offset))..][0..@as(usize, @intCast(entry.length))];
                     } else if (comptime isArrayType(T)) {
                         const Elem = ArrayElem(T);
                         const n = comptime ArrayLen(T);
@@ -1351,7 +1360,7 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: u64 = 0;
+            var row: usize = 0;
             while (row < row_count) : (row += 1) {
                 if (!listRowIsValid(&parent_views, row)) {
                     if (v2.duckdb_v2_vector_set_null(result_vec, row, err) != .ERROR_NONE) return;
@@ -1371,9 +1380,13 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                         const list_entry = list_entries[row];
                         const keys: [*]const K = @ptrCast(@alignCast(key_views[i].data));
                         const values: [*]const V = @ptrCast(@alignCast(value_views[i].data));
-                        const n = @min(list_entry.length, map_arg_max_entries);
+                        // `list_entry.offset`/`.length` are `idx_t` (u64), straight from the C
+                        // API — narrowed explicitly for indexing on a 32-bit target, same as
+                        // the plain-LIST path above.
+                        const offset: usize = @intCast(list_entry.offset);
+                        const n: usize = @intCast(@min(list_entry.length, map_arg_max_entries));
                         var buf: [map_arg_max_entries]Entry = undefined;
-                        for (0..n) |k| buf[k] = .{ .key = keys[list_entry.offset + k], .value = values[list_entry.offset + k] };
+                        for (0..n) |k| buf[k] = .{ .key = keys[offset + k], .value = values[offset + k] };
                         args[i] = .{ .entries = buf[0..n] };
                     } else if (comptime T == []const u8) {
                         const typed: [*]const v2.duckdb_v2_bytes = @ptrCast(@alignCast(parent_views[i].data));
@@ -1456,12 +1469,12 @@ fn FunctionImpl(comptime name: [:0]const u8, comptime implFn: anytype, comptime 
                 out = @ptrCast(@alignCast(out_data));
             }
 
-            var row: u64 = 0;
+            var row: usize = 0;
             while (row < row_count) : (row += 1) {
                 var row_valid = true;
                 inline for (0..param_types.len) |i| {
                     if (parent_views[i].validity) |validity| {
-                        const entry_idx = row / 64;
+                        const entry_idx: usize = @intCast(row / 64);
                         const bit_idx: u6 = @intCast(row % 64);
                         if ((validity[entry_idx] & (@as(u64, 1) << bit_idx)) == 0) row_valid = false;
                     }
