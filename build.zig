@@ -2044,6 +2044,7 @@ pub fn build(b: *std.Build) void {
 
                 const run_sign = b.addRunArtifact(sign_extension_exe);
                 run_sign.step.dependOn(&make_signed_dir.step);
+                run_sign.addArg("sign");
                 run_sign.addArg(b.fmt("zig-out/lib-v2/{s}/{s}", .{ platform, ext_file_name }));
                 run_sign.addArg(key_path);
                 run_sign.addArg(b.fmt("{s}/{s}", .{ signed_dir, ext_file_name }));

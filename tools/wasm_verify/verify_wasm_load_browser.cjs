@@ -10,7 +10,7 @@
 // PUBLIC KEY` + `LOAD ... FROM` path (docs/rationale/0004) instead of the default
 // `allowUnsignedExtensions` + bare `LOAD` path — `<extension-wasm-path>` must then already
 // be signed with the PEM private key matching this public key (`zig build sign-extension-tool`
-// then `sign_extension <in> <private_key.pem> <out>`). Confirmed live, 2026-11-04, against a
+// then `sign_extension sign <in> <private_key.pem> <out>`). Confirmed live, 2026-11-04, against a
 // real official duckdb-wasm engine: the repository mechanism is core-engine-level, agnostic to
 // which C API ABI the loaded extension itself uses.
 //
