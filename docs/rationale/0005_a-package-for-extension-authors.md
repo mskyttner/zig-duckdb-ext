@@ -139,6 +139,65 @@ dependency. So:
 builds it and runs its tests, so it cannot rot, and it is the first consumer of the package, which is how the API gets its
 first review.
 
+### 6. Signing
+
+Prompted by comparing this repository's own distribution approach (ADR-0004) against
+`tobilg/duckdb-extension-self-hosting`, a reusable GitHub Action doing the same self-signed-
+repository signing for any extension. `src/sign_extension_main.zig` (the tool ADR-0004's
+"self-signed v2 distribution" follow-up built) turns out to already be a candidate for this
+package in a stronger sense than the other four pieces above: checked its own imports, and it
+depends on nothing but `std` — no `duckdb_v2_api`, no `v2_helpers`, nothing Zig-DuckDB-specific
+at all. It operates purely on DuckDB's fixed binary footer format (the same 512-byte footer
+`append_metadata_main.zig` writes: 8 padded 32-byte fields, with fields 2-5 holding `platform`,
+`duckdb_version`, `extension_version`, `abi_type`, plus a 256-byte signature slot), which makes
+it usable on *any* `.duckdb_extension` file regardless of what built it — not just this
+package's own consumers.
+
+**Footer-driven, not argument-driven** — checked against `tobilg`'s own documented design
+before writing this section, not assumed: its README states plainly that "platform and
+versions come from the footer of each binary, not from the artifact name, so any build system
+works." `sign_extension_main.zig` already reads the footer's signature slot, but takes no other
+field from it; a packaged version should add a `read-footer`/`inspect` mode parsing the other
+four fields (trivial — they're already plain, fixed-width ASCII), so a downstream publish step
+can derive the repository path from the binary itself rather than being told it separately and
+risking drift between the two. The same reading surfaced a fact ADR-0004 implies but never
+states: `tobilg`'s README says "`CPP` and `C_STRUCT_UNSTABLE` builds only load in the exact
+DuckDB version they were built for, so rebuild them for each release" — this package's own
+extensions are `C_STRUCT_UNSTABLE` (§2 above), so every DuckDB 2.x release is a full
+rebuild-and-resign for every consumer, not just a republish of the same binary under a new
+version directory.
+
+**Two gaps worth adding alongside the footer-reading mode**, both cheap: a `verify` subcommand
+(reuses the same composite-hash code, `openssl pkeyutl -verify` instead of `-sign` — matches
+`tobilg`'s own `sign` mode, which "checks their footers, signs each one and verifies the
+signature" in one pass rather than trusting the write blindly) and footer validation before
+signing (today the tool's only check is `contents.len > 256`; it should confirm the magic bytes
+and a recognized `abi_type` first, so pointing it at a non-extension file fails with a clear
+error instead of silently stamping a signature into the wrong place). Explicitly out of scope
+for the tool itself: multi-key/rotation (that lives in the *verifier's* `.well-known` JSON, not
+anything the signer writes) and anything storage/S3-shaped (signing and publishing stay
+separate steps on purpose — the same split `tobilg`'s action also makes, for the same reason:
+`verify` runs the extension's own native code, and a step should only see the secrets its own
+job needs).
+
+**A related gap this section does not fix, filed here only as a cross-reference**: `tobilg`'s
+bucket layout publishes three object shapes — a "latest" path (`<duckdb_version>/<platform>/
+<name>.duckdb_extension.gz`), a "versioned" path keyed by *extension* version
+(`<name>/<extension_version>/<duckdb_version>/<platform>/<name>.duckdb_extension.gz`, what
+`INSTALL ... VERSION` reads), and a wasm path. ADR-0004's distribution tree only has the first
+shape — there is no path at all for a client to pin or roll back to a specific extension
+version today. That is `addDist`'s problem (§2 above, and ADR-0004's own tree), not the signing
+tool's, but it is the same "footer carries `extension_version` already, nothing reads it for
+this purpose yet" gap, so whoever picks up `addDist` should close both at once.
+
+**Open question this raises for the package as a whole, not resolved here**: fold signing in as
+`duckdb.addSign(b, dep, .{...})`, narrower but consistent with everything else in this ADR, or
+spin it out as its own tiny, dependency-free repository publishing pre-built static binaries
+per platform as release assets — usable by *any* extension author, Zig or not, CMake-built or
+not, with no `zig build` required at all on the consuming end? The tool having zero
+Zig-DuckDB-specific code today is a real argument for the second option that none of the other
+four pieces in this ADR share; see "Open questions" below.
+
 ## What moves
 
 `build.zig` becomes a thin file: `pub const addExtension = @import("build/extension.zig").addExtension;` and so on, then `build`.
@@ -173,6 +232,11 @@ generator), written with the same functions, so the repository tests the package
   `release.yml` is ten lines; it needs the CLI URL and the DuckDB version as inputs.
 - **Does importing a dependency's `build.zig` work with the repository's layout?** It is a common pattern and the mechanics are
   as described here, but it has not been tried with this repository. The template is how to find out; do it first (phase 1).
+- **Signing: fold in as `addSign`, or spin out as its own dependency-free repository?** (§6) Leaning toward the latter — the
+  tool has no Zig-DuckDB-specific code today, unlike every other piece this ADR packages, so tying it to this package's own
+  Zig-version pin and DuckDB-API-version story would be a narrower home than it needs. A standalone repository publishing
+  pre-built static binaries per platform would also be usable by non-Zig, non-Zig-DuckDB extension authors — closer to what
+  `tobilg/duckdb-extension-self-hosting` already offers, just without the GitHub-Action/S3 coupling. Not resolved here.
 
 ## Plan
 
@@ -185,3 +249,8 @@ generator), written with the same functions, so the repository tests the package
 4. **`addDist` and the reusable release workflow.**
 5. **Version and publish.** Tag the package with the DuckDB version it is for, put `zig fetch --save` and the template in the
    README, and delete the copy-the-build-block instructions from `docs/creating-an-extension.md`.
+6. **Signing** (§6, independent of 1-5 — can be done first, since the tool has no dependency on anything else in this plan).
+   Add the `read-footer`/`inspect` and `verify` modes and footer validation to `sign_extension_main.zig` first, settling the
+   "fold in or spin out" open question before or alongside that work. Whoever picks up `addDist` (step 4) should also close
+   the "versioned" distribution-path gap (§6) at the same time, since both come from the same unread `extension_version`
+   footer field.
