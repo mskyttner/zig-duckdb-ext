@@ -406,3 +406,28 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   DuckDB table scan, instead of a giant inline literal) would shrink this fixed cost — out of
   scope for this PoC's own benchmarking, worth knowing if `zig_v2_matmul_*_ct` is ever
   benchmarked for real rather than as a wasm-threading feasibility check.
+
+  **Follow-up, 2026-11-06: the "cheaper argument delivery" question above has an answer, and
+  it's a dead end on this engine build.** Tested whether a prepared statement with a bound
+  array parameter (`conn.prepare('SELECT ...(?, ...)'); stmt.query(someArray, ...)`) avoids
+  the SQL-parsing/LIST-construction cost a giant inline literal pays. It doesn't — because
+  duckdb-wasm's prepared-statement API doesn't support binding array/LIST parameters at all
+  in this build. Confirmed independent of this project's own extension entirely, with a
+  minimal test against nothing but `list_sum(?)`: a scalar bind parameter (`SELECT
+  ?::INTEGER`) works; a plain JS array, a `Float64Array`, and a plain array with an explicit
+  `::DOUBLE[]` cast all fail identically — `Invalid column type encountered for argument 0`.
+  Not tested: whether this is wasm-specific or a general gap in DuckDB's client-API bind
+  surface (didn't check a native driver). Either way, a bound-parameter path isn't available
+  for `zig_v2_matmul_*_ct`'s `a`/`b` arguments today; the inline-literal cost this PoC's own
+  benchmarks pay is the only option this engine build offers.
+
+  **Also checked, prompted directly: would `stylearcade/zaw` help?** No, and not a close
+  call — it solves a different problem. `zaw::conduit` is a zero-allocation fixed-buffer
+  protocol between a *custom TypeScript host* and a *custom wasm module*, both written by the
+  same application, bypassing ordinary JS↔wasm argument marshaling entirely. Here, the "host"
+  calling our extension is duckdb-wasm's own compiled C++ engine — not something this project
+  writes or could get to adopt a different host protocol — and the actual cost found above
+  (SQL parsing + LIST-vector construction) happens entirely *inside* that engine, before our
+  extension's exported function is ever reached at all. Adopting zaw would mean routing
+  around DuckDB's SQL interface entirely, which is a different interop model, not a cheaper
+  path through the one actually being used.
