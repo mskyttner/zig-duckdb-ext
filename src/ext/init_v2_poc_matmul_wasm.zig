@@ -63,9 +63,49 @@ const MatmulCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_ct", struct {
     }
 }.eval, &.{ "a", "b", "m", "k", "n" });
 
+/// `matmulSimdBlocked` only — not `matmulSimdParallelBlocked`, which takes a real `std.Io`
+/// (for its `std.Io.Group` dispatch) and so hits the exact same wall `std.Io.Threaded.io()`
+/// does on a multithreaded wasm32 target (this file's own target has no threads at all, but
+/// the *parallel* blocked kernel still can't be ported here as-is — it would need the same
+/// `matmulSimdParallelRawThreads`-style raw-`std.Thread` rewrite the non-blocked parallel
+/// kernel already got, which hasn't been done for the blocked tiling). Single-threaded only,
+/// matching this module's `wasm_eh` (non-threaded) platform.
+const MatmulBlockedCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_blocked_ct", struct {
+    fn eval(a: []const f64, b: []const f64, m: i64, k: i64, n: i64) []const f64 {
+        const mu: usize = @intCast(@max(m, 0));
+        const ku: usize = @intCast(@max(k, 0));
+        const nu: usize = @intCast(@max(n, 0));
+        const out = matmulOutputSlice(mu, nu) orelse return &.{};
+        matmul.matmulSimdBlocked(matmul.default_rm, a, b, out, mu, ku, nu);
+        return out;
+    }
+}.eval, &.{ "a", "b", "m", "k", "n" });
+
+/// Same `a`/`b`/`m`/`k`/`n` argument shape as the real kernels, zero `O(m·k·n)` work — touches
+/// only the first/last element of each slice so the decode can't be proven dead. Isolates
+/// SQL-literal/LIST-argument marshaling cost from compute cost in a benchmark; see
+/// docs/rationale/0008's "Resolved, 2026-11-06" entry for why this matters (a flat-looking
+/// benchmark result was a fixed marshaling cost masking a real 2.38x speedup, not a sign the
+/// kernel under test doesn't scale).
+const MatmulNoopCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_noop_ct", struct {
+    fn eval(a: []const f64, b: []const f64, m: i64, k: i64, n: i64) []const f64 {
+        _ = k;
+        const mu: usize = @intCast(@max(m, 0));
+        const nu: usize = @intCast(@max(n, 0));
+        const out = matmulOutputSlice(mu, nu) orelse return &.{};
+        if (a.len > 0 and b.len > 0 and out.len > 0) {
+            out[0] = a[0] + b[0];
+            out[out.len - 1] = a[a.len - 1] + b[b.len - 1];
+        }
+        return out;
+    }
+}.eval, &.{ "a", "b", "m", "k", "n" });
+
 export fn zig_ext_v2_poc_matmul_wasm_init_c_api_v2(input: *const v2.duckdb_v2_extension_input) callconv(.c) void {
     if (!helpers.init(input, "v2.0.0")) return;
     MatmulNaiveCt.register(input) catch {};
     MatmulCt.register(input) catch {};
+    MatmulBlockedCt.register(input) catch {};
+    MatmulNoopCt.register(input) catch {};
     read_matrix_opfs_v2.register(input) catch {};
 }

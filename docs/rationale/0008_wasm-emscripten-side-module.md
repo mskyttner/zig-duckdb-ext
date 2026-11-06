@@ -572,7 +572,45 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   environment, is the fairer comparison: native goes 9.02ms → 1.97ms, a 4.58x speedup from 24
   threads; wasm goes 71.1ms → 29.8ms, a 2.38x speedup from 4 threads — the same order of
   magnitude once thread count is accounted for, not a sign that wasm's threading itself scales
-  worse. Not yet tried: raising the wasm kernel's hardcoded task count to match
-  `hardwareConcurrency` for a true matched-thread-count comparison — worth doing before
-  drawing any conclusion about wasm multithreading's *ceiling*, as opposed to its baseline
-  per-thread cost, which this already shows clearly.
+  worse.
+
+  **Matched thread count, done (2026-11-06).** `init_v2_poc_matmul_wasm_threads.zig`'s
+  hardcoded `4` is gone — `zig_v2_matmul_parallel_ct` now calls `std.Thread.getCpuCount()`
+  (cached in a plain, deliberately non-atomic `var`: a benign race, since the result is
+  deterministic for a given engine). This "just works" on `wasm32-emscripten`: Zig's own
+  `PosixThreadImpl.getCpuCount()` already has an `.emscripten` branch calling
+  `std.os.emscripten.emscripten_num_logical_cores()` — the Emscripten JS binding for
+  `navigator.hardwareConcurrency` — the same mechanism the *native* benchmark
+  (`zig_v2_matmul_bench_ct`) already used via `std.Thread.getCpuCount()` on Linux. Verified
+  live: a real browser reported `navigator.hardwareConcurrency: 24`, and
+  `zig_v2_matmul_parallel_ct` on a 4×4 case still returned the exact expected result —
+  correctness held across the change. `matmulSimdParallelRawThreads`'s own internal clamp to
+  its fixed 32-slot thread array (with inline fallback beyond that) makes this safe without
+  any clamping at the call site.
+
+  **The blocked tiling kernels, benchmarked wasm vs. native CLI (2026-11-06).** `matmul.zig`
+  has two tiers of "blocked" kernel: `matmulSimdBlocked`/`matmulSimdBlockedMc` (single-
+  threaded, no `std.Io`) and `matmulSimdParallelBlocked`/`matmulSimdParallelBlockedMc` (real
+  parallel dispatch via `std.Io.Group`, which needs a constructed `std.Io` instance). Only the
+  single-threaded pair can exist in wasm at all: the parallel ones take `io: std.Io` and hit
+  the exact same `std.Io.Threaded.io()`-can't-compile-for-multithreaded-wasm32 wall this file
+  already found blocking `matmulSimdParallel` directly — porting them would need the same
+  `matmulSimdParallelRawThreads`-style raw-`std.Thread` rewrite the non-blocked parallel
+  kernel already got, not yet done for the blocked tiling. Added `zig_v2_matmul_blocked_ct`
+  (wraps `matmulSimdBlocked`) and a tracked, reusable `zig_v2_matmul_noop_ct` (previously only
+  ever written as a throwaway scratch probe) to `init_v2_poc_matmul_wasm.zig`, and benchmarked
+  decode-isolated at the same `m=64, k=2048, n=64` size:
+
+  | kernel | native CLI (`iterations=20`) | wasm, decode-isolated |
+  | --- | --- | --- |
+  | `simd` (plain SIMD) | 9.02 ms/iter | 57.6 ms |
+  | `simd_blocked` | 9.31 ms/iter | 61.4 ms |
+
+  Consistent on both sides: at this problem size, tiling doesn't help — `simd_blocked` is
+  marginally *slower* than plain `simd`, natively and in wasm alike (the tiling's benefit
+  likely needs a larger working set than 64×2048×64's matrices fit in cache for either
+  environment to show up). The `simd`-vs-`simd_blocked` wasm/native ratio (~6.4x/~6.6x) also
+  lines up with the earlier plain-`simd` single-threaded ratio (~7.9x) — same raw per-thread
+  codegen gap, not something specific to blocking. `simd_parallel_blocked`/
+  `simd_parallel_blocked_mc` remain CLI-only for now (1.67ms/iter and 1.71ms/iter at 24
+  threads respectively) until/unless a raw-thread rewrite ports them to wasm.

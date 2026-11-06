@@ -38,6 +38,7 @@
 ///! probe that spawns and joins one — works end to end inside a real multithreaded
 ///! `duckdb-wasm` engine (`wasm_threads` platform), confirmed via a hand-computed matrix
 ///! product, not just "doesn't crash."
+const std = @import("std");
 const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
@@ -52,13 +53,28 @@ fn matmulOutputSlice(mu: usize, nu: usize) ?[]f64 {
     return matmul_scratch[0..want];
 }
 
+/// `navigator.hardwareConcurrency`, via `std.Thread.getCpuCount()`'s own `.emscripten` branch
+/// (`std.os.emscripten.emscripten_num_logical_cores()`) — not hardcoded, so this scales with
+/// whatever machine actually runs the engine, the way `zig_v2_matmul_bench_ct`'s native
+/// benchmark already does with `std.Thread.getCpuCount()`. Cached in a plain (not threadlocal,
+/// not atomic) var: a benign race if two threads compute it concurrently — the result is
+/// deterministic for a given engine, so a duplicate computation costs nothing but itself.
+var cached_cpu_count: ?usize = null;
+
+fn cpuCount() usize {
+    if (cached_cpu_count) |n| return n;
+    const n = std.Thread.getCpuCount() catch 4;
+    cached_cpu_count = n;
+    return n;
+}
+
 const MatmulParallelCt = comptime_scalar_v2.FunctionNamed("zig_v2_matmul_parallel_ct", struct {
     fn eval(a: []const f64, b: []const f64, m: i64, k: i64, n: i64) []const f64 {
         const mu: usize = @intCast(@max(m, 0));
         const ku: usize = @intCast(@max(k, 0));
         const nu: usize = @intCast(@max(n, 0));
         const out = matmulOutputSlice(mu, nu) orelse return &.{};
-        matmul.matmulSimdParallelRawThreads(matmul.default_rm, 4, a, b, out, mu, ku, nu);
+        matmul.matmulSimdParallelRawThreads(matmul.default_rm, cpuCount(), a, b, out, mu, ku, nu);
         return out;
     }
 }.eval, &.{ "a", "b", "m", "k", "n" });
