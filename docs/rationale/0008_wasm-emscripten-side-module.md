@@ -371,3 +371,38 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   actually execute concurrently under test automation, memory-bandwidth contention across the
   shared `SharedArrayBuffer`, or something in the SIMD kernel itself. Recorded here to
   continue later, deliberately not guessed at further in the meantime.
+
+  **Resolved, 2026-11-06: the "minimal real speedup" finding above was a benchmark
+  methodology flaw, not a wasm/threading problem.** Two targeted probes, each testing exactly
+  one candidate before moving to the next:
+  1. **Concurrency candidate, ruled out.** A busy-wait probe (`zig_v2_spin_n_ct`: N threads
+     each spin through 200 million iterations of a volatile-store loop — forced non-eliminable
+     by writing through a `*volatile u64` every iteration, since a plain wrapping-add loop is
+     exactly the kind of thing LLVM can fold into one closed-form store, silently defeating the
+     probe) with *no shared data at all* between threads. 1 thread: 137ms. 4 threads doing 4x
+     the total spin-work: 115ms (ratio 0.84 — genuinely *faster*, not just "not 4x slower").
+     `navigator.hardwareConcurrency` reported 24. Real OS-level concurrent execution under
+     Playwright/headless Chromium, conclusively — not serialized, not fake.
+  2. **Argument-decode cost, confirmed as the actual answer.** A no-op kernel
+     (`zig_v2_matmul_noop_ct`: takes the identical `a`/`b`/`m`/`k`/`n` arguments as the real
+     matmul functions, touches just the first/last element of each slice so the decode can't
+     be proven dead, does zero `O(m·k·n)` work) run alongside the real single-threaded and
+     parallel kernels at the same `m=64, k=2048, n=64` size used above: the no-op call alone
+     took **1118ms** — essentially identical to both the single-threaded (1189ms) and parallel
+     (1148ms) *full* matmul calls. Subtracting that fixed cost: single-threaded compute alone
+     is 71.1ms, parallel compute alone is 29.8ms — a genuine **2.38x speedup** at 4 threads.
+     Converting a 262,144-element inline SQL array literal into DuckDB's LIST representation
+     (SQL parsing + binding, then `comptime_scalar_v2`'s own LIST-to-`[]f64` decode) costs
+     roughly 15-37x more than the matmul compute itself at this problem size — a fixed cost
+     identical regardless of which kernel runs afterward, which is exactly why every earlier
+     measurement showed near-1.0x: both sides of every comparison were dominated by the same
+     threading-independent cost, not by anything wrong with the parallel kernel.
+
+  **Lesson for any future wasm (or native) benchmark through this comptime_scalar_v2 LIST-
+  argument path**: a no-op kernel sharing the exact argument shape is cheap to add and is the
+  right first move whenever a benchmark result looks suspiciously flat — isolate marshaling
+  cost from compute cost before concluding a kernel itself doesn't scale. Not yet checked:
+  whether a cheaper argument-delivery mechanism (a bound prepared-statement parameter, or a
+  DuckDB table scan, instead of a giant inline literal) would shrink this fixed cost — out of
+  scope for this PoC's own benchmarking, worth knowing if `zig_v2_matmul_*_ct` is ever
+  benchmarked for real rather than as a wasm-threading feasibility check.
