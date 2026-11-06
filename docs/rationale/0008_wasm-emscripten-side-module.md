@@ -431,3 +431,148 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   extension's exported function is ever reached at all. Adopting zaw would mean routing
   around DuckDB's SQL interface entirely, which is a different interop model, not a cheaper
   path through the one actually being used.
+
+  **A real answer to "cheaper argument delivery," found 2026-11-06: route the matrix through
+  DuckDB's own virtual file system instead of SQL at all.** duckdb-wasm has real `opfs://`
+  support — paths matching that scheme are auto-detected in SQL text and resolved for read or
+  write (`config.opfs.fileHandling: 'auto'`, `registerOPFSFileName`) before a query runs, and
+  separately `registerFileBuffer(name, Uint8Array)` hands the engine an in-memory buffer
+  directly. Both populate DuckDB's own internal `WebFileSystem`, a C++ `FileSystem` subclass
+  that calls out to JS (`duckdb_web_fs_file_open` etc.) rather than going through Emscripten's
+  libc FS layer — so a plain `fopen()`/`std.fs.openFile()` from the extension would NOT see
+  these files. The public C API has the right hook anyway: both v1.5.6 and the v2 API expose a
+  `client_context → file_system → open/read/seek/size/close` chain
+  (`duckdb_client_context_get_file_system`/`duckdb_v2_context_get_file_system` +
+  `duckdb_file_system_open`/`duckdb_v2_file_system_open` + `duckdb_file_handle_read`/
+  `duckdb_v2_file_read`), and a v2 table function's `bind` callback already receives the
+  `duckdb_v2_context_handle` it needs directly as its third argument — no extra "get client
+  context" step.
+
+  Proven live, in order:
+  1. **Minimal header read** (`zig_v2_read_opfs_head(path) -> (byte_count, first_f64)`,
+     `src/functions/read_opfs_head_v2.zig`): opened a real OPFS file written from the browser's
+     own File System Access API (`navigator.storage.getDirectory()`), read its size and first 8
+     bytes through the chain above. Result matched exactly: a 32-byte, 4-`f64` file reported
+     `byte_count=32, first_f64=42.5`.
+  2. **Full matrix decode** (`zig_v2_read_matrix_opfs(path) -> (row_index, value)`,
+     `src/functions/read_matrix_opfs_v2.zig`): reads the whole file, then decodes it as a
+     single-column `data: DOUBLE` Arrow IPC stream with `zarrow` (`tylitianrui/zarrow`, a
+     Zig-native Arrow implementation — confirmed separately to build and test clean under this
+     project's pinned Zig 0.17.0 stable, despite `build.zig.zon` still naming a pre-release
+     `0.17.0-dev` floor). A known 6-value fixture round-tripped exactly:
+     `[42.5, 1, 2, 3, 100.25, -7]` in, same values out, in order, via a real `wasm_eh`
+     (non-threaded) duckdb-wasm engine. A pure in-process Zig roundtrip of the same encoding at
+     the 64×2048 (131,072-element) size used throughout this investigation —
+     `examples/matrix_ipc_roundtrip.zig` in a throwaway `zarrow` checkout — took **~4ms**
+     (`ReleaseFast`: build=1ms, write=1ms, read_setup=1ms, verify=0ms) versus the ~1.1s the
+     SQL-literal path pays at the identical size: roughly a **275x** reduction in marshaling
+     overhead, measured outside DuckDB entirely (the ceiling case — no SQL parser, no LIST
+     binder, no per-row validity-mask bookkeeping at all).
+
+  **A second instance of the wasm32 multithreading wall, found via `zarrow` specifically.**
+  `zig_v2_read_matrix_opfs` could not be linked into the *threaded* (`wasm_threads`,
+  `single_threaded = false`) module alongside the real parallel matmul kernel — only into the
+  non-threaded `wasm_eh` one. Root-caused via `-freference-trace`, not guessed:
+  `zarrow`'s `nextRecordBatch` unconditionally reaches a zstd-body-decompression branch (even
+  for our always-uncompressed streams — it's not comptime-gated), and `std.compress.zstd`'s
+  own panic-on-invalid-input path needs `page_allocator`, which is the exact same
+  `WasmAllocator`/`page_allocator`-unimplemented-for-non-single-threaded-wasm32 wall that
+  blocked `std.Io.Threaded` earlier in this file. Same root cause, different trigger.
+
+  **That wall has a real, merged fix — just not upstream, and not in any numbered Zig
+  release.** `cataggar/zig` issue #52 is the identical repro (`WasmAllocator` `@compileError`
+  for any non-single-threaded wasm target), closed by that repo's own PR #102: make
+  `WasmAllocator` always resolve to `BrkAllocator`, guarded by a spin-lock mutex when not
+  single-threaded, instead of refusing to compile. Checked thoroughly before trusting it:
+  - Not in `ziglang/zig` at all — no matching issue or PR found there, at any version.
+  - Not in Zig 0.17.1 either, despite `zvm` listing it as installed: `0.17.1`'s own
+    `lib/std/heap.zig` still has the unpatched `@compileError("unimplemented")` line,
+    confirmed by reading it directly.
+  - Not in `cataggar/zig`'s own tagged `v0.17.0` release binaries — that release was
+    published 2026-10-03, three weeks *before* PR #102 merged (2026-10-28), onto a different
+    commit than the tag points to.
+  - **Hand-patched and verified anyway** (`lib/std/heap.zig` + 3 `heap/*.zig` files, applied
+    directly to the local `zvm`-managed 0.17.0 install, backed up first): unblocked the
+    threaded build immediately, `zig build test` stayed clean, and a combined threaded module
+    running both the parallel matmul kernel *and* `zig_v2_read_matrix_opfs` in one binary
+    verified correct in a real browser (`matmul_result` on a 4×4 case, `matrix_values` on the
+    6-value fixture, both exact). **Reverted afterward** — this patches a shared, machine-wide
+    toolchain install (`/home/markus/.zvm/0.17.0`) affecting every Zig project on the machine,
+    not just this repo, and isn't reproducible for anyone else (no CI, no other contributor,
+    no future `zvm install` would have it) without separately fetching and applying the same
+    diff. Kept as a confirmed, available option, not as this project's working state.
+
+  **The actual resolution needed no patch at all: split "loading" from "computing" into two
+  separate wasm modules.** `single_threaded` is a per-*compile-unit* setting (one
+  `zig build-lib` invocation), not a per-engine-connection one — and the footer's `platform`
+  field (what the loader actually checks, confirmed earlier in this file) is independent of
+  it. So a `zarrow`-based loader module that never spawns a thread itself can keep Zig's
+  single-threaded default and still be stamped `wasm_threads`, loadable into the very same
+  engine connection as the real thread-spawning matmul module — just as a second, separately
+  linked `.wasm` file. Built as `src/ext/init_v2_poc_read_matrix_opfs_wasm_threads.zig` /
+  the `wasm-ext-v2-read-matrix-opfs-threads` build step (reuses the existing
+  `wasm-ext-v2-matmul-eh-threads` block's module graph; its own root module simply omits the
+  `.single_threaded = false` the matmul lib needs). Compiled clean against the **unpatched**
+  stdlib on the first try — confirming the hypothesis directly rather than assuming it.
+  Verified end to end in a real threaded duckdb-wasm engine, both extensions loaded into one
+  connection:
+
+  ```sql
+  LOAD zig_ext_v2_poc_read_matrix_opfs_wasm_threads;  -- single-threaded internally
+  LOAD zig_ext_v2_poc_matmul_wasm_threads;             -- real threads internally
+
+  CREATE TABLE matrix_a AS SELECT row_index, value FROM zig_v2_read_matrix_opfs('opfs://a.arrow');
+  CREATE TABLE matrix_b AS SELECT row_index, value FROM zig_v2_read_matrix_opfs('opfs://b.arrow');
+
+  SELECT zig_v2_matmul_parallel_ct(
+      (SELECT list(value ORDER BY row_index) FROM matrix_a),
+      (SELECT list(value ORDER BY row_index) FROM matrix_b),
+      m, k, n
+  );
+  ```
+
+  A hand-computed 2×3 × 3×2 case (`[1,2,3,4,5,6]` × `[7,8,9,10,11,12]`) returned
+  `[58, 64, 139, 154]` exactly. The "compute" stage's `LIST(...)` arguments now come from
+  DuckDB's own native `list()` aggregate over an already-materialized table column — never
+  through SQL-literal parsing at all. This is the real-world shape the "cheaper argument
+  delivery" question was actually asking about, not a prepared-statement bind parameter.
+
+  **`wazig` (`cataggar/zig@v0.17.0-wazig.3`), surfaced while chasing the above — a real
+  option, deliberately not adopted here.** It's Zig's own compiler rebuilt as a pure
+  `wasm64-wasip3` binary (runs under Wasmtime, no LLVM dependency), and `zigar`'s own PR #20
+  confirms its `lib/std` ships with this exact `WasmAllocator` fix pre-applied — zero manual
+  patching, plus a ~5x smaller toolchain download and much faster cold builds (no
+  compile-LLVM-translate-c-on-first-use). The real cost: without LLVM, `wazig` compiles
+  through Zig's self-hosted `stage2_wasm` backend, which `zigar`'s own benchmarks show
+  running **7-9x slower at runtime** than LLVM-optimized code on compute-heavy workloads
+  (`nbody`: 301ms vs 33ms; `fannkuch-redux`: 2046ms vs 117ms) — directly the kind of
+  numeric/SIMD workload this matmul kernel is. Not worth switching the matmul build to it as
+  things stand; worth revisiting if the fix ever lands upstream some other way, or if `wazig`
+  gains an LLVM-backed mode.
+
+  **wasm vs. native CLI throughput, same kernel, same problem size (2026-11-06).** Ran the
+  existing native benchmark table function (`zig_v2_matmul_bench_ct`, `src/ext/init_v2_poc.zig`
+  — real `std.Thread`/`std.Io.Group` dispatch via `matmulSimdParallel`, `max_tasks =
+  std.Thread.getCpuCount()`) through the real `duckdb` v2.0.0 CLI, at the same `m=64, k=2048,
+  n=64` size, 20 iterations, on a 24-core machine (the same `navigator.hardwareConcurrency`
+  the browser probes reported):
+
+  | kernel | native CLI (24 threads) | wasm, isolated from decode cost (4 threads) | ratio |
+  | --- | --- | --- | --- |
+  | single-threaded SIMD | 9.02 ms/iter (1.86 GFLOPS) | 71.1 ms (0.236 GFLOPS) | native ~7.9x faster |
+  | parallel SIMD | 1.97 ms/iter (8.52 GFLOPS) | 29.8 ms (0.562 GFLOPS) | native ~15.2x faster |
+
+  Two different things are mixed into that second ratio, not one: raw per-thread throughput
+  (native LLVM-optimized AVX-width SIMD vs. Zig's wasm32-emscripten codegen at `simd128`,
+  plus wasm's extra bounds-checking and call overhead) accounts for the single-threaded ~7.9x
+  on its own; the rest comes from thread-count, not environment — native's kernel used all 24
+  cores the machine has, while both wasm init files hardcode `matmulSimdParallelRawThreads`'s
+  task count to 4 (`matmul.matmulSimdParallelRawThreads(matmul.default_rm, 4, ...)`), not the
+  engine's own `hardwareConcurrency`. Looking at *speedup from parallelism alone*, within each
+  environment, is the fairer comparison: native goes 9.02ms → 1.97ms, a 4.58x speedup from 24
+  threads; wasm goes 71.1ms → 29.8ms, a 2.38x speedup from 4 threads — the same order of
+  magnitude once thread count is accounted for, not a sign that wasm's threading itself scales
+  worse. Not yet tried: raising the wasm kernel's hardcoded task count to match
+  `hardwareConcurrency` for a true matched-thread-count comparison — worth doing before
+  drawing any conclusion about wasm multithreading's *ceiling*, as opposed to its baseline
+  per-thread cost, which this already shows clearly.

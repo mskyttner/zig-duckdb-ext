@@ -42,6 +42,7 @@ const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const matmul = @import("matmul");
+const read_opfs_head_v2 = @import("read_opfs_head_v2");
 
 threadlocal var matmul_scratch: [4096]f64 = undefined;
 
@@ -84,4 +85,5 @@ export fn zig_ext_v2_poc_matmul_wasm_threads_init_c_api_v2(input: *const v2.duck
     if (!helpers.init(input, "v2.0.0")) return;
     MatmulParallelCt.register(input) catch {};
     MatmulCt.register(input) catch {};
+    read_opfs_head_v2.register(input) catch {};
 }

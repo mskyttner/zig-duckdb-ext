@@ -1795,6 +1795,27 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         });
         const wasm_v2_graph = v2Graph(b, wasm_v2_target, .ReleaseFast, wasm_v2_duckdb_v2_dynamic_mod);
+        const wasm_v2_read_matrix_opfs_mod = b.createModule(.{
+            .root_source_file = b.path("src/functions/read_matrix_opfs_v2.zig"),
+            .target = wasm_v2_target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "duckdb_v2_api", .module = wasm_v2_duckdb_v2_dynamic_mod },
+                .{ .name = "v2_helpers", .module = wasm_v2_graph.helpers },
+            },
+        });
+        // zarrow's zstd-decompression path (reachable from `nextRecordBatch` whether or not a
+        // given stream actually uses body compression) hits the same "page_allocator needs
+        // WasmAllocator, which is unimplemented for non-single-threaded wasm32" wall this
+        // project already found blocking `std.Io.Threaded` — confirmed live via
+        // `-freference-trace`, not guessed: `decompressZstdPayload` → `Decompress.readInFrame`
+        // → `defaultPanic` → `getDebugInfoAllocator` → `page_allocator`. The non-threaded `eh`
+        // build (this one) keeps Zig's single-threaded default, where `WasmAllocator` resolves
+        // to `BrkAllocator` instead of `@compileError` — so `read_matrix_opfs_v2` lives here,
+        // not in the threaded sibling step below.
+        if (b.lazyDependency("zarrow", .{ .target = wasm_v2_target, .optimize = .ReleaseFast })) |zarrow_dep| {
+            wasm_v2_read_matrix_opfs_mod.addImport("zarrow", zarrow_dep.module("zarrow"));
+        }
 
         const wasm_v2_matmul_lib = b.addLibrary(.{
             .linkage = .static,
@@ -1809,6 +1830,7 @@ pub fn build(b: *std.Build) void {
         wasm_v2_matmul_lib.root_module.addImport("v2_helpers", wasm_v2_graph.helpers);
         wasm_v2_matmul_lib.root_module.addImport("comptime_scalar_v2", wasm_v2_graph.scalar);
         wasm_v2_matmul_lib.root_module.addImport("matmul", wasm_v2_matmul_mod);
+        wasm_v2_matmul_lib.root_module.addImport("read_matrix_opfs_v2", wasm_v2_read_matrix_opfs_mod);
 
         const wasm_v2_matmul_emcc = b.addSystemCommand(&.{emcc_path});
         wasm_v2_matmul_emcc.has_side_effects = true; // same -Demcc-path= staleness reason as addWasmEmscriptenBuild
@@ -1869,6 +1891,15 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         });
         const wasm_v2_threads_graph = v2Graph(b, wasm_v2_threads_target, .ReleaseFast, wasm_v2_threads_duckdb_v2_dynamic_mod);
+        const wasm_v2_threads_read_opfs_head_mod = b.createModule(.{
+            .root_source_file = b.path("src/functions/read_opfs_head_v2.zig"),
+            .target = wasm_v2_threads_target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "duckdb_v2_api", .module = wasm_v2_threads_duckdb_v2_dynamic_mod },
+                .{ .name = "v2_helpers", .module = wasm_v2_threads_graph.helpers },
+            },
+        });
 
         const wasm_v2_threads_matmul_lib = b.addLibrary(.{
             .linkage = .static,
@@ -1886,6 +1917,7 @@ pub fn build(b: *std.Build) void {
         wasm_v2_threads_matmul_lib.root_module.addImport("v2_helpers", wasm_v2_threads_graph.helpers);
         wasm_v2_threads_matmul_lib.root_module.addImport("comptime_scalar_v2", wasm_v2_threads_graph.scalar);
         wasm_v2_threads_matmul_lib.root_module.addImport("matmul", wasm_v2_threads_matmul_mod);
+        wasm_v2_threads_matmul_lib.root_module.addImport("read_opfs_head_v2", wasm_v2_threads_read_opfs_head_mod);
 
         const wasm_v2_threads_matmul_emcc = b.addSystemCommand(&.{emcc_path});
         wasm_v2_threads_matmul_emcc.has_side_effects = true;
@@ -1917,6 +1949,74 @@ pub fn build(b: *std.Build) void {
         const install_wasm_v2_threads_matmul = b.addInstallFile(wasm_v2_threads_matmul_output, "lib/wasm_threads/zig_ext_v2_poc_matmul_wasm_threads.duckdb_extension.wasm");
         const wasm_v2_threads_matmul_step = b.step("wasm-ext-v2-matmul-eh-threads", "Build the threaded v2-ABI wasm32-emscripten SIDE_MODULE: matmul.zig's real matmulSimdParallel kernel (needs a real emcc on PATH or -Demcc-path=; see docs/rationale/0008's threading entry)");
         wasm_v2_threads_matmul_step.dependOn(&install_wasm_v2_threads_matmul.step);
+
+        // ── "wasm-ext-v2-read-matrix-opfs-threads" step: the "loading step split from
+        // computing step" prototype. A SEPARATE wasm module from the matmul one above, stamped
+        // with the same `wasm_threads` platform (so it loads into the same engine connection),
+        // but its own root module does NOT set `.single_threaded = false` — it never spawns a
+        // thread itself, only decodes bytes, so it never needs to and never trips the
+        // `WasmAllocator`/`page_allocator` wall `zarrow`'s zstd-decompression path hits when
+        // `single_threaded = false` is set anywhere in its compile unit (see
+        // `init_v2_poc_read_matrix_opfs_wasm_threads.zig`'s own doc comment for the full
+        // reasoning). Reuses this block's `wasm_v2_threads_target`/`_duckdb_v2_dynamic_mod`/
+        // `_graph` — same target, so the resulting module is ABI-compatible with the matmul one
+        // even though it's a separate `.wasm` file.
+        const wasm_v2_threads_read_matrix_opfs_mod = b.createModule(.{
+            .root_source_file = b.path("src/functions/read_matrix_opfs_v2.zig"),
+            .target = wasm_v2_threads_target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "duckdb_v2_api", .module = wasm_v2_threads_duckdb_v2_dynamic_mod },
+                .{ .name = "v2_helpers", .module = wasm_v2_threads_graph.helpers },
+            },
+        });
+        if (b.lazyDependency("zarrow", .{ .target = wasm_v2_threads_target, .optimize = .ReleaseFast })) |zarrow_threads_dep| {
+            wasm_v2_threads_read_matrix_opfs_mod.addImport("zarrow", zarrow_threads_dep.module("zarrow"));
+        }
+
+        const wasm_v2_threads_loader_lib = b.addLibrary(.{
+            .linkage = .static,
+            .name = "zig_ext_v2_poc_read_matrix_opfs_wasm_threads",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ext/init_v2_poc_read_matrix_opfs_wasm_threads.zig"),
+                .target = wasm_v2_threads_target,
+                .optimize = .ReleaseFast,
+                // Deliberately omitted: this module never spawns a thread, so it keeps Zig's
+                // single-threaded default — that's the whole point of this being a separate
+                // module from the matmul one, which must set this to `false`.
+            }),
+        });
+        wasm_v2_threads_loader_lib.root_module.addImport("duckdb_v2_api", wasm_v2_threads_duckdb_v2_dynamic_mod);
+        wasm_v2_threads_loader_lib.root_module.addImport("v2_helpers", wasm_v2_threads_graph.helpers);
+        wasm_v2_threads_loader_lib.root_module.addImport("read_matrix_opfs_v2", wasm_v2_threads_read_matrix_opfs_mod);
+
+        const wasm_v2_threads_loader_emcc = b.addSystemCommand(&.{emcc_path});
+        wasm_v2_threads_loader_emcc.has_side_effects = true;
+        wasm_v2_threads_loader_emcc.addArtifactArg(wasm_v2_threads_loader_lib);
+        wasm_v2_threads_loader_emcc.addArgs(&.{ "-O3", "-g2", "-sSIDE_MODULE=2", "-fwasm-exceptions", "-pthread" });
+        wasm_v2_threads_loader_emcc.addArg("-sEXPORTED_FUNCTIONS=_zig_ext_v2_poc_read_matrix_opfs_wasm_threads_init_c_api_v2");
+        wasm_v2_threads_loader_emcc.addArg("-o");
+        const wasm_v2_threads_loader_module = wasm_v2_threads_loader_emcc.addOutputFileArg("zig_ext_v2_poc_read_matrix_opfs_wasm_threads.wasm");
+
+        const wasm_v2_threads_loader_metadata_tool = b.addExecutable(.{
+            .name = "append_metadata_v2_read_matrix_opfs_wasm_threads",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/append_metadata_main.zig"),
+                .target = b.graph.host,
+            }),
+        });
+        const wasm_v2_threads_loader_append = b.addRunArtifact(wasm_v2_threads_loader_metadata_tool);
+        wasm_v2_threads_loader_append.addFileArg(wasm_v2_threads_loader_module);
+        wasm_v2_threads_loader_append.addArg("zig_ext_v2_poc_read_matrix_opfs_wasm_threads");
+        wasm_v2_threads_loader_append.addArg(v2_duckdb_version);
+        wasm_v2_threads_loader_append.addArg("v0.0.0-poc");
+        wasm_v2_threads_loader_append.addArg(v2_abi_type);
+        wasm_v2_threads_loader_append.addArg(WasmVariant.eh_threads.platform());
+        const wasm_v2_threads_loader_output = wasm_v2_threads_loader_append.addOutputFileArg("zig_ext_v2_poc_read_matrix_opfs_wasm_threads.duckdb_extension.wasm");
+
+        const install_wasm_v2_threads_loader = b.addInstallFile(wasm_v2_threads_loader_output, "lib/wasm_threads/zig_ext_v2_poc_read_matrix_opfs_wasm_threads.duckdb_extension.wasm");
+        const wasm_v2_threads_loader_step = b.step("wasm-ext-v2-read-matrix-opfs-threads", "Build the 'loader' sibling of wasm-ext-v2-matmul-eh-threads: zig_v2_read_matrix_opfs only, stamped wasm_threads but single-threaded internally, loadable alongside the matmul extension in one engine connection (needs a real emcc on PATH or -Demcc-path=)");
+        wasm_v2_threads_loader_step.dependOn(&install_wasm_v2_threads_loader.step);
     }
 
     // ── "dist" step: arrange and gzip `cross`'s output into the DuckDB

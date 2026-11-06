@@ -231,6 +231,11 @@
             .hash = "zpq-0.5.1-LzbMxHSKegGiu6Ejyd4zi4664oAsRd3IlS-WzqS9M9Xt",
             .lazy = true,
         },
+        .zarrow = .{
+            .url = "git+https://github.com/tylitianrui/zarrow?ref=master#7218b804b4ba0cdd8ac0d038a9d1e7cc916e6760",
+            .hash = "zarrow-0.0.2-I8BLE0uOTgDQAtAvsgOOCmJgZu10cSYsaqPgFSjXyGe7",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

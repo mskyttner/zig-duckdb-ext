@@ -24,6 +24,7 @@ const v2 = @import("duckdb_v2_api");
 const helpers = @import("v2_helpers");
 const comptime_scalar_v2 = @import("comptime_scalar_v2");
 const matmul = @import("matmul");
+const read_matrix_opfs_v2 = @import("read_matrix_opfs_v2");
 
 /// See `init_v2_poc.zig`'s own identical buffer for the full CAUTION on why this must be
 /// `threadlocal` (DuckDB may call a scalar function from multiple worker threads
@@ -66,4 +67,5 @@ export fn zig_ext_v2_poc_matmul_wasm_init_c_api_v2(input: *const v2.duckdb_v2_ex
     if (!helpers.init(input, "v2.0.0")) return;
     MatmulNaiveCt.register(input) catch {};
     MatmulCt.register(input) catch {};
+    read_matrix_opfs_v2.register(input) catch {};
 }
