@@ -225,10 +225,21 @@
         // cache unbuilt (checked: no BoringSSL object files compile).
         // `lazy = true`, same full-isolation reasoning as `zignal`/`zigcv`/
         // `zio` above. Pinned to `main`'s HEAD at the time this was added
-        // (zpq has no tagged release yet).
+        // (zpq has no tagged release yet). Bumped 2026-11-25 to zpq 0.6.0
+        // (19df9f3): its own `build.zig.zon` now requires Zig 0.17.1
+        // (`minimum_zig_version`), and its `build.zig` loosened its exact-
+        // version gate from "must be exactly 0.17.0" to "any stable 0.17.x
+        // release" — so this lazy dependency now needs 0.17.1, specifically
+        // when a step that actually pulls it in (`v2-poc-zpq`/
+        // `test-v2-poc-zpq`) is built; confirmed both still pass clean
+        // under 0.17.1, with no code changes needed on this project's side.
+        // Everything else in this project (plain `zig build`/`zig build
+        // test`, which never touch this lazy dependency) still builds and
+        // tests clean under 0.17.0 too — checked both ways before trusting
+        // this, not assumed.
         .zpq = .{
-            .url = "git+https://github.com/chicagobuss/zpq#cbeea41c9c0c59c7692d6ed92091b7ecb42dd48d",
-            .hash = "zpq-0.5.1-LzbMxHSKegGiu6Ejyd4zi4664oAsRd3IlS-WzqS9M9Xt",
+            .url = "git+https://github.com/chicagobuss/zpq#19df9f3ce1f4f38a40cb828d679fd0abcd679daa",
+            .hash = "zpq-0.6.0-LzbMxCFA0QEOjDR0U-62aUeWrH7VBg7eDAVDF8UBfG1A",
             .lazy = true,
         },
         .zarrow = .{
