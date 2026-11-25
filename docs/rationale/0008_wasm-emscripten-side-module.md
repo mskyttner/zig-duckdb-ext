@@ -550,6 +550,35 @@ pointing that one specifier at a CDN ESM build stands in for the bundler here.
   things stand; worth revisiting if the fix ever lands upstream some other way, or if `wazig`
   gains an LLVM-backed mode.
 
+  **The project moved to Zig 0.17.1 (2026-11-25), and a second "fast but LLVM-free compiler"
+  (`~/bin/bs`) turned up the same tradeoff `wazig` did, from a different angle.** `zpq`'s
+  `main` branch bumped its own `minimum_zig_version` to `0.17.1` and loosened its exact-
+  version gate from "must be exactly 0.17.0" to "any stable 0.17.x release"; this project's
+  pinned `zpq` commit was bumped to match (`0.6.0`, `19df9f3`), and — since nothing else in
+  this repo actually pinned to exactly `0.17.0` (checked: `build.zig.zon`'s own floor was
+  always just `0.16.0`) — the system-wide `zvm` default moved to `0.17.1` too, after
+  confirming `check:all`, `v2-check`, all four `sqllogictest*` suites, and `load-failure-v2`
+  all pass clean under it with zero code changes.
+
+  `bs` (self-reports `bs 0.1.3`, a from-scratch compiler implementing the Zig 0.17.1 language
+  with its own native x86_64/aarch64 codegen and its own ELF/Mach-O linker — not a wrapper
+  around `zig`) is dramatically faster to invoke: a cold `bs build` took 0.54s against `zig
+  build`'s 3.45s (~6.4x), and a warm no-op rebuild was near-instant (0.06s vs 3.6s — `zig
+  build` barely benefited from its own cache on this project). It produces genuinely correct,
+  loadable extensions: `bs build`'s `zig_ext.duckdb_extension` loaded in the real `duckdb` CLI
+  and `zig_hello('bs')` returned correctly, and `bs build test` (its way of running
+  `build.zig`'s `test` *step* — plain `bs test` wants a bare source file, not a build-step
+  name) passed clean too.
+
+  But its codegen is the same story as `wazig`'s `stage2_wasm`, just reached via a different
+  door: running the native `zig_v2_matmul_bench_ct` benchmark through a `bs`-built extension,
+  the SIMD-optimized kernels came out **slower than the naive one** — `naive` 27.4ms vs
+  `simd`/`simd_blocked` ~487ms (3 iterations, noisy in absolute terms, but the direction and
+  ~18x gap isn't noise) — the exact opposite of real `zig`+LLVM, where SIMD is always faster.
+  `bs`'s own backend evidently doesn't vectorize Zig's `@Vector` code well. Same conclusion as
+  `wazig`: genuinely useful for fast dev-loop iteration on correctness-focused work, wrong
+  tool for anything touching this project's actual SIMD matmul kernels.
+
   **wasm vs. native CLI throughput, same kernel, same problem size (2026-11-06).** Ran the
   existing native benchmark table function (`zig_v2_matmul_bench_ct`, `src/ext/init_v2_poc.zig`
   — real `std.Thread`/`std.Io.Group` dispatch via `matmulSimdParallel`, `max_tasks =
